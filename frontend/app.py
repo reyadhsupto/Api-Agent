@@ -2,10 +2,10 @@
 Streamlit frontend for Api-Agent.
 
 Tabs:
-1. Endpoints - Parse and edit cURL requests (supports multiple endpoints with include/exclude).
-2. Test Cases - Generate (single or flow) and execute test cases with per-case assertion editing.
+1. API Workspace - Compose temporary request tabs and manage saved project collections.
+2. Test Cases - Select eligible saved requests, generate (single or flow), and execute tests.
 
-Features: Project management, multi-endpoint collections, flow test cases,
+Features: Project-scoped request collections, flow test cases,
 per-test-case assertions with checkboxes, collapsible cards, console logging,
 reorderable endpoints, named endpoints.
 """
@@ -14,9 +14,177 @@ import streamlit as st
 import requests
 import json
 import uuid
-from urllib.parse import urlencode
+import os
+import hashlib
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-BACKEND_URL = "http://localhost:8000"
+try:
+    from streamlit_sortables import sort_items
+except ImportError:
+    sort_items = None
+
+BACKEND_URL = os.getenv("API_BACKEND_URL", "http://localhost:8000")
+
+
+def _toggle_session_state(key: str) -> None:
+    """Toggle a boolean session-state value before the next render."""
+    st.session_state[key] = not st.session_state.get(key, False)
+
+
+REQUEST_TAB_CSS = """
+<style>
+/* A compact Postman-like request strip that keeps tab controls predictable. */
+.st-key-request-tabbar {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    align-items: stretch !important;
+    gap: 0 !important;
+    height: 46px !important;
+    min-height: 46px !important;
+    max-height: 46px !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    border-bottom: 1px solid rgba(128,128,128,.35);
+    scrollbar-width: thin;
+}
+
+/* Streamlit may insert layout wrappers. They retain their content width. */
+.st-key-request-tabbar > * {
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+}
+.st-key-request-tabbar > *:has(> [class*="st-key-request-tab-"]),
+.st-key-request-tabbar > [class*="st-key-request-tab-"] {
+    width: 220px !important;
+    min-width: 220px !important;
+    max-width: 220px !important;
+}
+
+/* One request tab: label fills the available space and close is fixed. */
+div[class*="st-key-request-tab-"] {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    gap: 0 !important;
+    align-items: center !important;
+    width: 100%;
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    overflow: hidden;
+    box-sizing: border-box;
+    border-right: 1px solid rgba(128,128,128,.25);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+div[class*="st-key-request-tab-on-"] {
+    border-bottom: 2px solid #ff6c37;
+    background: rgba(128,128,128,.12);
+}
+div[class*="st-key-request-tab-off-"]:hover { background: rgba(128,128,128,.08); }
+div[class*="st-key-request-tab-"] > * { min-width: 0 !important; }
+div[class*="st-key-request-tab-"] > *:first-child {
+    flex: 1 1 0 !important;
+    width: auto !important;
+    overflow: hidden;
+}
+div[class*="st-key-request-tab-"] > *:last-child {
+    flex: 0 0 34px !important;
+    width: 34px !important;
+    min-width: 34px !important;
+}
+
+/* Flat controls preserve visual hierarchy while keeping the strip compact. */
+.st-key-request-tabbar button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    min-height: 2.1rem;
+    padding: .2rem .6rem;
+    font-size: .85rem;
+}
+.st-key-request-tabbar [data-testid="stButton"] { width: 100%; }
+div[class*="st-key-request-tab-"] button {
+    width: 100% !important;
+    justify-content: flex-start !important;
+    overflow: hidden;
+}
+.st-key-request-tabbar button > div { min-width: 0; overflow: hidden; }
+.st-key-request-tabbar button p {
+    font-size: .85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+div[class*="st-key-request-close-"] button {
+    width: 34px !important;
+    min-width: 34px !important;
+    max-width: 34px !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 0 !important;
+    justify-content: center !important;
+    opacity: .7;
+    font-size: 1.25rem !important;
+}
+div[class*="st-key-request-close-"] {
+    display: flex !important;
+    flex: 0 0 34px !important;
+    width: 34px !important;
+    min-width: 34px !important;
+    max-width: 34px !important;
+    margin-left: 0 !important;
+    overflow: visible !important;
+}
+div[class*="st-key-request-close-"] [data-testid="stButton"] {
+    flex: 0 0 34px !important;
+    width: 34px !important;
+    min-width: 34px !important;
+}
+div[class*="st-key-request-close-"] button:hover {
+    opacity: 1;
+    background: rgba(128,128,128,.2) !important;
+}
+
+/* The add control follows the final tab at the left edge of the strip. */
+.st-key-request-tabbar > *:has(> .st-key-request-add),
+.st-key-request-tabbar > .st-key-request-add {
+    width: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+}
+.st-key-request-add {
+    display: flex !important;
+    flex: 0 0 44px !important;
+    width: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+    margin-left: 0 !important;
+}
+.st-key-request-add [data-testid="stButton"] {
+    flex: 0 0 44px !important;
+    width: 44px !important;
+    min-width: 44px !important;
+}
+.st-key-request-add button {
+    width: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    padding: 0 !important;
+    font-size: 1.3rem !important;
+}
+</style>
+"""
+METHOD_COLORS = {
+    "GET": "green", "POST": "orange", "PUT": "blue", "PATCH": "violet",
+    "DELETE": "red", "HEAD": "gray", "OPTIONS": "gray",
+}
 
 
 def log_to_console(data: dict, label: str = "API") -> None:
@@ -119,6 +287,9 @@ def initialize_session_state() -> None:
         "executions": {},
         "current_project": None,
         "project_list": [],
+        "request_drafts": [],
+        "generation_order_ids": [],
+        "selected_collection_id": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -139,16 +310,20 @@ def load_project(project_id: str) -> None:
         project = api_get(f"/api/v1/projects/{project_id}")
         st.session_state["current_project"] = project
         st.session_state["endpoints"] = project.get("endpoints", [])
+        st.session_state["request_drafts"] = []
+        st.session_state["generation_order_ids"] = [
+            endpoint["id"] for endpoint in project.get("endpoints", [])
+            if endpoint.get("include_for_generation", endpoint.get("include", True))
+        ]
+        collection_ids = [item["id"] for item in project.get("collections", [])]
+        if st.session_state.get("selected_collection_id") not in collection_ids:
+            st.session_state["selected_collection_id"] = collection_ids[0] if collection_ids else None
         st.session_state["test_cases"] = project.get("test_cases", [])
         st.session_state["executions"] = {}
         for execution in project.get("executions", []):
             test_case_id = execution.get("test_case_id")
             if test_case_id:
                 st.session_state["executions"][test_case_id] = execution
-        st.session_state["parsed_curl"] = next(
-            (ep for ep in st.session_state["endpoints"] if ep.get("include", True)),
-            None,
-        )
     except Exception as exc:
         st.error(f"Failed to load project: {exc}")
 
@@ -611,6 +786,574 @@ def render_test_case_card(tc: dict, index: int) -> dict:
     return tc
 
 
+def _request_rows(values) -> list[dict]:
+    """Return editor rows from saved row data or a legacy key/value mapping."""
+    if isinstance(values, list):
+        rows = [dict(row) for row in values if isinstance(row, dict)]
+    elif isinstance(values, dict):
+        rows = [{"key": key, "value": value, "enabled": True} for key, value in values.items()]
+    else:
+        rows = []
+    for row in rows:
+        row.setdefault("enabled", True)
+        row.setdefault("description", "")
+        row["_ui_id"] = row.get("_ui_id") or str(uuid.uuid4())
+    return rows
+
+
+def _new_request_draft(saved: dict | None = None) -> dict:
+    """Create independent editor state, optionally initialized from a saved request."""
+    saved = dict(saved or {})
+    return {
+        "tab_id": str(uuid.uuid4()),
+        "id": saved.get("id"),
+        "collection_id": saved.get("collection_id"),
+        "name": saved.get("name", "New Request"),
+        "method": saved.get("method", "GET"),
+        "url": saved.get("url", ""),
+        "headers": _request_rows(saved.get("headers", {})),
+        "query_params": _request_rows(saved.get("query_params", {})),
+        "body": saved.get("body") if isinstance(saved.get("body"), str) else json.dumps(saved.get("body"), ensure_ascii=False) if saved.get("body") is not None else "",
+        "include_body": saved.get("include_body", True),
+        "include_for_generation": saved.get("include_for_generation", saved.get("include", False)),
+        "response": None,
+    }
+
+
+def _clean_request_rows(rows: list[dict]) -> list[dict]:
+    """Remove editor-only identifiers before saving request rows."""
+    return [{key: value for key, value in row.items() if key != "_ui_id"} for row in rows]
+
+
+def _effective_rows(rows: list[dict]) -> dict:
+    """Return enabled editor rows as a request mapping."""
+    return {row["key"]: row.get("value", "") for row in rows if row.get("key") and row.get("enabled", True)}
+
+
+def _normalise_request_url(url: str, query_rows: list[dict]) -> tuple[str, list[dict]]:
+    """Move URL query values into the query editor while avoiding duplicate keys."""
+    parts = urlsplit(url)
+    existing = parse_qsl(parts.query, keep_blank_values=True)
+    rows = list(query_rows)
+    present = {row.get("key") for row in rows}
+    rows.extend(
+        {"key": key, "value": value, "enabled": True, "_ui_id": str(uuid.uuid4())}
+        for key, value in existing if key not in present
+    )
+    clean_url = urlunsplit((parts.scheme, parts.netloc, parts.path, "", parts.fragment))
+    return clean_url, rows
+
+
+def _refresh_project_preserving_drafts(project_id: str) -> None:
+    """Refresh persisted project state without discarding open request tabs."""
+    project = api_get(f"/api/v1/projects/{project_id}")
+    st.session_state["current_project"] = project
+    st.session_state["endpoints"] = project.get("endpoints", [])
+
+
+def _render_request_rows(rows: list[dict], kind: str, tab_id: str) -> list[dict]:
+    """Render a Postman-like editable table and retain disabled key/value rows."""
+    editor_rows = [
+        {
+            "send": bool(row.get("enabled", True)),
+            "key": str(row.get("key", "")),
+            "value": "" if row.get("value") is None else str(row.get("value", "")),
+            "description": str(row.get("description", "")),
+        }
+        for row in rows
+    ]
+    if not editor_rows:
+        editor_rows = [{"send": True, "key": "", "value": "", "description": ""}]
+
+    edited_rows = st.data_editor(
+        editor_rows,
+        key=f"{kind}_editor_{tab_id}",
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_order=["send", "key", "value", "description"],
+        column_config={
+            "send": st.column_config.CheckboxColumn(
+                "Send", width="small", default=True,
+                help="Include this row in the outgoing request",
+            ),
+            "key": st.column_config.TextColumn("Key", width="medium"),
+            "value": st.column_config.TextColumn("Value", width="large"),
+            "description": st.column_config.TextColumn("Description", width="medium"),
+        },
+        placeholder=f"Add {kind[:-1] if kind.endswith('s') else kind}",
+    )
+
+    stored_rows = []
+    for row in edited_rows:
+        key = str(row.get("key") or "").strip()
+        value = "" if row.get("value") is None else str(row.get("value", ""))
+        description = str(row.get("description") or "")
+        if not key and not value and not description:
+            continue
+        stored_rows.append({
+            "enabled": True if row.get("send") is None else bool(row["send"]),
+            "key": key,
+            "value": value,
+            "description": description,
+        })
+    return stored_rows
+
+
+def _save_request_draft(draft: dict, collection_id: str, project_id: str) -> dict:
+    """Persist a request draft in the selected collection and return its saved form."""
+    url, query_rows = _normalise_request_url(draft["url"], draft["query_params"])
+    payload = {
+        "id": draft.get("id"),
+        "name": draft["name"].strip() or "Untitled Request",
+        "method": draft["method"],
+        "url": url,
+        "headers": _clean_request_rows(draft["headers"]),
+        "query_params": _clean_request_rows(query_rows),
+        "body": draft["body"],
+        "include_body": bool(draft["include_body"]),
+        "include_for_generation": bool(draft.get("include_for_generation", False)),
+    }
+    saved = api_post(
+        f"/api/v1/projects/{project_id}/collections/{collection_id}/requests",
+        payload,
+    )
+    draft.update(saved)
+    draft["response"] = draft.get("response")
+    draft["headers"] = _request_rows(saved.get("headers", []))
+    draft["query_params"] = _request_rows(saved.get("query_params", []))
+    return saved
+
+
+def _render_request_draft(draft: dict, collections: list[dict], project_id: str) -> None:
+    """Render one request editor tab, send/save actions, and its response panel."""
+    tab_id = draft["tab_id"]
+    method_options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+    # Apply imported values before creating keyed widgets on this rerun.
+    parsed = st.session_state.pop(f"pending_curl_{tab_id}", None)
+    if parsed:
+        draft["method"] = parsed.get("method", "GET")
+        draft["url"] = parsed.get("url", "")
+        draft["headers"] = _request_rows(parsed.get("headers", {}))
+        draft["query_params"] = _request_rows(parsed.get("query_params", {}))
+        draft["body"] = parsed.get("body") or ""
+        draft["include_body"] = True
+        draft["response"] = None
+        st.session_state[f"method_{tab_id}"] = draft["method"] if draft["method"] in method_options else "GET"
+        st.session_state[f"url_{tab_id}"] = draft["url"]
+        st.session_state[f"body_{tab_id}"] = draft["body"]
+        st.session_state[f"body_mode_{tab_id}"] = "raw"
+        st.session_state.pop(f"header_editor_{tab_id}", None)
+        st.session_state.pop(f"query_editor_{tab_id}", None)
+
+    # Seed keyed widget values before construction. Keyed widgets read these
+    # values directly, so passing a second default value would conflict.
+    st.session_state.setdefault(f"method_{tab_id}", draft.get("method", "GET"))
+    st.session_state.setdefault(f"url_{tab_id}", draft.get("url", ""))
+    st.session_state.setdefault(f"body_{tab_id}", draft.get("body", ""))
+
+    name_col, collection_col, save_col = st.columns([3.2, 2.2, 1.1], vertical_alignment="bottom")
+    with name_col:
+        draft["name"] = st.text_input("Request name", value=draft["name"], key=f"name_{tab_id}", placeholder="e.g. Create session")
+    with collection_col:
+        collection_by_id = {item["id"]: item for item in collections}
+        collection_ids = list(collection_by_id)
+        preferred_collection = draft.get("collection_id") or st.session_state.get("selected_collection_id")
+        if preferred_collection not in collection_by_id and collection_ids:
+            preferred_collection = collection_ids[0]
+        selected_collection = st.selectbox(
+            "Collection", collection_ids,
+            index=collection_ids.index(preferred_collection) if preferred_collection else 0,
+            format_func=lambda collection_id: collection_by_id[collection_id]["name"],
+            key=f"save_collection_{tab_id}", disabled=not collections,
+        ) if collections else None
+        if not collections:
+            st.caption("Create a collection to save requests")
+    with save_col:
+        save_clicked = st.button("Save", key=f"save_{tab_id}", disabled=not collections, icon=":material/save:", use_container_width=True)
+
+    method_col, request_url_col, curl_col, send_col = st.columns([1.15, 5.2, 1.1, 1.2], vertical_alignment="bottom")
+    with method_col:
+        if draft["method"] not in method_options:
+            draft["method"] = "GET"
+        st.session_state.setdefault(f"method_{tab_id}", draft["method"])
+        draft["method"] = st.selectbox("Method", method_options, key=f"method_{tab_id}")
+    with request_url_col:
+        draft["url"] = st.text_input("URL", key=f"url_{tab_id}", placeholder="https://api.example.com/resource")
+    with curl_col:
+        with st.popover("cURL", icon=":material/code:", help="Import a cURL command", use_container_width=True):
+            curl = st.text_area("Paste cURL", height=120, key=f"curl_{tab_id}", placeholder="curl -X POST 'https://api.example.com/items' -H 'Content-Type: application/json' -d '{\"name\":\"item\"}'")
+            if st.button("Apply to request", key=f"parse_curl_{tab_id}", type="primary", use_container_width=True):
+                try:
+                    parsed = api_post("/api/v1/curl/parse", {"curl": curl})
+                    st.session_state[f"pending_curl_{tab_id}"] = parsed
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not apply cURL: {exc}")
+    with send_col:
+        send_clicked = st.button("Send", type="primary", key=f"send_{tab_id}", use_container_width=True, icon=":material/send:")
+
+    params_tab, headers_tab, payload_tab = st.tabs(["Params", "Headers", "Body"])
+    with params_tab:
+        st.caption("Query parameters")
+        draft["query_params"] = _render_request_rows(draft["query_params"], "query", tab_id)
+    with headers_tab:
+        draft["headers"] = _render_request_rows(draft["headers"], "header", tab_id)
+    with payload_tab:
+        body_mode_key = f"body_mode_{tab_id}"
+        if body_mode_key not in st.session_state:
+            st.session_state[body_mode_key] = "raw" if draft["include_body"] else "none"
+        body_mode = st.radio(
+            "Body type", ["none", "raw"], horizontal=True,
+            key=body_mode_key, label_visibility="collapsed",
+        )
+        draft["include_body"] = body_mode == "raw"
+        if body_mode == "none":
+            st.caption("This request does not include a body.")
+        else:
+            payload_title_col, beautify_col = st.columns([5, 1], vertical_alignment="bottom")
+            with payload_title_col:
+                st.markdown("**Body**")
+            with beautify_col:
+                if st.button("Beautify", key=f"beautify_request_{tab_id}", icon=":material/auto_awesome:", help="Format JSON body"):
+                    payload = st.session_state.get(f"body_{tab_id}", draft["body"])
+                    try:
+                        draft["body"] = json.dumps(json.loads(payload), indent=2, ensure_ascii=False)
+                        st.session_state[f"body_{tab_id}"] = draft["body"]
+                    except (json.JSONDecodeError, TypeError):
+                        st.info("Body is not valid JSON, so it was left unchanged.")
+            draft["body"] = st.text_area("Body", height=220, key=f"body_{tab_id}", placeholder='{"key": "value"}', label_visibility="collapsed")
+
+    if save_clicked and selected_collection:
+        try:
+            _save_request_draft(draft, selected_collection, project_id)
+            _refresh_project_preserving_drafts(project_id)
+            st.success("Request saved to collection.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not save request: {exc}")
+    if send_clicked:
+        try:
+            if not draft["url"].startswith(("http://", "https://")):
+                raise ValueError("Enter an absolute http:// or https:// URL.")
+            url, query_rows = _normalise_request_url(draft["url"], draft["query_params"])
+            headers = _effective_rows(draft["headers"])
+            query_params = _effective_rows(query_rows)
+            body: str | dict | list | None = draft["body"] if draft["include_body"] and draft["body"] else None
+            content_type = next((value for key, value in headers.items() if key.lower() == "content-type"), "")
+            if isinstance(body, str) and body.strip() and content_type.lower().split(";")[0] == "application/json":
+                body = json.loads(body)
+            draft["response"] = api_post("/api/v1/http/send", {
+                "method": draft["method"], "url": url, "headers": headers,
+                "query_params": query_params, "body": body,
+            })
+            st.session_state[f"response_pretty_{tab_id}"] = False
+        except (ValueError, json.JSONDecodeError) as exc:
+            st.error(f"Request is invalid: {exc}")
+        except Exception as exc:
+            st.error(f"Request failed: {exc}")
+
+    response = draft.get("response")
+    if response:
+        st.divider()
+        st.subheader("Response")
+        status = response.get("status", 0)
+        state = "Success" if 200 <= status < 300 else "Redirect" if 300 <= status < 400 else "Error"
+        status_col, state_col, elapsed_col = st.columns([1, 1, 1])
+        status_col.metric("Status code", status)
+        state_col.metric("Status", state)
+        elapsed_col.metric("Time", f"{response.get('elapsed_ms', 0)} ms")
+        body_tab, response_headers_tab = st.tabs(["Response body", "Response headers"])
+        with body_tab:
+            response_body = response.get("body", "") or ""
+            pretty_key = f"response_pretty_{tab_id}"
+            if pretty_key not in st.session_state:
+                st.session_state[pretty_key] = False
+            language = "text"
+            if st.session_state[pretty_key]:
+                try:
+                    response_body = json.dumps(json.loads(response_body), indent=2, ensure_ascii=False)
+                    language = "json"
+                except (json.JSONDecodeError, TypeError):
+                    st.info("Response body is not valid JSON, so it cannot be formatted.")
+            response_title_col, response_format_col = st.columns([5.6, 1], vertical_alignment="bottom")
+            with response_title_col:
+                st.markdown("**Response body**")
+            with response_format_col:
+                st.button(
+                    "Raw" if st.session_state[pretty_key] else "Beautify",
+                    key=f"beautify_response_{tab_id}",
+                    icon=":material/format_align_left:",
+                    help="Toggle formatted JSON and raw response",
+                    on_click=_toggle_session_state,
+                    args=(pretty_key,),
+                )
+            st.code(response_body or "(empty response body)", language=language)
+        with response_headers_tab:
+            st.json(response.get("headers", {}))
+
+
+def render_api_workspace() -> None:
+    """Render saved project collections, generation selection, and request tabs."""
+    st.markdown(REQUEST_TAB_CSS, unsafe_allow_html=True)
+    st.markdown(
+        """<style>
+        input[aria-label="URL"], textarea[aria-label="Body"] {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        div[data-baseweb="tab-list"] { gap: 0.35rem; }
+        div[data-baseweb="tab"] { padding: 0.45rem 0.9rem; font-size: 0.92rem; }
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { font-weight: 650; }
+        div[data-testid="stDataEditor"] { border-radius: 0.5rem; }
+        </style>""",
+        unsafe_allow_html=True,
+    )
+    st.header("API Workspace")
+    st.caption("Build requests, run quick checks, and save reusable requests in project collections.")
+    project = st.session_state.get("current_project") or {}
+    project_id = project.get("id")
+    if not project_id:
+        st.warning("Select or create a project to manage request collections.")
+        return
+
+    left, editor = st.columns([1.15, 3.7], gap="large")
+    with left:
+        st.subheader("Collections")
+        with st.form("create_request_collection", clear_on_submit=True):
+            collection_name = st.text_input("New collection name", placeholder="e.g. Authentication")
+            create_collection_clicked = st.form_submit_button("Create collection", type="primary")
+        if create_collection_clicked:
+            if not collection_name.strip():
+                st.error("Enter a collection name.")
+            else:
+                try:
+                    created = api_post(f"/api/v1/projects/{project_id}/collections", {"name": collection_name.strip()})
+                    _refresh_project_preserving_drafts(project_id)
+                    st.session_state["selected_collection_id"] = created["id"]
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create collection: {exc}")
+
+        collections = project.get("collections", [])
+        collection_by_id = {item["id"]: item for item in collections}
+        if collections:
+            selected_id = st.selectbox(
+                "Collection", list(collection_by_id),
+                index=list(collection_by_id).index(st.session_state["selected_collection_id"])
+                if st.session_state.get("selected_collection_id") in collection_by_id else 0,
+                format_func=lambda collection_id: collection_by_id[collection_id]["name"],
+                key=f"workspace_collection_select_{project_id}",
+            )
+            st.session_state["selected_collection_id"] = selected_id
+            selected_collection = collection_by_id[selected_id]
+            with st.expander("Collection actions", expanded=False):
+                rename_value = st.text_input("Rename collection", value=selected_collection["name"], key=f"rename_collection_{selected_id}")
+                rename_col, delete_col = st.columns(2)
+                with rename_col:
+                    if st.button("Rename", key=f"rename_collection_button_{selected_id}"):
+                        try:
+                            api_put(f"/api/v1/projects/{project_id}/collections/{selected_id}", {"name": rename_value})
+                            _refresh_project_preserving_drafts(project_id)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not rename collection: {exc}")
+                with delete_col:
+                    if st.button("Delete", key=f"delete_collection_{selected_id}"):
+                        api_delete(f"/api/v1/projects/{project_id}/collections/{selected_id}")
+                        _refresh_project_preserving_drafts(project_id)
+                        st.session_state["selected_collection_id"] = None
+                        st.rerun()
+            export_payload = api_get(f"/api/v1/projects/{project_id}/collections/{selected_id}/export")
+            st.download_button(
+                "Export Postman collection",
+                data=json.dumps(export_payload, ensure_ascii=False, indent=2),
+                file_name=f"{selected_collection['name']}.postman_collection.json",
+                mime="application/json",
+                key=f"export_collection_{selected_id}",
+                use_container_width=True,
+            )
+        else:
+            selected_id = None
+            st.info("Create a collection to save requests.")
+
+        st.divider()
+        st.subheader("Requests for generation")
+        st.caption("Select saved requests eligible for test generation. This setting does not change which rows are sent in a quick request.")
+        requests_by_id = {item["id"]: item for item in project.get("endpoints", [])}
+        selected_generation = [
+            request_id for request_id in st.session_state.get("generation_order_ids", [])
+            if request_id in requests_by_id and requests_by_id[request_id].get("include_for_generation", requests_by_id[request_id].get("include", False))
+        ]
+        for saved in project.get("endpoints", []):
+            request_id = saved["id"]
+            eligible = bool(saved.get("include_for_generation", saved.get("include", False)))
+            label = f"{saved.get('method', 'GET')} · {saved.get('name') or 'Untitled Request'}"
+            selected = st.checkbox(
+                f"{label}",
+                value=eligible,
+                key=f"eligible_{request_id}",
+            )
+            if selected != eligible:
+                api_put(
+                    f"/api/v1/projects/{project_id}/collections/{saved['collection_id']}/requests/{request_id}",
+                    {"include_for_generation": selected, "include": selected},
+                )
+                order = st.session_state.get("generation_order_ids", [])
+                if selected and request_id not in order:
+                    order.append(request_id)
+                if not selected:
+                    order = [item for item in order if item != request_id]
+                st.session_state["generation_order_ids"] = order
+                _refresh_project_preserving_drafts(project_id)
+                st.rerun()
+
+        selected_generation = [
+            request_id for request_id in st.session_state.get("generation_order_ids", [])
+            if request_id in requests_by_id
+            and requests_by_id[request_id].get("include_for_generation", requests_by_id[request_id].get("include", False))
+        ]
+        if selected_generation and sort_items:
+            st.caption("Drag requests to set their flow order.")
+            labels_by_id = {}
+            ids_by_label = {}
+            for request_id in selected_generation:
+                saved = requests_by_id[request_id]
+                base_label = f"{saved.get('method', 'GET').upper()} · {saved.get('name') or 'Untitled Request'}"
+                label = base_label
+                prefix_length = 4
+                while label in ids_by_label:
+                    label = f"{base_label} · {request_id[:prefix_length]}"
+                    prefix_length += 2
+                labels_by_id[request_id] = label
+                ids_by_label[label] = request_id
+
+            drag_style = """
+            .sortable-component { background: transparent; border: 0; padding: 0; }
+            .sortable-container { background: transparent; }
+            .sortable-item {
+                background: rgba(128,128,128,.10);
+                color: inherit;
+                border: 1px solid rgba(128,128,128,.25);
+                border-radius: 8px;
+                margin: 4px 0;
+                cursor: grab;
+            }
+            .sortable-item:hover { border-color: #ff6c37; }
+            """
+            selection_hash = hashlib.sha1(
+                ",".join(sorted(selected_generation)).encode("utf-8")
+            ).hexdigest()[:10]
+            sorted_labels = sort_items(
+                [labels_by_id[request_id] for request_id in selected_generation],
+                direction="vertical",
+                custom_style=drag_style,
+                key=f"generation-order-{project_id}-{selection_hash}",
+            )
+            if sorted_labels and set(sorted_labels) == set(ids_by_label):
+                sorted_ids = [ids_by_label[label] for label in sorted_labels]
+                if sorted_ids != selected_generation:
+                    st.session_state["generation_order_ids"] = sorted_ids
+        elif selected_generation:
+            st.warning("Drag-and-drop ordering is unavailable. Install frontend requirements to enable it.")
+
+        if not project.get("endpoints"):
+            st.caption("Save requests to a collection, then choose which ones test generation can use.")
+
+        st.divider()
+        st.subheader("Saved requests")
+        for collection in collections:
+            with st.expander(f"{collection['name']} · {len(collection.get('requests', []))}", expanded=collection["id"] == selected_id):
+                for saved in collection.get("requests", []):
+                    cols = st.columns([3, 1, 1])
+                    with cols[0]:
+                        st.caption(f"{saved.get('method', 'GET')}  {saved.get('name') or 'Untitled'}")
+                    with cols[1]:
+                        if st.button(
+                            " ", icon=":material/open_in_new:", help="Open in request playground",
+                            key=f"open_saved_{saved['id']}",
+                        ):
+                            existing = next((draft for draft in st.session_state["request_drafts"] if draft.get("id") == saved["id"]), None)
+                            if not existing:
+                                existing = _new_request_draft(saved)
+                                st.session_state["request_drafts"].append(existing)
+                            st.session_state["active_request_tab_id"] = existing["tab_id"]
+                            st.rerun()
+                    with cols[2]:
+                        if st.button(
+                            " ", icon=":material/delete:", help="Delete saved request",
+                            key=f"delete_saved_{saved['id']}",
+                        ):
+                            api_delete(f"/api/v1/projects/{project_id}/collections/{collection['id']}/requests/{saved['id']}")
+                            st.session_state["generation_order_ids"] = [item for item in st.session_state["generation_order_ids"] if item != saved["id"]]
+                            _refresh_project_preserving_drafts(project_id)
+                            st.rerun()
+
+    with editor:
+        drafts = st.session_state["request_drafts"]
+        if not drafts:
+            st.info("Start by creating a request, or open one from Saved requests.")
+            if st.button("New Request", type="primary", key="new_request_tab_empty"):
+                draft = _new_request_draft()
+                draft["collection_id"] = selected_id
+                st.session_state["request_drafts"].append(draft)
+                st.session_state["active_request_tab_id"] = draft["tab_id"]
+                st.rerun()
+        else:
+            active_id = st.session_state.get("active_request_tab_id")
+            if active_id not in {draft["tab_id"] for draft in drafts}:
+                active_id = drafts[0]["tab_id"]
+                st.session_state["active_request_tab_id"] = active_id
+
+            with st.container(horizontal=True, key="request-tabbar", wrap=False):
+                for index, draft in enumerate(drafts):
+                    request_name = draft.get("name") or "New Request"
+                    method_label = draft.get("method", "GET").upper()
+                    full_label = f"{method_label} {request_name}"
+                    tab_label = request_name if len(request_name) <= 22 else f"{request_name[:19]}…"
+                    method_color = METHOD_COLORS.get(method_label, "gray")
+                    is_active = draft["tab_id"] == active_id
+                    with st.container(
+                        horizontal=True,
+                        key=f"request-tab-{'on' if is_active else 'off'}-{draft['tab_id']}",
+                    ):
+                        if st.button(
+                            f":{method_color}[**{method_label}**]  {tab_label}",
+                            key=f"select_request_tab_{draft['tab_id']}",
+                            type="tertiary",
+                            help=f"Switch to {full_label}",
+                            width="stretch",
+                        ):
+                            st.session_state["active_request_tab_id"] = draft["tab_id"]
+                            st.rerun()
+                        with st.container(key=f"request-close-{draft['tab_id']}"):
+                            if st.button(
+                                "×", key=f"close_request_tab_{draft['tab_id']}",
+                                type="tertiary", help="Close request",
+                            ):
+                                st.session_state["request_drafts"] = [
+                                    item for item in drafts if item["tab_id"] != draft["tab_id"]
+                                ]
+                                if is_active:
+                                    remaining = st.session_state["request_drafts"]
+                                    previous_index = max(index - 1, 0)
+                                    st.session_state["active_request_tab_id"] = (
+                                        remaining[previous_index]["tab_id"] if remaining else None
+                                    )
+                                st.rerun()
+                with st.container(key="request-add"):
+                    if st.button("+", key="new_request_tab_plus", type="tertiary", help="Add request"):
+                        draft = _new_request_draft()
+                        draft["collection_id"] = selected_id
+                        st.session_state["request_drafts"].append(draft)
+                        st.session_state["active_request_tab_id"] = draft["tab_id"]
+                        st.rerun()
+
+            active_draft = next(draft for draft in drafts if draft["tab_id"] == active_id)
+            st.caption("Request tabs are temporary drafts. Save a request to keep it in a collection.")
+            _render_request_draft(active_draft, collections, project_id)
+
+
 def main() -> None:
     """Main Streamlit application entry point."""
     st.set_page_config(
@@ -672,6 +1415,7 @@ def main() -> None:
                 api_delete(f"/api/v1/projects/{selected_pid}")
                 st.session_state["current_project"] = None
                 st.session_state["endpoints"] = []
+                st.session_state["request_drafts"] = []
                 st.session_state["test_cases"] = []
                 st.session_state["executions"] = {}
                 refresh_project_list()
@@ -680,11 +1424,9 @@ def main() -> None:
         current_project = st.session_state.get("current_project")
         if current_project:
             st.divider()
-            st.caption(f"Endpoints: {len(current_project.get('endpoints', []))}")
+            st.caption(f"Collections: {len(current_project.get('collections', []))}")
+            st.caption(f"Saved requests: {len(current_project.get('endpoints', []))}")
             st.caption(f"Test Cases: {len(current_project.get('test_cases', []))}")
-
-            if st.button("Save Endpoints to Project", type="secondary"):
-                st.session_state["_save_endpoints_requested"] = True
 
             if st.button("Fetch Last Test Cases", type="secondary"):
                 tcs = api_get(f"/api/v1/projects/{current_project['id']}/test-cases")
@@ -693,121 +1435,33 @@ def main() -> None:
                 st.success(f"Fetched {len(tcs)} test case(s)")
                 st.rerun()
 
-    tab1, tab2 = st.tabs(["1. Endpoints", "2. Test Cases"])
+    workspace_tab, test_tab = st.tabs(["API Workspace", "Test Cases"])
 
-    # Tab 1: Endpoints
-    with tab1:
-        st.header("Endpoints")
-        st.caption("Parse cURL commands and edit request components. Supports multiple endpoints with include/exclude, reordering, and naming.")
+    with workspace_tab:
+        render_api_workspace()
 
-        # Add new endpoint from cURL
-        st.subheader("Add Endpoint from cURL")
-        curl_input = st.text_area(
-            "Paste cURL command",
-            height=120,
-            key="new_curl_input",
-            placeholder="curl -X POST https://api.example.com/users -H 'Content-Type: application/json' -d '{\"name\":\"test\"}'",
-        )
-        col_add, col_clear = st.columns([1, 1])
-        with col_add:
-            if st.button("Parse and Add Endpoint", type="primary"):
-                if not curl_input.strip():
-                    st.error("Please enter a cURL command.")
-                else:
-                    with st.spinner("Parsing cURL..."):
-                        try:
-                            result = api_post("/api/v1/curl/parse", {"curl": curl_input})
-                            endpoint = {
-                                "id": str(uuid.uuid4()),
-                                "name": "",
-                                "include": True,
-                                "method": result.get("method", "GET"),
-                                "url": result.get("url", ""),
-                                "headers": result.get("headers", {}),
-                                "query_params": {},
-                                "path_params": {},
-                                "body": result.get("body"),
-                            }
-                            st.session_state["endpoints"].append(endpoint)
-                            st.success("Endpoint added from cURL.")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Failed to parse cURL: {exc}")
-        with col_clear:
-            if st.button("Clear All Endpoints"):
-                st.session_state["endpoints"] = []
-                st.session_state["test_cases"] = []
-                st.session_state["executions"] = {}
-                st.session_state["parsed_curl"] = None
-                current_project = st.session_state.get("current_project") or {}
-                if current_project:
-                    api_put(
-                        f"/api/v1/projects/{current_project['id']}/endpoints",
-                        {"endpoints": []},
-                    )
-                    api_delete(f"/api/v1/projects/{current_project['id']}/test-cases")
-                st.rerun()
+    current_project = st.session_state.get("current_project") or {}
+    all_saved_requests = current_project.get("endpoints", [])
+    generation_eligible = [
+        item for item in all_saved_requests
+        if item.get("include_for_generation", item.get("include", False))
+    ]
+    generation_by_id = {item["id"]: item for item in generation_eligible}
+    ordered_ids = [
+        item for item in st.session_state.get("generation_order_ids", [])
+        if item in generation_by_id
+    ]
+    ordered_ids.extend(item["id"] for item in generation_eligible if item["id"] not in ordered_ids)
+    st.session_state["generation_order_ids"] = ordered_ids
+    st.session_state["endpoints"] = [generation_by_id[item] for item in ordered_ids]
+    st.session_state["parsed_curl"] = st.session_state["endpoints"][0] if st.session_state["endpoints"] else None
 
-        # Display and edit existing endpoints
-        if st.session_state["endpoints"]:
-            st.divider()
-            st.subheader("Configured Endpoints")
-
-            included_count = sum(1 for ep in st.session_state["endpoints"] if ep.get("include", True))
-            total_count = len(st.session_state["endpoints"])
-            st.info(f"{included_count} of {total_count} endpoint(s) included for test generation")
-
-            updated_endpoints = []
-            for i, ep in enumerate(st.session_state["endpoints"]):
-                edited = render_endpoint_card(ep, i)
-                updated_endpoints.append(edited)
-
-            st.session_state["endpoints"] = updated_endpoints
-
-            if st.session_state.pop("_save_endpoints_requested", False):
-                current_project = st.session_state.get("current_project") or {}
-                if current_project:
-                    result = api_put(
-                        f"/api/v1/projects/{current_project['id']}/endpoints",
-                        {"endpoints": updated_endpoints},
-                    )
-                    st.success(result.get("message", "Endpoints saved"))
-                    load_project(current_project["id"])
-                    st.rerun()
-
-            # Select endpoint for test case generation
-            included_endpoints = [ep for ep in st.session_state["endpoints"] if ep.get("include", True)]
-
-            if included_endpoints:
-                st.subheader("Select Endpoint for Test Cases")
-                endpoint_options = {
-                    f"#{i+1} - {ep.get('name', '')} ({ep.get('method', 'GET')}) {ep.get('url', '')[:60]}": ep.get("id")
-                    for i, ep in enumerate(included_endpoints)
-                }
-                selected_label = st.selectbox(
-                    "Select endpoint",
-                    options=list(endpoint_options.keys()),
-                    key="selected_endpoint",
-                )
-                selected_id = endpoint_options[selected_label]
-                selected_endpoint = next(
-                    (ep for ep in included_endpoints if ep.get("id") == selected_id),
-                    None,
-                )
-
-                if selected_endpoint:
-                    st.session_state["parsed_curl"] = selected_endpoint
-                    with st.expander("Selected Endpoint Preview", expanded=False):
-                        st.json(selected_endpoint)
-            else:
-                st.warning("No endpoints are included. Check the 'Include' checkbox on at least one endpoint.")
-
-    # Tab 2: Test Cases (generate + execute merged)
-    with tab2:
+    # Test Cases (existing generation, assertion editing, and execution flow)
+    with test_tab:
         st.header("Test Cases")
 
         if "parsed_curl" not in st.session_state or not st.session_state["parsed_curl"]:
-            st.warning("Please add and select an endpoint in tab 1 first.")
+            st.warning("Save a request in API Workspace and enable it for test generation first.")
         else:
             selected_endpoint = st.session_state["parsed_curl"]
             st.caption(
@@ -825,7 +1479,7 @@ def main() -> None:
             business_req = st.text_area("Business Requirements (optional)", height=100)
 
             # Endpoint selection for generation (both modes support multiple)
-            included_endpoints = [ep for ep in st.session_state["endpoints"] if ep.get("include", True)]
+            included_endpoints = st.session_state["endpoints"]
 
             single_endpoints = []
             if gen_mode == "Single Endpoint":
@@ -839,7 +1493,7 @@ def main() -> None:
                         ):
                             single_endpoints.append(ep)
                 else:
-                    st.warning("No included endpoints. Check the 'Include' checkbox on at least one endpoint.")
+                    st.warning("No saved requests are enabled for generation. Select requests in API Workspace.")
 
             # Flow endpoint selection (if flow mode)
             flow_endpoints = []
@@ -854,7 +1508,7 @@ def main() -> None:
                         ):
                             flow_endpoints.append(ep)
                 else:
-                    st.warning("No included endpoints for flow.")
+                    st.warning("No saved requests are enabled for flow generation. Select requests in API Workspace.")
 
             col_gen, col_clear = st.columns([1, 1])
             with col_gen:
@@ -899,6 +1553,8 @@ def main() -> None:
                                 st.session_state["test_cases"] = result
                                 st.session_state["executions"] = {}
                                 st.success(f"Generated {len(result)} test case(s).")
+                            elif result == []:
+                                st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
                         except Exception as exc:
                             st.error(f"Failed to generate test cases: {exc}")
 
@@ -948,7 +1604,6 @@ def main() -> None:
                             load_project(current_project["id"])
                         except Exception as exc:
                             st.error(f"Failed to save: {exc}")
-
 
 if __name__ == "__main__":
     main()

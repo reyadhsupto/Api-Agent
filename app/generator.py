@@ -15,6 +15,14 @@ import json
 import requests
 
 
+def _output_token_limit() -> int:
+    """Read a shared configurable generation ceiling for supported providers."""
+    try:
+        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 16000)
+    except ValueError:
+        return 6000
+
+
 def generate_test_cases(parsed_curl: dict, business_requirements: str | None = None) -> list:
     """
     Generate test cases using free-tier LLM providers with fallback.
@@ -201,6 +209,7 @@ def _groq_call(prompt: str, api_key: str, url: str) -> str:
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
+        "max_tokens": _output_token_limit(),
     }
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     response.raise_for_status()
@@ -228,6 +237,7 @@ def _openrouter_call(prompt: str, api_key: str, url: str) -> str:
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
+        "max_tokens": _output_token_limit(),
     }
     response = requests.post(url, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
@@ -248,7 +258,7 @@ def _cohere_call(prompt: str, api_key: str, url: str) -> str:
         str: Generated completion text.
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": "command-r", "prompt": prompt, "temperature": 0.3}
+    payload = {"model": "command-r", "prompt": prompt, "temperature": 0.3, "max_tokens": _output_token_limit()}
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     response.raise_for_status()
     return response.json()["text"]
@@ -267,13 +277,17 @@ def _huggingface_call(prompt: str, api_key: str, url: str) -> str:
         str: Generated completion text.
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 2000, "temperature": 0.3}}
+    payload = {"inputs": prompt, "parameters": {"max_new_tokens": _output_token_limit(), "temperature": 0.3}}
     response = requests.post(url, headers=headers, json=payload, timeout=30)
     response.raise_for_status()
     return response.json()[0]["generated_text"]
 
 
-def generate_flow_test_cases(endpoints: list, business_requirements: str | None = None) -> list:
+def generate_flow_test_cases(
+    endpoints: list,
+    business_requirements: str | None = None,
+    scenario_count: int | None = None,
+) -> list:
     """
     Generate flow test cases for a sequence of endpoints.
 
@@ -283,6 +297,7 @@ def generate_flow_test_cases(endpoints: list, business_requirements: str | None 
     Args:
         endpoints (list): Ordered list of endpoint dicts.
         business_requirements (str | None): Optional business logic text.
+        scenario_count (int | None): Deprecated compatibility argument; ignored.
 
     Returns:
         list: Generated flow test case dictionaries.
@@ -292,13 +307,18 @@ def generate_flow_test_cases(endpoints: list, business_requirements: str | None 
     return _parse_generated_response(generated_text)
 
 
-def _build_flow_prompt(endpoints: list, business_requirements: str | None) -> str:
+def _build_flow_prompt(
+    endpoints: list,
+    business_requirements: str | None,
+    scenario_count: int | None = None,
+) -> str:
     """
     Build the LLM prompt for flow test case generation.
 
     Args:
         endpoints (list): Ordered list of endpoint dicts.
         business_requirements (str | None): Optional business logic text.
+        scenario_count (int | None): Deprecated compatibility argument; ignored.
 
     Returns:
         str: The prompt string.
@@ -318,7 +338,8 @@ def _build_flow_prompt(endpoints: list, business_requirements: str | None) -> st
         "You are a Senior API test engineer(SQA). Generate COMPREHENSIVE flow test scenarios "
         "for the following API sequence where each step may depend on the previous step's "
         "response data.\n"
-        "Generate MULTIPLE flow scenarios (3-5) covering:\n"
+        "Generate as many useful, distinct flow scenarios as you can while staying within your output limit. "
+        "Prioritize complete, valid scenarios over an incomplete final scenario. Cover these flow types when relevant:\n"
         "1. Positive flow: all steps succeed in sequence\n"
         "2. Negative flow: one step fails, verify error handling\n"
         "3. Edge flow: boundary/null values propagated between steps\n"
@@ -392,180 +413,7 @@ def _parse_generated_response(text: str) -> list:
     except json.JSONDecodeError:
         pass
 
-    # Fallback: try to parse individual test case objects from the array
-    # Find objects that start with { and contain "type" key
-    try:
-        # Use a more robust approach: find balanced-brace objects
-        objects = _extract_json_objects(text)
-        if objects:
-            parsed = []
-            for obj_str in objects:
-                try:
-                    # Preprocess each object too
-                    obj_str = re.sub(
-                        r'"([^"]+)"\.repeat\((\d+)\)', _replace_repeat, obj_str
-                    )
-                    obj = json.loads(obj_str)
-                    if isinstance(obj, dict) and "type" in obj:
-                        parsed.append(obj)
-                except json.JSONDecodeError:
-                    continue
-            if parsed:
-                return _validate_generated_cases(parsed)
-    except Exception:
-        pass
-
-    raise ValueError("LLM response could not be parsed as a valid test-case JSON array.")
-
-
-def _extract_json_objects(text: str) -> list:
-    """
-    Extract balanced-brace JSON objects from text.
-
-    Handles nested objects (e.g. request inside test case) by tracking
-    brace depth rather than using a naive regex.
-
-    Args:
-        text (str): Text containing JSON objects.
-
-    Returns:
-        list: List of JSON object strings found.
-    """
-    objects = []
-    depth = 0
-    start = -1
-    in_string = False
-    escape = False
-
-    for i, ch in enumerate(text):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_string:
-            escape = True
-            continue
-        if ch == '"' and not escape:
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                objects.append(text[start : i + 1])
-                start = -1
-
-    return objects
-def _parse_generated_response(text: str) -> list:
-    """
-    Parse the LLM response into a list of test case dicts.
-
-    Handles common non-JSON patterns LLMs produce (e.g. JavaScript .repeat(),
-    template literals) by preprocessing before json.loads.
-
-    Args:
-        text (str): Raw LLM output (expected JSON array).
-
-    Returns:
-        list: List of test case dictionaries.
-    """
-    # Remove markdown code fences if present
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
-        cleaned = re.sub(r"\n```$", "", cleaned)
-
-    # Extract JSON array from response
-    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if match:
-        text = match.group(0)
-
-    # Preprocess: replace JavaScript .repeat(N) patterns with actual strings
-    # e.g. "a".repeat(300) -> "aaa...a" (300 a's)
-    def _replace_repeat(match):
-        char = match.group(1).strip('"').strip("'")
-        count = int(match.group(2))
-        return '"' + char * min(count, 10000) + '"'
-
-    text = re.sub(r'"([^"]+)"\.repeat\((\d+)\)', _replace_repeat, text)
-    text = re.sub(r"'([^']+)'\.repeat\((\d+)\)", _replace_repeat, text)
-
-    # Try direct JSON parse
-    try:
-        result = json.loads(text)
-        if isinstance(result, list) and len(result) > 0:
-            return _validate_generated_cases(result)
-    except json.JSONDecodeError:
-        pass
-
-    # Fallback: try to parse individual test case objects from the array
-    # Find objects that start with { and contain "type" key
-    try:
-        # Use a more robust approach: find balanced-brace objects
-        objects = _extract_json_objects(text)
-        if objects:
-            parsed = []
-            for obj_str in objects:
-                try:
-                    # Preprocess each object too
-                    obj_str = re.sub(
-                        r'"([^"]+)"\.repeat\((\d+)\)', _replace_repeat, obj_str
-                    )
-                    obj = json.loads(obj_str)
-                    if isinstance(obj, dict) and "type" in obj:
-                        parsed.append(obj)
-                except json.JSONDecodeError:
-                    continue
-            if parsed:
-                return _validate_generated_cases(parsed)
-    except Exception:
-        pass
-
-    raise ValueError("LLM response could not be parsed as a valid test-case JSON array.")
-
-def _extract_json_objects(text: str) -> list:
-    """
-    Extract balanced-brace JSON objects from text.
-
-    Handles nested objects (e.g. request inside test case) by tracking
-    brace depth rather than using a naive regex.
-
-    Args:
-        text (str): Text containing JSON objects.
-
-    Returns:
-        list: List of JSON object strings found.
-    """
-    objects = []
-    depth = 0
-    start = -1
-    in_string = False
-    escape = False
-
-    for i, ch in enumerate(text):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_string:
-            escape = True
-            continue
-        if ch == '"' and not escape:
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                objects.append(text[start : i + 1])
-                start = -1
-
-    return objects
+    raise ValueError(
+        "LLM response is malformed or truncated; the complete JSON array could not be parsed. "
+        "Reduce endpoint or requirement complexity, or use a provider with a larger output limit."
+    )

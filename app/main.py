@@ -1,5 +1,5 @@
 """
-FastAPI application entry point with SQLite-backed project storage.
+FastAPI application entry point with PostgreSQL-backed project storage.
 
 Accepts:
     HTTP requests from the Streamlit frontend.
@@ -8,13 +8,19 @@ Returns:
     JSON responses for project, endpoint, test case, and execution management.
 """
 
+import json
+import time
 import uuid
+import requests
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas import (
     CurlParseRequest,
+    ApiRequest,
+    FlowGenerateRequest,
     TestCaseGenerateRequest,
 )
 from app.parser import parse_curl
@@ -30,7 +36,7 @@ def _generate_or_raise(generator, **kwargs) -> list:
     """Run an LLM generator and expose malformed output as a useful API error."""
     try:
         return generator(**kwargs)
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(
             status_code=502,
             detail=f"LLM returned invalid test-case data: {exc}",
@@ -43,6 +49,107 @@ def _get_current_project() -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="No project selected. Create or select a project first.")
     return project
+
+
+def _enabled_values(values) -> dict:
+    """Convert saved row-based values or legacy mappings into enabled key/value pairs."""
+    if isinstance(values, dict):
+        return values
+    if isinstance(values, list):
+        return {
+            str(row.get("key", "")): row.get("value", "")
+            for row in values
+            if isinstance(row, dict) and row.get("enabled", True) and row.get("key")
+        }
+    return {}
+
+
+def _effective_request(request_data: dict) -> dict:
+    """Strip UI-only state and prepare an API request for generation or execution."""
+    request = dict(request_data)
+    request["headers"] = _enabled_values(request.get("headers", {}))
+    request["query_params"] = _enabled_values(request.get("query_params", {}))
+    if request.get("include_body") is False:
+        request["body"] = None
+    for key in ("collection_id", "include_for_generation", "include_body"):
+        request.pop(key, None)
+    return request
+
+
+def _postman_rows(values) -> list[dict]:
+    """Convert saved header/query values to Postman rows with disabled state."""
+    if isinstance(values, dict):
+        return [{"key": key, "value": value, "enabled": True} for key, value in values.items()]
+    if isinstance(values, list):
+        return [row for row in values if isinstance(row, dict) and row.get("key")]
+    return []
+
+
+def _postman_collection(collection: dict) -> dict:
+    """Build a Postman Collection v2.1 payload from saved requests."""
+    items = []
+    for saved in collection.get("requests", []):
+        headers = _postman_rows(saved.get("headers", {}))
+        query = _postman_rows(saved.get("query_params", {}))
+        parts = urlsplit(saved.get("url", ""))
+        query.extend(
+            {"key": key, "value": value, "enabled": True}
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if not any(row.get("key") == key for row in query)
+        )
+        query_payload = [
+            {
+                "key": row["key"],
+                "value": str(row.get("value", "")),
+                "disabled": not row.get("enabled", True),
+                **({"description": row["description"]} if row.get("description") else {}),
+            }
+            for row in query
+        ]
+        raw_url = saved.get("url", "")
+        enabled_query = [row for row in query_payload if not row["disabled"]]
+        if query_payload:
+            raw_url = f"{parts.scheme}://{parts.netloc}{parts.path}"
+            if enabled_query:
+                raw_url += f"?{urlencode([(row['key'], row['value']) for row in enabled_query])}"
+        url_value = {
+            "raw": raw_url,
+            "protocol": parts.scheme,
+            "host": parts.hostname.split(".") if parts.hostname else [],
+            "path": [segment for segment in parts.path.split("/") if segment],
+            "query": query_payload,
+        }
+        if parts.port:
+            url_value["port"] = str(parts.port)
+        postman_request = {
+            "method": saved.get("method", "GET").upper(),
+            "header": [
+                {
+                    "key": row["key"],
+                    "value": str(row.get("value", "")),
+                    "disabled": not row.get("enabled", True),
+                    **({"description": row["description"]} if row.get("description") else {}),
+                }
+                for row in headers
+            ],
+            "url": url_value,
+        }
+        if saved.get("body") is not None:
+            body = saved["body"]
+            postman_request["body"] = {
+                "mode": "raw",
+                "raw": body if isinstance(body, str) else json.dumps(body, ensure_ascii=False),
+                "disabled": not saved.get("include_body", True),
+            }
+        items.append({"name": saved.get("name") or "Untitled Request", "request": postman_request, "response": []})
+    return {
+        "info": {
+            "_postman_id": collection["id"],
+            "name": collection["name"],
+            "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        },
+        "item": items,
+    }
 
 
 def _assign_test_case_ids(project_id: str, test_cases: list[dict]) -> None:
@@ -199,6 +306,123 @@ def parse_curl_endpoint(request: CurlParseRequest) -> dict:
     return parsed
 
 
+@app.get("/api/v1/projects/{project_id}/collections")
+def list_collections(project_id: str) -> list:
+    """List a project's saved request collections."""
+    if not database.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return database.list_collections(project_id)
+
+
+@app.post("/api/v1/projects/{project_id}/collections")
+def create_collection(project_id: str, request: dict) -> dict:
+    """Create a named request collection in a project."""
+    name = str(request.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Collection name is required")
+    if len(name) > 100:
+        raise HTTPException(status_code=422, detail="Collection name must be 100 characters or fewer")
+    collection = database.create_collection(project_id, name)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return collection
+
+
+@app.put("/api/v1/projects/{project_id}/collections/{collection_id}")
+def update_collection(project_id: str, collection_id: str, request: dict) -> dict:
+    """Rename a saved collection."""
+    name = str(request.get("name", "")).strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Collection name is required")
+    collection = database.update_collection(project_id, collection_id, {"name": name})
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return collection
+
+
+@app.delete("/api/v1/projects/{project_id}/collections/{collection_id}")
+def delete_collection(project_id: str, collection_id: str) -> dict:
+    """Delete a collection and its requests."""
+    if not database.delete_collection(project_id, collection_id):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return {"message": "Collection deleted"}
+
+
+@app.post("/api/v1/projects/{project_id}/collections/{collection_id}/requests")
+def save_collection_request(project_id: str, collection_id: str, request: dict) -> dict:
+    """Save or update a request in a collection."""
+    try:
+        saved = database.save_request(project_id, collection_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Project or collection not found")
+    return saved
+
+
+@app.put("/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}")
+def update_collection_request(project_id: str, collection_id: str, request_id: str, request: dict) -> dict:
+    """Update a saved request without changing its collection membership."""
+    collection = database.get_collection(project_id, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    saved = database.update_request(project_id, request_id, request)
+    if saved is None or saved.get("collection_id") != collection_id:
+        raise HTTPException(status_code=404, detail="Request not found")
+    return saved
+
+
+@app.delete("/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}")
+def delete_collection_request(project_id: str, collection_id: str, request_id: str) -> dict:
+    """Delete a saved request from its collection."""
+    collection = database.get_collection(project_id, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    request = next((item for item in collection["requests"] if item["id"] == request_id), None)
+    if not request or not database.delete_request(project_id, request_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+    return {"message": "Request deleted"}
+
+
+@app.get("/api/v1/projects/{project_id}/collections/{collection_id}/export")
+def export_collection(project_id: str, collection_id: str) -> dict:
+    """Export a saved collection in Postman Collection v2.1 format."""
+    collection = database.get_collection(project_id, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return _postman_collection(collection)
+
+
+@app.post("/api/v1/http/send")
+def send_api_request(request: ApiRequest) -> dict:
+    """Send one ad hoc HTTP request and return response details without persistence."""
+    if not request.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Enter an absolute http:// or https:// URL.")
+    method = request.method.upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        raise HTTPException(status_code=400, detail="Unsupported HTTP method.")
+    started = time.perf_counter()
+    try:
+        response = requests.request(
+            method,
+            request.url,
+            headers=request.headers,
+            params=request.query_params,
+            json=request.body if isinstance(request.body, (dict, list)) else None,
+            data=request.body if isinstance(request.body, str) else None,
+            timeout=request.timeout_seconds,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
+    return {
+        "status": response.status_code,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+        "headers": dict(response.headers),
+        "body": response.text,
+        "url": response.url,
+    }
+
+
 @app.post("/api/v1/projects/{project_id}/endpoints")
 def add_endpoint(project_id: str, request: dict) -> dict:
     """
@@ -235,8 +459,11 @@ def add_endpoint(project_id: str, request: dict) -> dict:
 def replace_endpoints(project_id: str, request: dict) -> dict:
     """Replace the project's endpoints with the supplied ordered collection."""
     endpoints = request.get("endpoints", [])
-    if not database.replace_endpoints(project_id, endpoints):
-        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        if not database.replace_endpoints(project_id, endpoints):
+            raise HTTPException(status_code=404, detail="Project not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"message": f"Saved {len(endpoints)} endpoint(s)", "endpoints": endpoints}
 
 
@@ -300,7 +527,7 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
     """
     test_cases = _generate_or_raise(
         generate_test_cases,
-        parsed_curl=request.parsed_curl,
+        parsed_curl=_effective_request(request.parsed_curl),
         business_requirements=request.business_requirements,
     )
     for tc in test_cases:
@@ -320,7 +547,7 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
 
 
 @app.post("/api/v1/test-cases/generate-flow")
-def generate_flow_test_cases_standalone(request: dict) -> list:
+def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
     """
     Generate flow test cases without a project (standalone mode).
 
@@ -330,9 +557,9 @@ def generate_flow_test_cases_standalone(request: dict) -> list:
     Returns:
         list: Generated flow test cases.
     """
-    endpoints = request.get("endpoints", [])
-    business_requirements = request.get("business_requirements")
-    project_id = request.get("project_id") or database.current_project_id()
+    endpoints = [_effective_request(item) for item in request.endpoints]
+    business_requirements = request.business_requirements
+    project_id = request.project_id or database.current_project_id()
 
     if not endpoints:
         raise HTTPException(status_code=400, detail="No endpoints provided")
@@ -359,7 +586,7 @@ def generate_flow_test_cases_standalone(request: dict) -> list:
 
 
 @app.post("/api/v1/projects/{project_id}/test-cases/generate-flow")
-def generate_flow_test_cases_project(project_id: str, request: dict) -> list:
+def generate_flow_test_cases_project(project_id: str, request: FlowGenerateRequest) -> list:
     """
     Generate flow test cases for a project (sequence of endpoints).
 
@@ -376,9 +603,9 @@ def generate_flow_test_cases_project(project_id: str, request: dict) -> list:
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    endpoint_ids = request.get("endpoint_ids", [])
-    endpoints_data = request.get("endpoints", [])
-    business_requirements = request.get("business_requirements")
+    endpoint_ids = request.endpoint_ids
+    endpoints_data = [_effective_request(item) for item in request.endpoints]
+    business_requirements = request.business_requirements
 
     # Use full endpoint data if provided, otherwise look up from project
     if endpoints_data:
@@ -389,7 +616,7 @@ def generate_flow_test_cases_project(project_id: str, request: dict) -> list:
         for eid in endpoint_ids:
             ep = next((e for e in endpoints if e["id"] == eid), None)
             if ep:
-                ordered.append(ep)
+                ordered.append(_effective_request(ep))
 
     if not ordered:
         raise HTTPException(status_code=400, detail="No valid endpoints found. Please add and save endpoints to the project first, or select at least one endpoint.")

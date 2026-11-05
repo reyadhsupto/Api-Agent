@@ -1,15 +1,33 @@
-"""Regression tests for SQLite project persistence and API integration."""
+"""Regression tests for PostgreSQL project persistence and API integration."""
 
+import os
+import uuid
+
+import pytest
 from app import main
 from app.schemas import TestCaseGenerateRequest as GenerateRequest
 from app.storage import Database
 
 
-def test_sqlite_data_survives_reopen_and_project_delete_cascades(tmp_path):
+@pytest.fixture
+def database():
+    """Use an explicitly configured test database and clean created projects."""
+    dsn = (
+        os.getenv("API_AGENT_TEST_DATABASE_URL")
+        or os.getenv("DATABASE_URL")
+        or main.database.dsn
+    )
+    db = Database(dsn)
+    before_ids = {project["id"] for project in db.list_projects()}
+    yield db
+    for project in db.list_projects():
+        if project["id"] not in before_ids and not project.get("is_default"):
+            db.delete_project(project["id"])
+
+
+def test_postgres_data_survives_reopen_and_project_delete_cascades(database):
     """Projects, endpoints, cases, executions, and active selection persist."""
-    database_path = tmp_path / "api-agent.sqlite3"
-    database = Database(database_path)
-    project = database.create_project("Sample", "Persistent project")
+    project = database.create_project(f"Sample {uuid.uuid4()}", "Persistent project")
     project_id = project["id"]
     endpoint = database.add_endpoint(
         project_id,
@@ -24,9 +42,9 @@ def test_sqlite_data_survives_reopen_and_project_delete_cascades(tmp_path):
     database.append_execution(project_id, "flow-1", {"test_case_id": "flow-1", "status": "passed"})
     database.set_current_project(project_id)
 
-    reopened = Database(database_path)
+    reopened = Database(database.dsn)
     restored = reopened.get_project(project_id)
-    assert restored["name"] == "Sample"
+    assert restored["name"].startswith("Sample ")
     assert restored["endpoints"][0]["url"] == "https://example.test"
     assert restored["test_cases"][0]["steps"][0]["assertions"] == {"status": []}
     assert restored["executions"][0]["status"] == "passed"
@@ -38,9 +56,8 @@ def test_sqlite_data_survives_reopen_and_project_delete_cascades(tmp_path):
     assert any(item["is_default"] for item in reopened.list_projects())
 
 
-def test_database_upserts_endpoint_and_test_case_instead_of_duplicating(tmp_path):
+def test_database_upserts_endpoint_and_test_case_instead_of_duplicating(database):
     """Repeated project saves update records by ID and preserve collection counts."""
-    database = Database(tmp_path / "upsert.sqlite3")
     project_id = database.create_project("Upsert") ["id"]
 
     database.replace_endpoints(project_id, [{"id": "ep-1", "url": "/old"}])
@@ -56,9 +73,51 @@ def test_database_upserts_endpoint_and_test_case_instead_of_duplicating(tmp_path
     assert project["test_cases"][0]["name"] == "After"
 
 
-def test_generated_cases_are_persisted_to_selected_project(tmp_path, monkeypatch):
+def test_legacy_endpoint_migration_is_repeatable_and_preserves_payload(database):
+    """Legacy endpoint rows are assigned once without changing IDs, flags, or order."""
+    project_id = database.create_project("Legacy migration") ["id"]
+    legacy = {
+        "id": "legacy-request-1", "name": "Existing", "method": "POST",
+        "url": "https://example.test", "include": False, "headers": {"X-Key": "v"},
+        "order": 7,
+    }
+    with database.session() as connection:
+        connection.execute(
+            "INSERT INTO endpoints(id,project_id,collection_id,ordinal,payload_json) VALUES(%s,%s,NULL,%s,%s)",
+            (legacy["id"], project_id, 7, database._encode(legacy)),
+        )
+
+    database.migrate_legacy_endpoints()
+    database.migrate_legacy_endpoints()
+    project = database.get_project(project_id)
+
+    assert len(project["collections"]) == 1
+    assert project["collections"][0]["name"] == "Imported Endpoints"
+    migrated = project["endpoints"][0]
+    assert migrated["id"] == legacy["id"]
+    assert migrated["include_for_generation"] is False
+    assert migrated["headers"] == legacy["headers"]
+    assert migrated["order"] == 7
+
+
+def test_collection_request_crud_and_project_cascade(database):
+    """Saved requests remain ordered in collections and cascade with their project."""
+    project_id = database.create_project("Collection CRUD") ["id"]
+    collection = database.create_collection(project_id, "Auth")
+    saved = database.save_request(project_id, collection["id"], {
+        "name": "Login", "method": "POST", "url": "/login",
+        "include_for_generation": True,
+    })
+
+    assert saved["id"]
+    assert database.update_request(project_id, saved["id"], {"name": "Create session"})["name"] == "Create session"
+    assert database.get_collection(project_id, collection["id"])["requests"][0]["id"] == saved["id"]
+    assert database.delete_project(project_id)
+    assert database.get_collection(project_id, collection["id"]) is None
+
+
+def test_generated_cases_are_persisted_to_selected_project(database, monkeypatch):
     """The existing generation API stores results and avoids generated ID collisions."""
-    database = Database(tmp_path / "generation.sqlite3")
     project = database.create_project("Generated")
     monkeypatch.setattr(main, "database", database)
     monkeypatch.setattr(
@@ -85,9 +144,8 @@ def test_generated_cases_are_persisted_to_selected_project(tmp_path, monkeypatch
     assert len(saved) == 2
 
 
-def test_project_and_execution_routes_read_and_write_sqlite(tmp_path, monkeypatch):
-    """API CRUD operations and execution history use the SQLite repository."""
-    database = Database(tmp_path / "routes.sqlite3")
+def test_project_and_execution_routes_read_and_write_postgres(database, monkeypatch):
+    """API CRUD operations and execution history use the PostgreSQL repository."""
     monkeypatch.setattr(main, "database", database)
 
     project = main.create_project({"name": "Route Project", "description": "CRUD"})

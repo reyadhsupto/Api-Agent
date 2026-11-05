@@ -9,7 +9,7 @@
 | Frontend | Streamlit | Pure Python, single-process deployment, no Node.js |
 | LLM Providers | Groq, OpenRouter, Cohere, HuggingFace | Free tiers, multiple for fallback |
 | cURL Parsing | shlex + custom logic | No heavy dependency, easy to understand |
-| Persistence | Python sqlite3 | Local durable storage without an ORM dependency |
+| Persistence | PostgreSQL + psycopg | Durable storage for local and containerized app runs |
 | Testing | pytest | Unit tests |
 
 ## 2. Architecture
@@ -18,6 +18,7 @@ Streamlit UI (port 8501) <--> FastAPI Backend (port 8000) <--> Target API
                                                |
                                                v
                                         LLM Providers (fallback chain)
+PostgreSQL (port 5432) <--> FastAPI Backend
 ```
 
 ## 3. Module Responsibilities
@@ -25,15 +26,15 @@ Streamlit UI (port 8501) <--> FastAPI Backend (port 8000) <--> Target API
 ### app/main.py
 - FastAPI application instance and CORS middleware
 - API routes for projects, endpoints, generation, and execution
-- Delegates durable reads and writes to the SQLite repository
+- Delegates durable reads and writes to the PostgreSQL repository
 
 ### app/storage.py
-- SQLite schema initialization and data access
-- Projects, ordered endpoints, JSON test-case payloads, execution history, and active project state
+- PostgreSQL schema initialization and data access through psycopg
+- Projects, collections, saved requests, JSON test-case payloads, execution history, and active project state
 - Foreign-key cascades and transactional collection updates
 
 ### app/parser.py
-- parse_curl(curl_string) -> dict with method, url, headers, body
+- parse_curl(curl_string) -> dict with method, URL, headers, query parameters, and body
 
 ### app/generator.py
 - generate_test_cases(parsed_curl, business_requirements) -> list of dicts
@@ -47,13 +48,14 @@ Streamlit UI (port 8501) <--> FastAPI Backend (port 8000) <--> Target API
 - Minimal Pydantic models for request/response validation
 
 ### frontend/app.py
-- Streamlit app with 2 tabs + sidebar project management
-- Tab 1: Endpoints - Parse cURL, add/edit multiple endpoints with include/exclude checkbox, method, url, headers, query params, path params, body, name, reorder (Up/Down buttons), collapsible cards
-- Tab 2: Test Cases - generate (single or flow) and execute merged with per-test-case cards
-- Each test case card: visual separation, assertion editor (enable/disable checkbox, expected status, body assertion type: Body Contains or Exact Field JSONPath, expected value input), execute button, verbose request/response results
+- Streamlit app with API Workspace and Test Cases tabs plus collapsed-by-default project sidebar
+- API Workspace provides temporary request tabs, manual and cURL editing, quick sends, response display, and saved project collections
+- Saved requests can be selected and explicitly ordered for generation
+- Test Cases supports single and flow generation/execution with editable assertions
+- Each test case card: visual separation, repeatable status, body-contains, and JSONPath assertion editors, execute button, verbose request/response results
 - Calls FastAPI endpoints via python requests
 - Logs all API requests/responses to browser devtools console via st.iframe console.log
-- Endpoints stored as list in session state with reorder support
+- Collections and saved requests persist in PostgreSQL; request drafts and quick-send responses remain in session state
 - Flow scenario cards: consistent scenario cards containing ordered step cards with editable assertions, mappings, and per-step results
 - Sidebar starts collapsed and shows unique project labels even when names match
 
@@ -74,12 +76,12 @@ Prompt instructs LLM to generate as many test cases as possible (positive, negat
 
 ### POST /api/v1/test-cases/generate-flow
 Body: {"endpoints": [...], "business_requirements": "...", "project_id": "..."}
-Generates flow test cases for a sequence of endpoints. LLM creates flow scenarios covering:
+Generates as many complete flow scenarios as the model can return within the provider output limit. The legacy `scenario_count` field is accepted but ignored. Malformed or truncated output is returned as a clear generation error. The scenarios cover:
 - Full flow (all steps succeed in sequence)
 - Step failure (one step fails, subsequent steps handle it)
 - Data dependency (field mapping between steps using variable mappings)
 - Edge cases (null/empty values propagated between steps)
-- Race conditions (concurrent flow executions)
+- Race-oriented scenarios may be requested, but the current executor runs each scenario's steps sequentially and does not issue concurrent requests.
 Each flow scenario contains: id, type, name, description, steps (ordered list with endpoint_id, assertions, variable_mappings), is_flow flag.
 
 ### POST /api/v1/projects/{project_id}/test-cases/generate-flow
@@ -93,20 +95,34 @@ Executes a single test case or flow test case.
 - For flow test cases (is_flow: true): executes all steps sequentially, applying variable mappings from previous step responses to subsequent requests.
 Returns execution result with assertion detail including per-step results for flows.
 
-## 5. Multi-Endpoint Support
-Endpoints are stored as a list in Streamlit session state. Each endpoint has a unique ID and can be independently configured and selected for test case generation. This lays the groundwork for future flow/sequence mapping between endpoints.
+### POST /api/v1/http/send
+Accepts method, absolute URL, headers, query parameters, and optional body. Returns HTTP status, elapsed milliseconds, response headers, response body, and final URL. Ad hoc requests are not persisted.
+
+### Projects, collections, and saved requests
+- `POST/GET /api/v1/projects` and `GET/PUT/DELETE /api/v1/projects/{project_id}` manage projects.
+- `GET/POST /api/v1/projects/{project_id}/collections` and `PUT/DELETE /api/v1/projects/{project_id}/collections/{collection_id}` manage collections.
+- `POST /api/v1/projects/{project_id}/collections/{collection_id}/requests`, `PUT/DELETE .../requests/{request_id}` manage saved requests.
+- `GET /api/v1/projects/{project_id}/collections/{collection_id}/export` exports a Postman Collection v2.1 document.
+- Legacy `/api/v1/projects/{project_id}/endpoints` routes remain available over the Imported Endpoints collection.
+
+## 5. API Workspace and Collections
+The API Workspace combines request editing, quick sending, and saved request management. Each open tab is a temporary session draft with independent method, URL, query rows, header rows, payload, and response. Its request line groups Method, URL, cURL import, and Send; the editor uses Params, Headers, and Body tabs. Params and headers use editable key/value/description tables with per-row send toggles. cURL parsing fills the active editor; query values are moved out of the URL into query rows to avoid duplication. Body supports none/raw modes and JSON formatting. The response panel displays status, elapsed time, headers, and body, with a control to format valid JSON.
+
+Saved requests live in ordered, named collections scoped to a project. New requests default to excluded from generation. A separate per-request eligibility setting controls generation, and the selection panel supports drag-and-drop ordering for flow generation. Drafts cannot be selected until saved. Stable IDs distinguish collections and requests even when names match.
+
+Postman Collection v2.1 export includes methods, URLs, payloads, and disabled query/header rows. Import and environment management are out of scope. Legacy endpoint routes map to Imported Endpoints. Existing endpoint rows migrate once at startup, retaining IDs, request fields, enabled state, inclusion choice, and order.
 
 ## 6. Project Management
-Projects, endpoints, test cases, and execution history are stored in SQLite. Nested flow steps and assertion configuration remain JSON payloads so API response shapes stay compatible.
+Projects, collections, saved requests, test cases, and execution history are stored in PostgreSQL. Nested flow steps, assertions, and request fields remain JSON payloads so API shapes stay compatible.
 - Create project with name and description
 - Select existing project from sidebar
-- Delete project (cascades to endpoints and test cases)
-- Replace and save the current endpoint collection by stable endpoint ID
+- Delete project (cascades to collections, requests, and test data)
+- Create, rename, delete, and export collections; create, update, and delete saved requests
 - Fetch last generated test cases and assertions from project
 - Save or update test cases by stable test-case ID without creating duplicates
 - Delete a project and its dependent rows through foreign-key cascades
 
-The database defaults to `.data/api_agent.sqlite3` under the repository. Set `API_AGENT_DB_PATH` to override the location. A default project is created automatically and receives standalone generated tests. The selected project is persisted and restored after restart. Endpoint edits and assertion edits are persisted through the explicit save actions; generated cases and execution results are saved automatically.
+Set `DATABASE_URL` in `.env` for local app processes. Docker Compose connects the backend to the `postgres` service and persists data in the named `api_agent_pgdata` volume. A default project is created automatically and receives standalone generated tests. The selected project is persisted and restored after restart. Collection/request changes and assertion edits are saved explicitly; generated cases and execution results are saved automatically. Existing SQLite files are not migrated automatically.
 
 ## 7. Flow Test Cases
 Generate test cases for a sequence of endpoints. LLM creates flow test cases covering:
@@ -114,10 +130,10 @@ Generate test cases for a sequence of endpoints. LLM creates flow test cases cov
 - Step failure (one step fails)
 - Data dependency (field mapping between steps)
 - Edge cases (null/empty propagated)
-- Race conditions (concurrent flow executions)
+- Race-oriented scenarios may be requested, but the current executor runs each scenario's steps sequentially and does not issue concurrent requests.
 
 ### Flow Scenario Data Model
-Each flow scenario contains:
+The model determines the number of scenarios from the available output limit; the API does not impose a requested count. Each flow scenario contains:
 - **id**: unique string (e.g., "flow_1")
 - **name**: descriptive scenario name
 - **type**: positive | negative | edge | race
@@ -175,9 +191,13 @@ Before calling the chat completion API, the system calls `GET /v1/models` to lis
 Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a specific model. OpenRouter provides access to many free models from various providers.
 
 ## 9. Deployment
-- Run FastAPI on port 8000: uvicorn app.main:app --reload
-- Run Streamlit on port 8501: streamlit run frontend/app.py
+- Local: `make docker-db-up`, then `make run-local-backend` and `make run-local-frontend` in separate terminals
+- Docker: `make docker-up`, `make docker-logs`, and `make docker-down`
+- FastAPI local: `uvicorn app.main:app --reload` on port 8000
+- Streamlit local: `streamlit run frontend/app.py` on port 8501
 - Single user, local only, no auth
 - Frontend API timeout: 300 seconds (5 minutes) for LLM generation
-- Local database: `.data/api_agent.sqlite3` by default; `API_AGENT_DB_PATH` overrides the path
-- Clean caches: make clean-cache (keeps venv), make clean (removes venv + caches)
+- PostgreSQL URL: `DATABASE_URL` in `.env`; Compose volume: `api_agent_pgdata`
+- Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
+- Unsaved API Workspace requests and quick-send responses stay in Streamlit session state only
+- Clean caches: `make clean-cache` (keeps the virtual environment)
