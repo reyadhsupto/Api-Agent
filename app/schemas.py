@@ -19,6 +19,7 @@ class CurlParseRequest(BaseModel):
 class TestCaseGenerateRequest(BaseModel):
     parsed_curl: dict
     business_requirements: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class TestCase(BaseModel):
