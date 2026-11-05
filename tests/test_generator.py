@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.generator import _parse_generated_response
+from app.generator import _build_flow_prompt, _parse_generated_response
 
 
 def test_parser_rejects_malformed_flow_instead_of_returning_fallback():
@@ -34,3 +34,16 @@ def test_parser_rejects_non_sequential_step_order():
 
     with pytest.raises(ValueError, match="expected 1"):
         _parse_generated_response(response)
+
+
+def test_flow_prompt_uses_requested_scenario_count():
+    """The generated instructions use the caller's configurable scenario count."""
+    prompt = _build_flow_prompt([], None, scenario_count=12)
+
+    assert "Generate exactly 12 flow scenarios" in prompt
+
+
+def test_parser_rejects_truncated_response_instead_of_partial_cases():
+    """Incomplete JSON must produce an error instead of silently returning a subset."""
+    with pytest.raises(ValueError, match="malformed or truncated"):
+        _parse_generated_response('[{"id":"flow_1","type":"positive"}')

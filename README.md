@@ -7,12 +7,13 @@ AI assisted solution to generate and execute API test cases from cURL commands a
 - HTTP Client: python requests
 - Frontend: Streamlit
 - LLM: Multiple free-tier providers with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
-- Storage: SQLite database in `.data/api_agent.sqlite3`
+- Storage: PostgreSQL (local service or Docker Compose)
 
 ## Getting Started
 
 ### Prerequisites
 - Python 3.11+
+- Docker Desktop / Docker Compose (for PostgreSQL and container runs)
 - Free tier API keys for at least one of: Groq, OpenRouter, Cohere, HuggingFace
 
 ### Installation
@@ -23,9 +24,11 @@ cp .env.example .env
 # Edit .env and replace at least one placeholder API key
 ```
 
+`make setup` installs dependencies into `.venv`. In VS Code, the workspace selects `.venv/bin/python`; if Pylance still shows missing imports after setup, reload the Python language server or reselect that interpreter.
+
 ### Configure `.env`
 
-Open the `.env` file created above and replace the placeholder value for at least one LLM provider with your API key. The app tries configured providers in sequence, so you can add more than one key for fallback.
+Open `.env` and set at least one LLM provider API key. Set a local PostgreSQL URL and credentials as shown below. Compose overrides the database hostname for its backend service.
 
 ```dotenv
 GROQ_API_KEY=your_groq_api_key
@@ -33,63 +36,91 @@ OPENROUTER_API_KEY=your_openrouter_api_key
 OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 COHERE_API_KEY=your_cohere_api_key
 HUGGINGFACE_API_KEY=your_huggingface_api_key
+DATABASE_URL=postgresql://api_agent:change_this_local_password@localhost:5432/api_agent
+POSTGRES_DB=api_agent
+POSTGRES_USER=api_agent
+POSTGRES_PASSWORD=change_this_local_password
+API_AGENT_LLM_MAX_OUTPUT_TOKENS=6000
 ```
 
 You only need to configure the provider or providers you plan to use; leave other values blank or remove those lines. `OPENROUTER_MODEL` is optional. Save `.env` in the repository root, beside `.env.example`. It is excluded by `.gitignore`, so do not commit or share it because it contains secrets.
 
-### Running the Application
-```bash
-# Terminal 1 - Backend
-make run-backend
+### Run locally
 
-# Terminal 2 - Frontend
-make run-frontend
+Start the PostgreSQL container, then run the backend and frontend in separate terminals:
+
+```bash
+make docker-db-up
+# Terminal 1
+make run-local-backend
+
+# Terminal 2
+make run-local-frontend
 ```
 
-Open http://localhost:8501 in your browser.
+### Run the full stack in Docker
+
+```bash
+make docker-up
+make docker-logs
+make docker-down
+```
+
+The app is available at http://localhost:8501 and the backend at http://localhost:8000. Services bind to localhost. PostgreSQL data remains in the `api_agent_pgdata` Docker volume when services stop. `make docker-down` keeps that volume; `docker compose down -v` removes it.
+
+If a default port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONTEND_PORT` in `.env` to an available host port. When changing `POSTGRES_PORT` for a local app run, update the port in `DATABASE_URL` to match.
 
 ### Makefile Commands
 
 | Command | Description |
 |---------|-------------|
 | `make setup` | Create venv and install all dependencies |
-| `make run-backend` | Start FastAPI backend on port 8000 |
-| `make run-frontend` | Start Streamlit frontend on port 8501 |
+| `make run-local-backend` | Start FastAPI backend locally on port 8000 |
+| `make run-local-frontend` | Start Streamlit frontend locally on port 8501 |
+| `make docker-db-up` | Start only PostgreSQL for local application processes |
+| `make docker-up` | Build and start PostgreSQL, backend, and frontend |
+| `make docker-down` | Stop Compose services and preserve data volume |
+| `make docker-logs` | Follow service logs |
 | `make test` | Run unit tests |
 | `make clean-cache` | Clean cache files only (keeps venv) |
+
+Run `make docker-db-up` before `make test`; persistence tests use PostgreSQL.
 
 ## Project Structure
 ```
 app/
   main.py          # FastAPI app and API routes
-  storage.py       # SQLite persistence for projects and test data
+  storage.py       # PostgreSQL persistence for projects and test data
   parser.py        # cURL parsing
   generator.py     # LLM test case generation with fallback
   executor.py      # Test execution using python requests
   schemas.py       # Pydantic models
 frontend/
-  app.py           # Streamlit UI (2 tabs: Endpoints + Test Cases)
+  app.py           # Streamlit UI (API Workspace and Test Cases)
 tests/
   test_parser.py   # Unit tests for cURL parser
   test_executor.py # Assertion execution tests
   test_frontend.py # Frontend payload-shape tests
-  test_storage.py  # SQLite persistence and API tests
+  test_storage.py  # PostgreSQL persistence and API tests
 ```
 
 ## Features
 
 - **cURL Parsing**: Paste any cURL command to parse method, URL, headers, body
-- **Editable Request Components**: Modify method, URL, headers, query params, path params, body after parsing
-- **Multi-Endpoint Support**: Add multiple endpoints, toggle include/exclude for test generation
-- **AI Test Case Generation**: Generates 6+ test cases (positive, negative, edge, race) using free-tier LLMs
+- **Editable Request Components**: Modify method, URL, enabled query/header rows, and payload after parsing
+- **Unified API Workspace**: Temporary request tabs, manual composition, and cURL parsing
+- **Saved Collections**: Project-scoped request collections with ordered requests and Postman v2.1 export
+- **Generation Selection**: Choose saved requests and drag them into flow order
+- **AI Test Case Generation**: Generates endpoint cases and as many complete flow scenarios as the configured LLM provider can return
 - **Per-Test-Case Assertions**: Status, Body Contains, Exact Field (JSONPath) with individual enable/disable checkboxes
 - **Collapsible Test Case Cards**: Expand/retract each test case for better visibility
 - **Unified Test Case Cards**: Single tests and flow scenarios share a card layout; flow steps have editable assertions and per-step results
-- **Persistent Projects**: Projects, endpoints, test cases, and execution history are stored in SQLite
+- **Persistent Projects**: Projects, endpoints, test cases, and execution history are stored in PostgreSQL
 - **Compact Sidebar**: Sidebar starts collapsed and project names are shown with unique short IDs
 - **Verbose Execution Results**: Full request/response details, latency, assertion evaluation
 - **Console Logging**: API calls logged to browser DevTools via st.iframe
 - **5-Minute Timeout**: Frontend waits up to 5 minutes for LLM generation
+- **Quick API Checks**: Send temporary requests and inspect response status, time, headers, and body
 
 ## Project Rules
 See `agent_rules.md` for coding standards, documentation requirements, and UI/UX guidelines.
@@ -98,9 +129,15 @@ See `agent_rules.md` for coding standards, documentation requirements, and UI/UX
 - GET /health - Health check
 - POST /api/v1/curl/parse - Parse cURL command
 - POST /api/v1/test-cases/generate - Generate AI test cases (accepts assertions)
+- POST /api/v1/test-cases/generate-flow - Generate flow scenarios up to the provider output limit
 - POST /api/v1/test-cases/execute - Execute a test case with assertions
+- POST /api/v1/http/send - Send a temporary API Workspace request
 - GET /api/v1/memory/state - Get persisted project selection state
 
 ## Data Storage
 
-SQLite is provided by Python and requires no additional package. The application creates `.data/api_agent.sqlite3` on startup and creates a default project for standalone generation. The `.data/` directory is ignored by Git. Set `API_AGENT_DB_PATH` in the environment to store the database elsewhere.
+PostgreSQL is initialized automatically at backend startup. Local app processes use `DATABASE_URL` from `.env` (default host `localhost`); the Compose backend connects to the `postgres` service. Projects, collections, saved requests, test cases, and execution history persist in PostgreSQL. Existing endpoint records are migrated once into each project's **Imported Endpoints** collection, preserving IDs, request fields, enabled fields, order, and generation eligibility. Legacy endpoint routes continue to operate on that collection. There is no automatic migration of old SQLite data. Open request tabs and responses are unsaved session drafts.
+
+New requests are excluded from generation by default. Use the generation selection area to enable requests and order them for flow generation. Query/header row toggles and payload inclusion control what is sent; they are separate from generation eligibility. Export any collection as Postman Collection v2.1 JSON. Collection import and environment management are not included.
+
+Flow generation does not request a fixed scenario count. The model returns as many complete scenarios as it can within its provider output limit; `API_AGENT_LLM_MAX_OUTPUT_TOKENS` sets a shared ceiling for providers that support it. Malformed or truncated JSON is reported as an error rather than displayed as partial results.
