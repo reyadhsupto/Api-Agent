@@ -113,11 +113,12 @@ tests/
 - **Generation Selection**: Choose saved requests and drag them into flow order
 - **AI Test Case Generation**: Generates endpoint cases and as many complete flow scenarios as the configured LLM provider can return
 - **Per-Test-Case Assertions**: Status, Body Contains, Exact Field (JSONPath) with individual enable/disable checkboxes
+- **Execution Workspace**: Filter by pass/fail/error/not-run, select cases for batch runs, and track run progress
 - **Collapsible Test Case Cards**: Expand/retract each test case for better visibility
-- **Unified Test Case Cards**: Single tests and flow scenarios share a card layout; flow steps have editable assertions and per-step results
+- **Unified Test Case Cards**: Single tests and flow scenarios share compact status cards with separate assertion, request, and response views; flow steps show per-step results
 - **Persistent Projects**: Projects, endpoints, test cases, and execution history are stored in PostgreSQL
 - **Compact Sidebar**: Sidebar starts collapsed and project names are shown with unique short IDs
-- **Verbose Execution Results**: Full request/response details, latency, assertion evaluation
+- **Readable Request/Response Results**: Side-by-side request and response details, status, latency, payload size, headers, and pretty/raw JSON views
 - **Console Logging**: API calls logged to browser DevTools via st.iframe
 - **5-Minute Timeout**: Frontend waits up to 5 minutes for LLM generation
 - **Quick API Checks**: Send temporary requests and inspect response status, time, headers, and body

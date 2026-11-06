@@ -19,6 +19,7 @@ Mode: Act
 - API Workspace editor uses Postman-like request tabs with horizontal scrolling and right-aligned close controls, a Method/URL/Send row, Params and Headers tables, and none/raw Body modes
 - Eligible saved requests can be drag-and-drop ordered for flow generation using `streamlit-sortables`
 - Frontend flow rendering: editable ordered step cards with assertions, mappings, and per-step execution results
+- Test Cases workspace: guided Single/Flow generation, result counts and filters, per-case and batch execution with progress, compact status cards, and separated assertion/request/response views
 - Backend features: assertions via execute endpoint, JSONPath checker, 5-min timeout, PostgreSQL persistence
 - Docker Compose services for PostgreSQL, backend, and frontend; Make targets for local and Docker runs
 - Documentation updated (README, technical docs, agent context)

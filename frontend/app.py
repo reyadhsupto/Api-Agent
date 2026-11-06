@@ -185,6 +185,22 @@ METHOD_COLORS = {
     "GET": "green", "POST": "orange", "PUT": "blue", "PATCH": "violet",
     "DELETE": "red", "HEAD": "gray", "OPTIONS": "gray",
 }
+TEST_CASE_CSS = """
+<style>
+div[class*="st-key-tc-card-"] {
+    border-left: 4px solid rgba(128,128,128,.38) !important;
+    border-radius: .65rem !important;
+}
+div[class*="st-key-tc-card-passed-"] { border-left-color: #2e9e5b !important; }
+div[class*="st-key-tc-card-failed-"] { border-left-color: #e5484d !important; }
+div[class*="st-key-tc-card-error-"] { border-left-color: #f5a524 !important; }
+div[class*="st-key-tc-step-"] { background: rgba(128,128,128,.035); }
+div[class*="st-key-tc-card-"] button[kind="tertiary"] {
+    padding: 0 .25rem;
+    min-height: 1.9rem;
+}
+</style>
+"""
 
 
 def log_to_console(data: dict, label: str = "API") -> None:
@@ -619,171 +635,725 @@ def _render_assertion_group(assertions: dict, assertion_type: str, label: str, t
         st.rerun()
 
 
-def render_test_case_card(tc: dict, index: int) -> dict:
-    """Render a single test case as a collapsible card with repeatable assertions."""
-    tc_id = tc.get("id", f"tc_{index}")
-    tc_type = tc.get("type", "unknown").upper()
-    tc_name = tc.get("name", "Unnamed")
-    is_flow = tc.get("is_flow", False)
+def _toggle_test_case_state(key: str) -> None:
+    """Toggle a card's expanded state.
 
-    assertions = _normalize_assertions(tc) if not is_flow else {}
+    Args:
+        key (str): Session-state key for the card's open state.
 
-    # Collapsible test case card
-    flow_badge = " [FLOW]" if is_flow else ""
-    expander_title = f"{index + 1}. [{tc_type}] {tc_name}{flow_badge}"
-    with st.expander(expander_title, expanded=False):
-        # Description
-        st.caption(tc.get("description", ""))
+    Returns:
+        None: Updates Streamlit session state in place.
+    """
+    st.session_state[key] = not st.session_state.get(key, False)
 
-        if is_flow:
-            # Flow assertions belong to each step; top-level flow assertions are not executable.
-            steps = _normalise_flow_steps(tc)
-            st.markdown(f"**Flow steps ({len(steps)})**")
-            execution = st.session_state.get("executions", {}).get(tc_id, {})
-            step_results = {
-                item.get("step_order"): item
-                for item in execution.get("step_results", [])
-            }
-            for step in steps:
-                step_order = step.get("step_order", "?")
-                endpoint = step.get("endpoint", {}) or {}
-                method = endpoint.get("method", "GET")
-                url = endpoint.get("url", "")
-                with st.container(border=True):
-                    st.markdown(f"**Step {step_order}: {method} {url}")
-                    if step.get("description"):
-                        st.caption(step["description"])
-                    step_assertions = step["assertions"]
-                    for assertion_type, label in (
-                        ("status", "Status assertions"),
-                        ("body_contains", "Body contains assertions"),
-                        ("jsonpath", "JSONPath assertions"),
-                    ):
-                        _render_assertion_group(
-                            step_assertions,
-                            assertion_type,
-                            label,
-                            f"{tc_id}_step_{step_order}",
-                        )
-                    st.caption("Request and variable mappings")
-                    st.json({
-                        "endpoint": endpoint,
-                        "variable_mappings": step.get("variable_mappings", []),
-                    })
-                    step_result = step_results.get(step_order)
-                    if step_result:
-                        result_color = "green" if step_result.get("status") == "passed" else "red"
-                        st.markdown(
-                            f"Step result: <span style='color:{result_color};font-weight:bold'>"
-                            f"{step_result.get('status', 'unknown').upper()}</span> "
-                            f"| {step_result.get('latency_ms', 0)} ms",
-                            unsafe_allow_html=True,
-                        )
-                        st.caption(step_result.get("assertion_detail", ""))
-                        st.json({
-                            "response_status": step_result.get("response_status"),
-                            "response_headers": step_result.get("response_headers", {}),
-                            "response_body": step_result.get("response_body", ""),
-                        })
+
+def _test_case_status(result: dict | None) -> str:
+    """Return a normalized execution label for display and filtering.
+
+    Args:
+        result (dict | None): Stored execution result, if one exists.
+
+    Returns:
+        str: One of passed, failed, error, or not_run.
+    """
+    if not result:
+        return "not_run"
+    return str(result.get("status", "error")).lower()
+
+
+def _status_badge(status: str | None) -> str:
+    """Format an execution status as a compact Streamlit colored badge.
+
+    Args:
+        status (str | None): Execution status to display.
+
+    Returns:
+        str: Streamlit markdown badge for the status.
+    """
+    normalized = str(status or "not_run").lower()
+    colors = {"passed": "green", "failed": "red", "error": "orange", "not_run": "gray"}
+    labels = {"passed": "PASSED", "failed": "FAILED", "error": "ERROR", "not_run": "NOT RUN"}
+    return f":{colors.get(normalized, 'gray')}-badge[{labels.get(normalized, normalized.upper())}]"
+
+
+def _pretty_payload(body) -> tuple[str, bool]:
+    """Format payloads for display and identify valid JSON.
+
+    Args:
+        body (Any): HTTP request or response payload.
+
+    Returns:
+        tuple[str, bool]: Display text and whether it is JSON.
+    """
+    if body is None or body == "":
+        return "", False
+    if isinstance(body, (dict, list)):
+        return json.dumps(body, indent=2, ensure_ascii=False), True
+    try:
+        return json.dumps(json.loads(body), indent=2, ensure_ascii=False), True
+    except (json.JSONDecodeError, TypeError):
+        return str(body), False
+
+
+def _render_headers(headers: dict | list | None) -> None:
+    """Render HTTP headers in a compact key/value table.
+
+    Args:
+        headers (dict | list | None): Header mapping or empty value.
+
+    Returns:
+        None: Writes the header view to the Streamlit page.
+    """
+    if isinstance(headers, dict) and headers:
+        st.dataframe(
+            [{"Key": key, "Value": str(value)} for key, value in headers.items()],
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.caption("No headers")
+
+
+def _render_request_details(method: str | None, url: str | None, headers: dict | None, body, uid: str) -> None:
+    """Render request line and its headers/body in compact detail tabs.
+
+    Args:
+        method (str | None): HTTP method.
+        url (str | None): Request URL.
+        headers (dict | None): Request headers.
+        body (Any): Request payload.
+        uid (str): Stable identifier for this request view.
+
+    Returns:
+        None: Writes request details to the Streamlit page.
+    """
+    st.code(f"{(method or 'GET').upper()} {url or ''}", language="http", wrap_lines=True)
+    headers_tab, body_tab = st.tabs(["Headers", "Body"])
+    with headers_tab:
+        _render_headers(headers)
+    with body_tab:
+        text, is_json = _pretty_payload(body)
+        st.code(text or "(empty request body)", language="json" if is_json else "text", wrap_lines=True)
+
+
+def _render_response_details(status, latency_ms, body, headers, uid: str) -> None:
+    """Render response metadata, body, and headers with a raw/pretty switch.
+
+    Args:
+        status (Any): HTTP response status code.
+        latency_ms (Any): Request duration in milliseconds.
+        body (Any): Response payload.
+        headers (dict | None): Response headers.
+        uid (str): Stable identifier for the format selector.
+
+    Returns:
+        None: Writes the response view to the Streamlit page.
+    """
+    code = status if isinstance(status, int) else 0
+    color = "green" if 200 <= code < 300 else "orange" if 300 <= code < 400 else "red"
+    body_text, is_json = _pretty_payload(body)
+    raw_body = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False) if body is not None else ""
+    size = len(raw_body.encode("utf-8"))
+    size_label = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KB"
+    st.markdown(
+        f":{color}-badge[{status if status is not None else '—'}] "
+        f":gray-badge[{latency_ms or 0} ms] :gray-badge[{size_label}]"
+    )
+    body_tab, headers_tab = st.tabs(["Body", "Headers"])
+    with body_tab:
+        view_key = f"response_view_{uid}"
+        st.session_state.setdefault(view_key, "Pretty")
+        view = st.segmented_control(
+            "Response format", ["Pretty", "Raw"], key=view_key,
+            label_visibility="collapsed",
+        ) or "Pretty"
+        if not raw_body:
+            st.caption("(empty response body)")
+        elif view == "Pretty" and is_json:
+            st.code(body_text, language="json", wrap_lines=True)
         else:
-            # Assertion editor. All enabled instances use AND semantics during execution.
-            st.markdown("**Assertions**")
-            _render_assertion_group(assertions, "status", "Status assertions", tc_id)
-            _render_assertion_group(assertions, "body_contains", "Body contains assertions", tc_id)
-            _render_assertion_group(assertions, "jsonpath", "JSONPath assertions", tc_id)
+            st.code(raw_body, language="text", wrap_lines=True)
+    with headers_tab:
+        _render_headers(headers)
 
-        # Delete test case button
-        if st.button("Delete Test Case", key=f"delete_tc_{tc_id}", type="secondary"):
-            current_project = st.session_state.get("current_project") or {}
-            if current_project:
+
+def _execute_test_case(tc: dict) -> dict:
+    """Persist current edits, execute a test or flow, and retain its result.
+
+    Args:
+        tc (dict): Test case with current assertion edits.
+
+    Returns:
+        dict: Backend execution result.
+    """
+    tc_id = tc.get("id")
+    project = st.session_state.get("current_project") or {}
+    if project:
+        api_put(f"/api/v1/projects/{project['id']}/test-cases/{tc_id}", tc)
+    assertions = {} if tc.get("is_flow") else _normalize_assertions(tc)
+    payload = {kind: [dict(config) for config in configs] for kind, configs in assertions.items()}
+    result = api_post("/api/v1/test-cases/execute", {
+        "test_case_id": tc_id,
+        "project_id": project.get("id"),
+        "assertions": payload,
+    })
+    st.session_state.setdefault("executions", {})[tc_id] = result
+    return result
+
+
+def _render_execution_result(result: dict, uid: str) -> None:
+    """Render overall result detail with request and response side by side.
+
+    Args:
+        result (dict): Backend execution result.
+        uid (str): Stable identifier for response controls.
+
+    Returns:
+        None: Writes execution results to the Streamlit page.
+    """
+    status = _test_case_status(result)
+    latency = result.get("latency_ms") or sum(
+        step.get("latency_ms", 0) for step in result.get("step_results", [])
+    )
+    st.markdown(f"{_status_badge(status)} :gray-badge[{latency} ms]")
+    if result.get("assertion_detail"):
+        (st.success if status == "passed" else st.error)(result["assertion_detail"])
+    if result.get("step_results"):
+        return
+    request_col, response_col = st.columns(2, gap="medium")
+    with request_col, st.container(border=True):
+        st.markdown("**Request**")
+        _render_request_details(
+            result.get("request_method"), result.get("request_url"),
+            result.get("request_headers"), result.get("request_body"), f"{uid}_request",
+        )
+    with response_col, st.container(border=True):
+        st.markdown("**Response**")
+        _render_response_details(
+            result.get("response_status"), result.get("latency_ms"),
+            result.get("response_body"), result.get("response_headers"), f"{uid}_response",
+        )
+
+
+def _render_flow_step(tc_id: str, step: dict, result: dict | None) -> None:
+    """Render an expandable flow step with assertion, request, and response views.
+
+    Args:
+        tc_id (str): Parent flow test-case identifier.
+        step (dict): Flow step configuration.
+        result (dict | None): Execution result for this step.
+
+    Returns:
+        None: Writes the step card to the Streamlit page.
+    """
+    order = step.get("step_order", "?")
+    uid = f"{tc_id}_step_{order}"
+    open_key = f"step_open_{uid}"
+    is_open = st.session_state.get(open_key, False)
+    endpoint = step.get("endpoint", {}) or {}
+    status = _test_case_status(result) if result else "not_run"
+    with st.container(border=True, key=f"tc-step-{uid}"):
+        toggle_col, title_col, status_col = st.columns([0.45, 6, 2], vertical_alignment="center")
+        with toggle_col:
+            st.button(
+                " ", icon=":material/expand_more:" if is_open else ":material/chevron_right:",
+                key=f"toggle_{uid}", type="tertiary", help="Expand or collapse step",
+                on_click=_toggle_test_case_state, args=(open_key,),
+            )
+        with title_col:
+            url = endpoint.get("url", "")
+            st.markdown(f"**Step {order}** :blue-badge[{endpoint.get('method', 'GET')}] `{url[:76]}`")
+        with status_col:
+            st.markdown(
+                f"{_status_badge(status)} :gray-badge[{(result or {}).get('latency_ms', 0)} ms]"
+            )
+        if not is_open:
+            return
+        if step.get("description"):
+            st.caption(step["description"])
+        assertions_tab, request_tab, response_tab = st.tabs(["Assertions", "Request", "Response"])
+        with assertions_tab:
+            assertions = step["assertions"]
+            for assertion_type, label in (
+                ("status", "Status"),
+                ("body_contains", "Body contains"),
+                ("jsonpath", "JSONPath"),
+            ):
+                _render_assertion_group(assertions, assertion_type, label, uid)
+        with request_tab:
+            _render_request_details(
+                endpoint.get("method"), endpoint.get("url"), endpoint.get("headers"),
+                endpoint.get("body"), f"{uid}_request",
+            )
+            mappings = step.get("variable_mappings", [])
+            if mappings:
+                st.markdown("**Variable mappings**")
+                st.json(mappings)
+        with response_tab:
+            if result:
+                if result.get("assertion_detail"):
+                    (st.success if status == "passed" else st.error)(result["assertion_detail"])
+                _render_response_details(
+                    result.get("response_status"), result.get("latency_ms"),
+                    result.get("response_body"), result.get("response_headers"), f"{uid}_response",
+                )
+            else:
+                st.caption("Run the scenario to see this step's response.")
+
+
+def render_test_case_card(tc: dict, index: int) -> dict:
+    """Render a selectable test card with separated detail views.
+
+    Args:
+        tc (dict): Test case configuration and editable assertions.
+        index (int): Position in the visible test-case list.
+
+    Returns:
+        dict: Updated test case containing any assertion edits.
+    """
+    tc_id = tc.get("id", f"tc_{index}")
+    is_flow = bool(tc.get("is_flow"))
+    result = st.session_state.get("executions", {}).get(tc_id)
+    status = _test_case_status(result)
+    open_key = f"tc_open_{tc_id}"
+    is_open = st.session_state.get(open_key, False)
+    selected_key = f"tc_selected_{tc_id}"
+    st.session_state.setdefault(selected_key, True)
+
+    if not is_flow:
+        assertions = _normalize_assertions(tc)
+    else:
+        assertions = {}
+        for step in _normalise_flow_steps(tc):
+            step["assertions"] = _normalize_assertions(step)
+
+    with st.container(border=True, key=f"tc-card-{status}-{tc_id}"):
+        toggle_col, select_col, title_col, status_col, run_col = st.columns(
+            [0.4, 0.4, 5.3, 1.8, 1.1], vertical_alignment="center"
+        )
+        with toggle_col:
+            st.button(
+                " ", icon=":material/expand_more:" if is_open else ":material/chevron_right:",
+                key=f"tc_toggle_{tc_id}", type="tertiary", help="Expand or collapse",
+                on_click=_toggle_test_case_state, args=(open_key,),
+            )
+        with select_col:
+            st.checkbox("Select for batch run", key=selected_key, label_visibility="collapsed", help="Include in Run selected")
+        with title_col:
+            kind = ":violet-badge[FLOW]" if is_flow else f":blue-badge[{str(tc.get('type', 'test')).upper()}]"
+            st.markdown(f"**{index + 1}. {tc.get('name', 'Unnamed')}** {kind}")
+        with status_col:
+            latency = (result or {}).get("latency_ms") or sum(
+                item.get("latency_ms", 0) for item in (result or {}).get("step_results", [])
+            )
+            st.markdown(f"{_status_badge(status)} :gray-badge[{latency} ms]")
+        with run_col:
+            run_clicked = st.button(
+                "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
+                type="primary", width="stretch",
+            )
+
+        if tc.get("description"):
+            st.caption(tc["description"])
+        if run_clicked:
+            with st.spinner("Executing scenario sequentially..." if is_flow else "Executing request..."):
                 try:
-                    api_delete(
-                        f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}"
-                    )
-                except Exception as exc:
-                    st.error(f"Could not delete saved test case: {exc}")
-                    return tc
-            st.session_state["test_cases"] = [
-                t for t in st.session_state["test_cases"] if t.get("id") != tc_id
-            ]
-            if tc_id in st.session_state.get("executions", {}):
-                del st.session_state["executions"][tc_id]
-            st.rerun()
-
-        # Execute button
-        execute_btn = st.button("Execute Test Case", key=f"exec_{tc_id}", type="primary", use_container_width=True)
-
-        if not is_flow:
-            st.markdown("**Test Case Request Details**")
-            st.json(tc.get("request", {}))
-
-        # Execute button handler
-        if execute_btn:
-            with st.spinner("Executing..."):
-                try:
-                    current_project = st.session_state.get("current_project") or {}
-                    if current_project:
-                        api_put(
-                            f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}",
-                            tc,
-                        )
-                    assertions_payload = {
-                        assertion_type: [config.copy() for config in configs]
-                        for assertion_type, configs in assertions.items()
-                    }
-
-                    result = api_post(
-                        "/api/v1/test-cases/execute",
-                        {
-                            "test_case_id": tc_id,
-                            "project_id": current_project.get("id"),
-                            "assertions": assertions_payload,
-                        },
-                    )
-                    if "executions" not in st.session_state:
-                        st.session_state["executions"] = {}
-                    st.session_state["executions"][tc_id] = result
+                    _execute_test_case(tc)
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Execution failed: {exc}")
 
-        # Show execution result if available
-        executions = st.session_state.get("executions", {})
-        if tc_id in executions:
-            result = executions[tc_id]
-            status = result.get("status", "unknown")
-            status_color = "green" if status == "passed" else "red"
-            latency = result.get("latency_ms", 0)
-            if is_flow and not latency:
-                latency = sum(
-                    step.get("latency_ms", 0)
-                    for step in result.get("step_results", [])
-                )
+        if is_open:
+            if is_flow:
+                step_results = {
+                    item.get("step_order"): item
+                    for item in (result or {}).get("step_results", [])
+                }
+                steps_tab, summary_tab = st.tabs([f"Steps ({len(tc.get('steps', []))})", "Scenario result"])
+                with steps_tab:
+                    for step in _normalise_flow_steps(tc):
+                        _render_flow_step(tc_id, step, step_results.get(step.get("step_order")))
+                with summary_tab:
+                    if result:
+                        _render_execution_result(result, tc_id)
+                        for step in _normalise_flow_steps(tc):
+                            step_result = step_results.get(step.get("step_order")) or {}
+                            step_col, url_col, result_col = st.columns([0.6, 5, 1.4], vertical_alignment="center")
+                            step_col.markdown(f"**{step.get('step_order', '?')}**")
+                            endpoint = step.get("endpoint", {}) or {}
+                            url_col.markdown(f":blue-badge[{endpoint.get('method', 'GET')}] `{endpoint.get('url', '')[:72]}`")
+                            result_col.markdown(_status_badge(step_result.get("status")))
+                    else:
+                        st.caption("Run this scenario to see the overall and per-step results.")
+            else:
+                request = tc.get("request", {}) or {}
+                assertion_tab, request_tab, result_tab = st.tabs(["Assertions", "Request", "Result"])
+                with assertion_tab:
+                    for assertion_type, label in (
+                        ("status", "Status"),
+                        ("body_contains", "Body contains"),
+                        ("jsonpath", "JSONPath"),
+                    ):
+                        _render_assertion_group(assertions, assertion_type, label, tc_id)
+                with request_tab:
+                    _render_request_details(
+                        request.get("method"), request.get("url"), request.get("headers"),
+                        request.get("body"), f"{tc_id}_request",
+                    )
+                with result_tab:
+                    if result:
+                        _render_execution_result(result, tc_id)
+                    else:
+                        st.caption("Run this test to inspect its response and assertion results.")
 
-            st.markdown(
-                f"**Execution Result:** "
-                f"<span style='color:{status_color}; font-weight:bold'>{status.upper()}</span>  "
-                f"| Latency: {latency} ms",
-                unsafe_allow_html=True,
-            )
-            st.caption(result.get("assertion_detail", ""))
-
-            if not is_flow:
-                display_request_response(
-                    f"Request/Response Details for {tc_name}",
-                    {
-                        "method": result.get("request_method", ""),
-                        "url": result.get("request_url", ""),
-                        "headers": result.get("request_headers", {}),
-                        "body": result.get("request_body", ""),
-                    },
-                    {
-                        "status": result.get("response_status"),
-                        "body": result.get("response_body", ""),
-                    },
-                )
-
+            delete_col, save_hint_col = st.columns([1, 5], vertical_alignment="center")
+            with delete_col:
+                if st.button("Delete", key=f"delete_tc_{tc_id}", icon=":material/delete:", help="Delete test case"):
+                    current_project = st.session_state.get("current_project") or {}
+                    try:
+                        if current_project:
+                            api_delete(f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}")
+                        st.session_state["test_cases"] = [item for item in st.session_state["test_cases"] if item.get("id") != tc_id]
+                        st.session_state.get("executions", {}).pop(tc_id, None)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not delete test case: {exc}")
+            with save_hint_col:
+                st.caption("Assertion edits are saved with the scenario when you save test cases or run it.")
     return tc
+
+
+def _select_all_test_cases(test_cases: list[dict], selected: bool) -> None:
+    """Set batch-run selection for all supplied test cases.
+
+    Args:
+        test_cases (list[dict]): Cases whose selection state to update.
+        selected (bool): Whether each case should be selected.
+
+    Returns:
+        None: Updates Streamlit session state.
+    """
+    for tc in test_cases:
+        st.session_state[f"tc_selected_{tc.get('id')}"] = selected
+
+
+def _select_all_generation_requests(endpoints: list[dict], selected: bool) -> None:
+    """Set generation selection for every eligible request.
+
+    Args:
+        endpoints (list[dict]): Eligible saved requests.
+        selected (bool): Whether each request should be selected.
+
+    Returns:
+        None: Updates Streamlit session state.
+    """
+    for endpoint in endpoints:
+        st.session_state[f"generation_selected_{endpoint.get('id')}"] = selected
+
+
+def _test_case_sort_key(tc: dict) -> int:
+    """Return the numeric suffix of a generated test-case ID.
+
+    Args:
+        tc (dict): Test case to sort.
+
+    Returns:
+        int: Numeric ID suffix or zero when the ID has no numeric suffix.
+    """
+    tc_id = str(tc.get("id", ""))
+    try:
+        return int(tc_id.rsplit("_", 1)[-1])
+    except (ValueError, AttributeError):
+        return 0
+
+
+def _generate_selected_cases(mode: str, selected: list[dict], business_req: str) -> list[dict]:
+    """Call the matching generation route for selected requests.
+
+    Args:
+        mode (str): Single or Flow generation mode.
+        selected (list[dict]): Ordered saved request configurations.
+        business_req (str): Optional business requirements text.
+
+    Returns:
+        list[dict]: Generated test cases.
+    """
+    project = st.session_state.get("current_project") or {}
+    if mode == "Flow":
+        payload = {
+            "endpoints": selected,
+            "business_requirements": business_req or None,
+            "project_id": project.get("id"),
+        }
+        route = (
+            f"/api/v1/projects/{project['id']}/test-cases/generate-flow"
+            if project else "/api/v1/test-cases/generate-flow"
+        )
+        return api_post(route, payload)
+
+    generated = []
+    for endpoint in selected:
+        payload = {
+            "parsed_curl": endpoint,
+            "business_requirements": business_req or None,
+            "project_id": project.get("id"),
+        }
+        generated.extend(api_post("/api/v1/test-cases/generate", payload) or [])
+    return generated
+
+
+def render_generation_panel() -> None:
+    """Render request selection, optional requirements, and generation controls.
+
+    Returns:
+        None: Writes the generation workspace to the Streamlit page.
+    """
+    endpoints = st.session_state.get("endpoints", [])
+    st.subheader("Generate test cases")
+    st.session_state.setdefault("test_generation_mode", "Single")
+    mode = st.segmented_control(
+        "Generation mode", ["Single", "Flow"],
+        key="test_generation_mode",
+        help="Single creates independent request tests. Flow executes selected requests in order.",
+    ) or "Single"
+
+    with st.container(border=True):
+        select_col, all_col, clear_col = st.columns([4.5, 1, 1], vertical_alignment="center")
+        with select_col:
+            st.markdown("**1 · Choose saved requests**")
+            st.caption(
+                "Selected requests run in the order configured in API Workspace."
+                if mode == "Flow" else "Each selected request gets its own set of test cases."
+            )
+        with all_col:
+            st.button(
+                "Select all", key="generation_select_all", width="stretch",
+                on_click=_select_all_generation_requests, args=(endpoints, True),
+            )
+        with clear_col:
+            st.button(
+                "Clear", key="generation_select_none", width="stretch",
+                on_click=_select_all_generation_requests, args=(endpoints, False),
+            )
+
+        selected = []
+        for index, endpoint in enumerate(endpoints, start=1):
+            endpoint_id = endpoint.get("id", str(index))
+            selected_key = f"generation_selected_{endpoint_id}"
+            st.session_state.setdefault(selected_key, True)
+            number_col, checkbox_col, method_col, name_col = st.columns(
+                [0.5, 0.45, 1, 6], vertical_alignment="center"
+            )
+            number_col.caption(f"{index:02d}")
+            checkbox_col.checkbox(
+                "Select request", key=selected_key, label_visibility="collapsed",
+                help="Include this request in generation",
+            )
+            method = str(endpoint.get("method", "GET")).upper()
+            method_col.markdown(f":{METHOD_COLORS.get(method, 'gray')}-badge[{method}]")
+            name_col.markdown(
+                f"**{endpoint.get('name') or 'Untitled request'}** · "
+                f"`{(endpoint.get('url') or '')[:78]}`"
+            )
+            if st.session_state[selected_key]:
+                selected.append(endpoint)
+
+        if not endpoints:
+            st.info("Enable saved requests in API Workspace to start generation.")
+
+    with st.container(border=True):
+        st.markdown("**2 · Add business requirements** · Optional")
+        business_req = st.text_area(
+            "Business requirements", height=95, key="generation_business_requirements",
+            label_visibility="collapsed",
+            placeholder="Rules, edge cases, or expected behavior the tests should cover...",
+        )
+
+    existing_count = len(st.session_state.get("test_cases", []))
+    generate_col, clear_col, hint_col = st.columns([1.8, 1.8, 4], vertical_alignment="center")
+    with generate_col:
+        generate_clicked = st.button(
+            "Generate test cases", icon=":material/auto_awesome:", type="primary",
+            width="stretch", disabled=not selected,
+        )
+    with clear_col:
+        with st.popover(
+            "Clear test cases", icon=":material/delete_sweep:", width="stretch",
+            disabled=existing_count == 0,
+        ):
+            st.write(f"Remove all {existing_count} test cases from this workspace?")
+            if st.button("Confirm clear", key="confirm_clear_test_cases", type="primary"):
+                project = st.session_state.get("current_project") or {}
+                try:
+                    if project:
+                        api_delete(f"/api/v1/projects/{project['id']}/test-cases")
+                    st.session_state["test_cases"] = []
+                    st.session_state["executions"] = {}
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not clear test cases: {exc}")
+    with hint_col:
+        if not selected:
+            st.caption(":orange[Select at least one request to generate tests.]")
+        elif mode == "Flow" and len(selected) < 2:
+            st.caption(":orange[Flows usually need multiple requests; selected order is preserved.]")
+        else:
+            st.caption(f"{len(selected)} request(s) selected · {mode.lower()} generation")
+
+    if generate_clicked and selected:
+        with st.spinner("Generating with the configured LLM providers..."):
+            try:
+                result = _generate_selected_cases(mode, selected, business_req)
+                if result:
+                    st.session_state["test_cases"] = result
+                    st.session_state["executions"] = {}
+                    for tc in result:
+                        st.session_state[f"tc_selected_{tc.get('id')}"] = True
+                    st.success(f"Generated {len(result)} test case(s).")
+                else:
+                    st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
+            except Exception as exc:
+                st.error(f"Failed to generate test cases: {exc}")
+
+
+def render_test_case_list() -> None:
+    """Render status counts, filters, batch execution, and test-case cards.
+
+    Returns:
+        None: Writes test-case results to the Streamlit page.
+    """
+    test_cases = sorted(st.session_state.get("test_cases", []), key=_test_case_sort_key)
+    if not test_cases:
+        st.info("No test cases yet. Choose requests above and generate a set.")
+        return
+
+    executions = st.session_state.get("executions", {})
+    statuses = {tc.get("id"): _test_case_status(executions.get(tc.get("id"))) for tc in test_cases}
+    counts = {
+        "passed": sum(status == "passed" for status in statuses.values()),
+        "failed": sum(status == "failed" for status in statuses.values()),
+        "error": sum(status == "error" for status in statuses.values()),
+        "not_run": sum(status == "not_run" for status in statuses.values()),
+    }
+
+    st.divider()
+    st.subheader(f"Test cases · {len(test_cases)}")
+    st.markdown(
+        f":gray-badge[{len(test_cases)} total] :green-badge[{counts['passed']} passed] "
+        f":red-badge[{counts['failed']} failed] :orange-badge[{counts['error']} error] "
+        f":gray-badge[{counts['not_run']} not run]"
+    )
+
+    filter_col, all_col, none_col, expand_col, collapse_col, run_col, save_col = st.columns(
+        [2.5, 0.9, 0.8, 1.1, 1.2, 1.35, 1.4], vertical_alignment="center"
+    )
+    with filter_col:
+        st.session_state.setdefault("test_case_filter", "All")
+        chosen_filter = st.segmented_control(
+            "Result filter", ["All", "Passed", "Failed", "Error", "Not run"],
+            key="test_case_filter", label_visibility="collapsed",
+        ) or "All"
+    with all_col:
+        st.button("Select all", key="tc_select_all", width="stretch",
+                  on_click=_select_all_test_cases, args=(test_cases, True))
+    with none_col:
+        st.button("Clear", key="tc_select_none", width="stretch",
+                  on_click=_select_all_test_cases, args=(test_cases, False))
+    with expand_col:
+        st.button("Expand all", key="tc_expand_all", icon=":material/unfold_more:", width="stretch",
+                  on_click=_set_all_test_cases_open, args=(test_cases, True))
+    with collapse_col:
+        st.button("Collapse all", key="tc_collapse_all", icon=":material/unfold_less:", width="stretch",
+                  on_click=_set_all_test_cases_open, args=(test_cases, False))
+    with run_col:
+        run_selected = st.button(
+            "Run selected", key="tc_run_selected", icon=":material/play_arrow:",
+            type="primary", width="stretch", help="Execute checked test cases",
+        )
+    with save_col:
+        project = st.session_state.get("current_project") or {}
+        save_clicked = st.button(
+            "Save to project", key="tc_save_project", icon=":material/save:",
+            width="stretch", disabled=not project,
+        )
+
+    if run_selected:
+        targets = [tc for tc in test_cases if st.session_state.get(f"tc_selected_{tc.get('id')}", True)]
+        errors = []
+        if not targets:
+            st.warning("Select at least one test case to run.")
+        else:
+            progress = st.progress(0.0, text="Preparing execution...")
+            for number, tc in enumerate(targets, start=1):
+                progress.progress(
+                    (number - 1) / len(targets),
+                    text=f"Running {tc.get('name', tc.get('id'))} ({number}/{len(targets)})",
+                )
+                try:
+                    _execute_test_case(tc)
+                except Exception as exc:
+                    errors.append(f"{tc.get('name', tc.get('id'))}: {exc}")
+            progress.progress(1.0, text="Execution complete")
+            st.session_state["tc_run_errors"] = errors
+            st.rerun()
+
+    if save_clicked and project:
+        try:
+            result = api_post(
+                f"/api/v1/projects/{project['id']}/test-cases/save",
+                {"test_cases": test_cases},
+            )
+            st.success(result.get("message", "Test cases saved."))
+        except Exception as exc:
+            st.error(f"Could not save test cases: {exc}")
+
+    for message in st.session_state.pop("tc_run_errors", []):
+        st.error(message)
+
+    filter_status = {
+        "All": None, "Passed": "passed", "Failed": "failed",
+        "Error": "error", "Not run": "not_run",
+    }[chosen_filter]
+    shown = 0
+    for index, tc in enumerate(test_cases):
+        if filter_status and statuses.get(tc.get("id")) != filter_status:
+            continue
+        shown += 1
+        render_test_case_card(tc, index)
+    if shown == 0:
+        st.caption("No test cases match this result filter.")
+
+
+def _set_all_test_cases_open(test_cases: list[dict], is_open: bool) -> None:
+    """Expand or collapse every test case and its flow steps.
+
+    Args:
+        test_cases (list[dict]): Cases and steps whose state to update.
+        is_open (bool): Whether the cards should be expanded.
+
+    Returns:
+        None: Updates Streamlit session state.
+    """
+    for tc in test_cases:
+        tc_id = tc.get("id")
+        st.session_state[f"tc_open_{tc_id}"] = is_open
+        for step in tc.get("steps", []) if tc.get("is_flow") else []:
+            st.session_state[f"step_open_{tc_id}_step_{step.get('step_order', '?')}"] = is_open
+
+
+def render_test_cases_tab() -> None:
+    """Render generation controls and execution results in one workspace.
+
+    Returns:
+        None: Writes the Test Cases page to the Streamlit app.
+    """
+    st.markdown(TEST_CASE_CSS, unsafe_allow_html=True)
+    st.header("Test Cases")
+    if st.session_state.get("endpoints"):
+        render_generation_panel()
+    else:
+        st.warning("Save a request in API Workspace and enable it for generation first.")
+    render_test_case_list()
 
 
 def _request_rows(values) -> list[dict]:
@@ -1456,154 +2026,8 @@ def main() -> None:
     st.session_state["endpoints"] = [generation_by_id[item] for item in ordered_ids]
     st.session_state["parsed_curl"] = st.session_state["endpoints"][0] if st.session_state["endpoints"] else None
 
-    # Test Cases (existing generation, assertion editing, and execution flow)
     with test_tab:
-        st.header("Test Cases")
-
-        if "parsed_curl" not in st.session_state or not st.session_state["parsed_curl"]:
-            st.warning("Save a request in API Workspace and enable it for test generation first.")
-        else:
-            selected_endpoint = st.session_state["parsed_curl"]
-            st.caption(
-                f"Using endpoint: {selected_endpoint.get('name', '')} "
-                f"({selected_endpoint.get('method', 'GET')} {selected_endpoint.get('url', '')})"
-            )
-
-            # Generation mode selection
-            gen_mode = st.radio(
-                "Generation Mode",
-                options=["Single Endpoint", "Flow (Multiple Endpoints in Sequence)"],
-                horizontal=True,
-            )
-
-            business_req = st.text_area("Business Requirements (optional)", height=100)
-
-            # Endpoint selection for generation (both modes support multiple)
-            included_endpoints = st.session_state["endpoints"]
-
-            single_endpoints = []
-            if gen_mode == "Single Endpoint":
-                if included_endpoints:
-                    st.subheader("Select Endpoints to Generate Test Cases For")
-                    for i, ep in enumerate(included_endpoints):
-                        if st.checkbox(
-                            f"#{i+1} - {ep.get('name', ep.get('method', 'GET'))} {ep.get('url', '')[:50]}",
-                            key=f"single_ep_{ep.get('id')}",
-                            value=True,
-                        ):
-                            single_endpoints.append(ep)
-                else:
-                    st.warning("No saved requests are enabled for generation. Select requests in API Workspace.")
-
-            # Flow endpoint selection (if flow mode)
-            flow_endpoints = []
-            if gen_mode == "Flow (Multiple Endpoints in Sequence)":
-                if included_endpoints:
-                    st.subheader("Select Endpoints for Flow (in order)")
-                    for i, ep in enumerate(included_endpoints):
-                        if st.checkbox(
-                            f"#{i+1} - {ep.get('name', ep.get('method', 'GET'))} {ep.get('url', '')[:50]}",
-                            key=f"flow_ep_{ep.get('id')}",
-                            value=True,
-                        ):
-                            flow_endpoints.append(ep)
-                else:
-                    st.warning("No saved requests are enabled for flow generation. Select requests in API Workspace.")
-
-            col_gen, col_clear = st.columns([1, 1])
-            with col_gen:
-                if st.button("Generate Test Cases", type="primary"):
-                    with st.spinner("Generating test cases with AI..."):
-                        try:
-                            if gen_mode == "Flow (Multiple Endpoints in Sequence)" and flow_endpoints:
-                                current_project = st.session_state.get("current_project")
-                                if current_project:
-                                    result = api_post(
-                                        f"/api/v1/projects/{current_project['id']}/test-cases/generate-flow",
-                                        {
-                                            "endpoints": flow_endpoints,
-                                            "business_requirements": business_req or None,
-                                            "project_id": (st.session_state.get("current_project") or {}).get("id"),
-                                        },
-                                    )
-                                else:
-                                    # No project - generate flow without project
-                                    result = api_post(
-                                        "/api/v1/test-cases/generate-flow",
-                                        {
-                                            "endpoints": flow_endpoints,
-                                            "business_requirements": business_req or None,
-                                        },
-                                    )
-                            elif gen_mode == "Single Endpoint" and single_endpoints:
-                                # Generate test cases for each selected endpoint
-                                all_results = []
-                                for ep in single_endpoints:
-                                    payload = {
-                                        "parsed_curl": ep,
-                                        "business_requirements": business_req or None,
-                                        "project_id": (st.session_state.get("current_project") or {}).get("id"),
-                                    }
-                                    ep_result = api_post("/api/v1/test-cases/generate", payload)
-                                    if ep_result:
-                                        all_results.extend(ep_result)
-                                result = all_results if all_results else None
-
-                            if result:
-                                st.session_state["test_cases"] = result
-                                st.session_state["executions"] = {}
-                                st.success(f"Generated {len(result)} test case(s).")
-                            elif result == []:
-                                st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
-                        except Exception as exc:
-                            st.error(f"Failed to generate test cases: {exc}")
-
-            with col_clear:
-                if st.button("Clear Test Cases"):
-                    current_project = st.session_state.get("current_project") or {}
-                    if current_project:
-                        api_delete(f"/api/v1/projects/{current_project['id']}/test-cases")
-                    st.session_state["test_cases"] = []
-                    st.session_state["executions"] = {}
-                    st.rerun()
-
-            test_cases = st.session_state.get("test_cases", [])
-
-            if test_cases:
-                st.subheader(f"Test Cases ({len(test_cases)})")
-
-                # Sort test cases by their id number
-                def sort_key(tc):
-                    tc_id = tc.get("id", "tc_0")
-                    try:
-                        num = int(tc_id.split("_")[-1]) if "_" in tc_id else int(tc_id.replace("tc", ""))
-                    except (ValueError, AttributeError):
-                        num = 0
-                    return num
-
-                sorted_test_cases = sorted(test_cases, key=sort_key)
-
-                # Render each test case as a collapsible card
-                updated_test_cases = []
-                for i, tc in enumerate(sorted_test_cases):
-                    edited_tc = render_test_case_card(tc, i)
-                    updated_test_cases.append(edited_tc)
-
-                st.session_state["test_cases"] = updated_test_cases
-
-                # Save test cases to project
-                current_project = st.session_state.get("current_project")
-                if current_project:
-                    if st.button("Save Test Cases to Project", type="secondary"):
-                        try:
-                            result = api_post(
-                                f"/api/v1/projects/{current_project['id']}/test-cases/save",
-                                {"test_cases": st.session_state["test_cases"]},
-                            )
-                            st.success(result.get("message", "Saved"))
-                            load_project(current_project["id"])
-                        except Exception as exc:
-                            st.error(f"Failed to save: {exc}")
+        render_test_cases_tab()
 
 if __name__ == "__main__":
     main()

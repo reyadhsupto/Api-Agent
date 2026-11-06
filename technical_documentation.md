@@ -52,7 +52,10 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 - API Workspace provides temporary request tabs, manual and cURL editing, quick sends, response display, and saved project collections
 - Saved requests can be selected and explicitly ordered for generation
 - Test Cases supports single and flow generation/execution with editable assertions
-- Each test case card: visual separation, repeatable status, body-contains, and JSONPath assertion editors, execute button, verbose request/response results
+- Generation controls use a Single/Flow selector, selected saved-request list, optional business requirements, and a primary generation action; no scenario count is requested for flows
+- Results use status counts, result filters, select/expand controls, per-case execution, batch execution with progress, and explicit project save
+- Each test case card: compact status summary, repeatable status/body-contains/JSONPath assertions, separate request/result views for single cases, and expandable per-step flow details
+- Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
 - Calls FastAPI endpoints via python requests
 - Logs all API requests/responses to browser devtools console via st.iframe console.log
 - Collections and saved requests persist in PostgreSQL; request drafts and quick-send responses remain in session state
