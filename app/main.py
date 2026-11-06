@@ -20,12 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import (
     CurlParseRequest,
     ApiRequest,
+    HttpAssertionExecutionRequest,
     FlowGenerateRequest,
     TestCaseGenerateRequest,
 )
 from app.parser import parse_curl
 from app.generator import generate_test_cases, generate_flow_test_cases
-from app.executor import execute_test_case, execute_flow_test_case
+from app.executor import execute_test_case, execute_flow_test_case, evaluate_request_assertions
 # Load environment variables from .env file
 load_dotenv()
 from app.storage import Database
@@ -162,6 +163,37 @@ def _assign_test_case_ids(project_id: str, test_cases: list[dict]) -> None:
         seen.add(test_case["id"])
 
 
+def _ensure_response_schema_defaults(test_cases: list[dict]) -> None:
+    """Add an editable disabled schema assertion to generated tests and flow steps.
+
+    Args:
+        test_cases (list[dict]): Generated single tests and flow scenarios.
+
+    Returns:
+        None: Updates each generated case or step in place.
+    """
+    for test_case in test_cases:
+        if test_case.get("is_flow") or isinstance(test_case.get("steps"), list):
+            for step in test_case.get("steps", []):
+                if not isinstance(step, dict):
+                    continue
+                assertions = step.get("assertions")
+                if not isinstance(assertions, dict):
+                    assertions = {}
+                    step["assertions"] = assertions
+                assertions.setdefault(
+                    "response_schema", {"enabled": False, "schema": "{}"}
+                )
+        else:
+            assertions = test_case.get("assertions")
+            if not isinstance(assertions, dict):
+                assertions = {}
+                test_case["assertions"] = assertions
+            assertions.setdefault(
+                "response_schema", {"enabled": False, "schema": "{}"}
+            )
+
+
 app = FastAPI(title="Api-Agent", version="0.1.0")
 
 app.add_middleware(
@@ -254,6 +286,32 @@ def update_project(project_id: str, request: dict) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+@app.put("/api/v1/projects/{project_id}/generation-order")
+def update_project_generation_order(project_id: str, request: dict) -> dict:
+    """Persist the order used to build flows from saved project requests.
+
+    Args:
+        project_id (str): Project whose generation order is being changed.
+        request (dict): Payload containing the ordered `request_ids` list.
+
+    Returns:
+        dict: Canonical generation-order request IDs.
+
+    Raises:
+        HTTPException: If the project is missing or IDs are invalid.
+    """
+    request_ids = request.get("request_ids", [])
+    if not isinstance(request_ids, list) or not all(isinstance(item, str) for item in request_ids):
+        raise HTTPException(status_code=422, detail="request_ids must be a list of request ID strings.")
+    try:
+        saved_order = database.set_generation_order(project_id, request_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved_order is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"generation_order_ids": saved_order}
 
 
 @app.delete("/api/v1/projects/{project_id}")
@@ -423,6 +481,54 @@ def send_api_request(request: ApiRequest) -> dict:
     }
 
 
+@app.post("/api/v1/http/execute-assertions")
+def execute_http_assertions(request: HttpAssertionExecutionRequest) -> dict:
+    """Send one temporary HTTP request and evaluate supplied assertions.
+
+    Args:
+        request (HttpAssertionExecutionRequest): HTTP request and selected assertions.
+
+    Returns:
+        dict: Response metadata and per-assertion plus aggregate results.
+
+    Raises:
+        HTTPException: If the URL or method is invalid, or the request fails.
+    """
+    api_request = request.request
+    if not api_request.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Enter an absolute http:// or https:// URL.")
+    method = api_request.method.upper()
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        raise HTTPException(status_code=400, detail="Unsupported HTTP method.")
+
+    started = time.perf_counter()
+    try:
+        response = requests.request(
+            method,
+            api_request.url,
+            headers=api_request.headers,
+            params=api_request.query_params,
+            json=api_request.body if isinstance(api_request.body, (dict, list)) else None,
+            data=api_request.body if isinstance(api_request.body, str) else None,
+            timeout=api_request.timeout_seconds,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
+
+    assertion_result = evaluate_request_assertions(
+        response.status_code, response.text, request.assertions
+    )
+    return {
+        "status": response.status_code,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+        "headers": dict(response.headers),
+        "body": response.text,
+        "url": response.url,
+        "assertion_results": assertion_result["results"],
+        "assertions_passed": assertion_result["passed"],
+    }
+
+
 @app.post("/api/v1/projects/{project_id}/endpoints")
 def add_endpoint(project_id: str, request: dict) -> dict:
     """
@@ -539,6 +645,7 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
                 "body_contains": {"enabled": tc.get("expected_body_contains") is not None, "value": tc.get("expected_body_contains", "") or ""},
                 "jsonpath": {"enabled": False, "path": "", "expected_value": ""},
             }
+    _ensure_response_schema_defaults(test_cases)
     project_id = request.project_id or database.current_project_id()
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
@@ -579,6 +686,7 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
                 "body_contains": {"enabled": tc.get("expected_body_contains") is not None, "value": tc.get("expected_body_contains", "") or ""},
                 "jsonpath": {"enabled": False, "path": "", "expected_value": ""},
             }
+    _ensure_response_schema_defaults(test_cases)
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
@@ -636,6 +744,7 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
                 "body_contains": {"enabled": tc.get("expected_body_contains") is not None, "value": tc.get("expected_body_contains", "") or ""},
                 "jsonpath": {"enabled": False, "path": "", "expected_value": ""},
             }
+    _ensure_response_schema_defaults(test_cases)
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")

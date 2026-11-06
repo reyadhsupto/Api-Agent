@@ -57,6 +57,7 @@ class Database:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
+                    generation_order_json TEXT NOT NULL DEFAULT '[]',
                     is_default BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -107,6 +108,10 @@ class Database:
             for statement in schema.split(";"):
                 if statement.strip():
                     _execute(connection, statement)
+            _execute(
+                connection,
+                "ALTER TABLE projects ADD COLUMN IF NOT EXISTS generation_order_json TEXT NOT NULL DEFAULT '[]'",
+            )
             _execute(connection, "ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS collection_id TEXT")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_collections_project_order ON collections(project_id, ordinal)")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_endpoints_collection_order ON endpoints(collection_id, ordinal)")
@@ -387,7 +392,14 @@ class Database:
             return collection_id
 
     def get_project(self, project_id: str) -> dict | None:
-        """Return a project with ordered endpoints, cases, and execution history."""
+        """Fetch the project and its ordered child data from PostgreSQL.
+
+        Args:
+            project_id (str): Project identifier to load.
+
+        Returns:
+            dict | None: Project aggregate with canonical generation order, or None if absent.
+        """
         with self.session() as connection:
             project = _execute(connection, "SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
             if not project:
@@ -402,6 +414,26 @@ class Database:
                     (project_id,),
                 )
             ]
+            try:
+                saved_order = json.loads(result.pop("generation_order_json", "[]") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                saved_order = []
+                result.pop("generation_order_json", None)
+            eligible_ids = {
+                endpoint.get("id")
+                for endpoint in result["endpoints"]
+                if endpoint.get("include_for_generation", endpoint.get("include", False))
+            }
+            generation_order = []
+            for request_id in saved_order if isinstance(saved_order, list) else []:
+                if request_id in eligible_ids and request_id not in generation_order:
+                    generation_order.append(request_id)
+            generation_order.extend(
+                endpoint["id"]
+                for endpoint in result["endpoints"]
+                if endpoint.get("id") in eligible_ids and endpoint["id"] not in generation_order
+            )
+            result["generation_order_ids"] = generation_order
             result["collections"] = []
             for collection_row in _execute(
                 connection,
@@ -433,6 +465,47 @@ class Database:
                 )
             ]
             return result
+
+    def set_generation_order(self, project_id: str, request_ids: list[str]) -> list[str] | None:
+        """Persist the project's ordered saved-request IDs.
+
+        Args:
+            project_id (str): Project that owns the order.
+            request_ids (list[str]): Unique saved-request IDs in desired order.
+
+        Returns:
+            list[str] | None: Canonical eligible order, or None if the project is missing.
+
+        Raises:
+            ValueError: If IDs are duplicated or do not belong to the project.
+        """
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError("Request IDs in the generation order must be unique.")
+        with self.session() as connection:
+            project = _execute(
+                connection,
+                "SELECT generation_order_json FROM projects WHERE id=?",
+                (project_id,),
+            ).fetchone()
+            if not project:
+                return None
+            known_ids = {
+                row["id"]
+                for row in _execute(
+                    connection,
+                    "SELECT id FROM endpoints WHERE project_id=?",
+                    (project_id,),
+                ).fetchall()
+            }
+            unknown_ids = [request_id for request_id in request_ids if request_id not in known_ids]
+            if unknown_ids:
+                raise ValueError("Every generation-order request must belong to this project.")
+            _execute(
+                connection,
+                "UPDATE projects SET generation_order_json=?,updated_at=? WHERE id=?",
+                (json.dumps(request_ids, ensure_ascii=False, separators=(",", ":")), _now(), project_id),
+            )
+        return self.get_project(project_id)["generation_order_ids"]
 
     def list_projects(self) -> list[dict]:
         """Return project summaries with endpoint and test counts."""

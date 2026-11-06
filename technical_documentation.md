@@ -52,7 +52,10 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 - API Workspace provides temporary request tabs, manual and cURL editing, quick sends, response display, and saved project collections
 - Saved requests can be selected and explicitly ordered for generation
 - Test Cases supports single and flow generation/execution with editable assertions
-- Each test case card: visual separation, repeatable status, body-contains, and JSONPath assertion editors, execute button, verbose request/response results
+- Generation controls use a Single/Flow selector, selected saved-request list, optional business requirements, and a primary generation action; no scenario count is requested for flows
+- Results use status counts, result filters, select/expand controls, per-case execution, batch execution with progress, and explicit project save
+- Each test case card: compact status summary, repeatable status/body-contains/JSONPath/JSON Schema assertions, separate request/result views for single cases, and expandable per-step flow details
+- Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
 - Calls FastAPI endpoints via python requests
 - Logs all API requests/responses to browser devtools console via st.iframe console.log
 - Collections and saved requests persist in PostgreSQL; request drafts and quick-send responses remain in session state
@@ -98,22 +101,28 @@ Returns execution result with assertion detail including per-step results for fl
 ### POST /api/v1/http/send
 Accepts method, absolute URL, headers, query parameters, and optional body. Returns HTTP status, elapsed milliseconds, response headers, response body, and final URL. Ad hoc requests are not persisted.
 
+### POST /api/v1/http/execute-assertions
+Accepts `{"request": {"method": "GET", "url": "https://..."}, "assertions": [{"id": "...", "type": "status", "expected_status": 200}]}`. Sends one request and evaluates each assertion against that response. Supported types are `status`, `body_contains`, `jsonpath`, and `response_schema`; results include each assertion ID, type, pass/fail, detail, and aggregate `assertions_passed`. The frontend sends only enabled assertions for Run All, or one selected assertion for an individual run.
+
 ### Projects, collections, and saved requests
 - `POST/GET /api/v1/projects` and `GET/PUT/DELETE /api/v1/projects/{project_id}` manage projects.
 - `GET/POST /api/v1/projects/{project_id}/collections` and `PUT/DELETE /api/v1/projects/{project_id}/collections/{collection_id}` manage collections.
 - `POST /api/v1/projects/{project_id}/collections/{collection_id}/requests`, `PUT/DELETE .../requests/{request_id}` manage saved requests.
 - `GET /api/v1/projects/{project_id}/collections/{collection_id}/export` exports a Postman Collection v2.1 document.
+- `PUT /api/v1/projects/{project_id}/generation-order` persists `{"request_ids": ["..."]}` for flow generation. IDs must be unique and belong to the project; the response returns canonical `generation_order_ids`.
 - Legacy `/api/v1/projects/{project_id}/endpoints` routes remain available over the Imported Endpoints collection.
 
 ## 5. API Workspace and Collections
-The API Workspace combines request editing, quick sending, and saved request management. Each open tab is a temporary session draft with independent method, URL, query rows, header rows, payload, and response. Its request line groups Method, URL, cURL import, and Send; the editor uses Params, Headers, and Body tabs. Params and headers use editable key/value/description tables with per-row send toggles. cURL parsing fills the active editor; query values are moved out of the URL into query rows to avoid duplication. Body supports none/raw modes and JSON formatting. The response panel displays status, elapsed time, headers, and body, with a control to format valid JSON.
+The API Workspace combines request editing, quick sending, and saved request management. Each open tab is a temporary session draft with independent method, URL, query rows, header rows, payload, assertions, and response. Its request line groups Method, URL, cURL import, and Send; the editor uses Params, Headers, Body, and Assertions tabs. Params and headers use editable key/value/description tables with per-row send toggles. cURL parsing fills the active editor; query values are moved out of the URL into query rows to avoid duplication. Body supports none/raw modes and JSON formatting. Assertions support multiple status, body-contains, JSONPath field-value, and JSON Schema checks. Run All evaluates enabled assertions after one fresh request; each assertion also has an individual Run action that sends a fresh request even if that assertion is disabled for Run All. Saved requests retain assertion definitions. The response panel displays status, elapsed time, per-assertion outcomes, headers, and body, with a control to format valid JSON.
 
-Saved requests live in ordered, named collections scoped to a project. New requests default to excluded from generation. A separate per-request eligibility setting controls generation, and the selection panel supports drag-and-drop ordering for flow generation. Drafts cannot be selected until saved. Stable IDs distinguish collections and requests even when names match.
+Saved requests live in ordered, named collections scoped to a project. New requests default to excluded from generation. API Workspace controls persistent request eligibility. In Test Cases, one panel lets users select eligible requests for the current run and reorder the selected requests. Drag-and-drop updates the project-scoped `generation_order_json`, which is restored after reloads and remains independent of collection request order. Reordering a subset changes the order of its selected slots while unselected eligible requests keep their positions. If drag-and-drop is unavailable, the UI offers move-up and move-down controls. Drafts cannot be selected until saved. Stable IDs distinguish collections and requests even when names match.
+
+The home header summarizes the selected project. The collapsed sidebar groups project selection, project actions, counts, and a saved-test-case fetch action. The collection panel provides creation, selection, rename, delete, and Postman export. Saved requests appear as compact rows with method, truncated name, and tooltip-labeled open/delete actions; URLs are omitted from this list. Persistent eligibility remains separate from per-run request selection, while selection and flow ordering share one Test Cases panel. Project summaries and collection exports use a 15-second Streamlit cache, cleared after relevant writes.
 
 Postman Collection v2.1 export includes methods, URLs, payloads, and disabled query/header rows. Import and environment management are out of scope. Legacy endpoint routes map to Imported Endpoints. Existing endpoint rows migrate once at startup, retaining IDs, request fields, enabled state, inclusion choice, and order.
 
 ## 6. Project Management
-Projects, collections, saved requests, test cases, and execution history are stored in PostgreSQL. Nested flow steps, assertions, and request fields remain JSON payloads so API shapes stay compatible.
+Projects, collections, saved requests, test cases, execution history, and each project's generation order are stored in PostgreSQL. `generation_order_json` is added through an idempotent startup migration; projects without a stored order use their eligible saved-request order as the initial order. Nested flow steps, request playground assertions, and request fields remain JSON payloads so API shapes stay compatible. Response schema assertions use JSON Schema Draft 2020-12 validation.
 - Create project with name and description
 - Select existing project from sidebar
 - Delete project (cascades to collections, requests, and test data)
@@ -146,8 +155,8 @@ Each flow step contains:
 - **step_order**: integer (1-based)
 - **endpoint_id**: reference to endpoint in collection
 - **endpoint**: full endpoint dict (method, url, headers, body)
-- **assertions**: per-step assertion config (status, body_contains, jsonpath; each accepts one config or a list)
-- **variable_mappings**: list of {from, to, transform} for passing response fields to next request
+- **assertions**: per-step assertion config (status, body_contains, jsonpath, response_schema; each accepts one config or a list)
+- **variable_mappings**: list of {from, to, transform} for passing response fields to next request; `from` supports simple paths, numeric array indexes, and array wildcards such as `$.items[*].id`. Wildcard results mapped into request bodies remain JSON arrays; header values are compact JSON text.
 
 ### Assertion Configuration
 
@@ -157,11 +166,12 @@ Each assertion type is stored as a list so a test case can contain multiple chec
 {
   "status": [{"enabled": true, "expected_status": 200}],
   "body_contains": [{"enabled": true, "value": "success"}],
-  "jsonpath": [{"enabled": true, "path": "$.token", "expected_value": "abc"}]
+  "jsonpath": [{"enabled": true, "path": "$.token", "expected_value": "abc"}],
+  "response_schema": [{"enabled": false, "schema": "{}"}]
 }
 ```
 
-The executor evaluates every enabled instance with AND semantics. Legacy single-dictionary assertion values are normalized to one-item lists, so existing generated and saved test cases remain compatible. The Streamlit editor supports adding and removing instances for each assertion type.
+The executor evaluates every enabled instance with AND semantics, including JSON Schema Draft 2020-12 response validation. Generated single tests and each generated flow step receive one disabled, blank schema assertion unless the model already supplied one. The user can edit, enable, add, or remove schema assertions after generation. Legacy single-dictionary assertion values are normalized to one-item lists, so existing generated and saved test cases remain compatible.
 
 ### Flow Execution Logic
 Flow execution runs all steps sequentially:
@@ -199,5 +209,5 @@ Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a
 - Frontend API timeout: 300 seconds (5 minutes) for LLM generation
 - PostgreSQL URL: `DATABASE_URL` in `.env`; Compose volume: `api_agent_pgdata`
 - Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
-- Unsaved API Workspace requests and quick-send responses stay in Streamlit session state only
+- Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions
 - Clean caches: `make clean-cache` (keeps the virtual environment)
