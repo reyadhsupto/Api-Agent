@@ -48,7 +48,8 @@ I want to compose a temporary request in the API Workspace, import cURL, and ins
 ### FR-03: Test Execution
 - Execute a selected test case against the target endpoint.
 - Capture and display: request URL, headers, path params, query params, payload, response status, response headers, response payload, latency in milliseconds.
-- Compare actual response against expected assertion and display pass/fail.
+- Compare actual response against status, body-contains, JSONPath field-value, and JSON Schema assertions and display pass/fail.
+- Allow multiple assertion instances per type and enable/disable each assertion before execution.
 
 ### FR-04: LLM Fallback
 - Maintain an ordered list of free-tier LLM providers.
@@ -66,7 +67,7 @@ I want to compose a temporary request in the API Workspace, import cURL, and ins
 - Accept multiple endpoints in sequence for flow test case generation.
 - Generate flow test cases covering: full flow success, step failure, data dependency, edge cases, race conditions.
 - Support variable mapping between steps (response field from step N -> request field in step N+1).
-- Support per-step assertions (status, body contains, JSONPath).
+- Support per-step assertions (status, body contains, JSONPath, and JSON Schema); generated steps include an editable schema assertion disabled by default.
 - Support flow execution: run all steps sequentially with aggregated result.
 - Render each flow step as a test case card with editable assertions and per-step execution results.
 - Keep single-test and flow-scenario cards visually consistent.

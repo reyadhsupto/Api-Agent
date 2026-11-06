@@ -40,6 +40,13 @@ class ApiRequest(BaseModel):
     timeout_seconds: int = Field(default=60, ge=1, le=120)
 
 
+class HttpAssertionExecutionRequest(BaseModel):
+    """One temporary HTTP request and the assertions to evaluate on its response."""
+
+    request: ApiRequest
+    assertions: list[dict] = Field(default_factory=list)
+
+
 class TestCase(BaseModel):
     id: str
     type: Literal["positive", "negative", "edge", "race"]

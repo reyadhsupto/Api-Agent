@@ -108,11 +108,12 @@ tests/
 
 - **cURL Parsing**: Paste any cURL command to parse method, URL, headers, body
 - **Editable Request Components**: Modify method, URL, enabled query/header rows, and payload after parsing
+- **Request Playground Assertions**: Configure repeatable status, body text, JSONPath field value, and JSON Schema checks; run enabled checks together or run one check against a fresh response
 - **Unified API Workspace**: Temporary request tabs, manual composition, and cURL parsing
 - **Saved Collections**: Project-scoped request collections with ordered requests and Postman v2.1 export
-- **Generation Selection**: Choose saved requests and drag them into flow order
+- **Generation Selection**: Choose eligible saved requests and persist their flow order per project, independently of collection order
 - **AI Test Case Generation**: Generates endpoint cases and as many complete flow scenarios as the configured LLM provider can return
-- **Per-Test-Case Assertions**: Status, Body Contains, Exact Field (JSONPath) with individual enable/disable checkboxes
+- **Per-Test-Case Assertions**: Repeatable status, body contains, JSONPath field-value, and JSON Schema checks with enable/disable controls; schema assertions start disabled and editable on generated tests and flow steps
 - **Execution Workspace**: Filter by pass/fail/error/not-run, select cases for batch runs, and track run progress
 - **Collapsible Test Case Cards**: Expand/retract each test case for better visibility
 - **Unified Test Case Cards**: Single tests and flow scenarios share compact status cards with separate assertion, request, and response views; flow steps show per-step results
@@ -127,18 +128,22 @@ tests/
 See `agent_rules.md` for coding standards, documentation requirements, and UI/UX guidelines.
 
 ## API Endpoints
-- GET /health - Health check
-- POST /api/v1/curl/parse - Parse cURL command
-- POST /api/v1/test-cases/generate - Generate AI test cases (accepts assertions)
-- POST /api/v1/test-cases/generate-flow - Generate flow scenarios up to the provider output limit
-- POST /api/v1/test-cases/execute - Execute a test case with assertions
-- POST /api/v1/http/send - Send a temporary API Workspace request
-- GET /api/v1/memory/state - Get persisted project selection state
+
+The backend exposes these routes:
+
+- **Health and request tools**: `GET /health`, `POST /api/v1/curl/parse`, `POST /api/v1/http/send`, `POST /api/v1/http/execute-assertions`
+- **Projects**: `POST /api/v1/projects`, `GET /api/v1/projects`, `GET /api/v1/projects/current`, `GET /api/v1/projects/{project_id}`, `PUT /api/v1/projects/{project_id}`, `DELETE /api/v1/projects/{project_id}`, `PUT /api/v1/projects/{project_id}/generation-order`
+- **Collections and saved requests**: `GET|POST /api/v1/projects/{project_id}/collections`, `PUT|DELETE /api/v1/projects/{project_id}/collections/{collection_id}`, `POST /api/v1/projects/{project_id}/collections/{collection_id}/requests`, `PUT|DELETE /api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}`, `GET /api/v1/projects/{project_id}/collections/{collection_id}/export`
+- **Legacy endpoints**: `POST|PUT /api/v1/projects/{project_id}/endpoints`, `PUT|DELETE /api/v1/projects/{project_id}/endpoints/{endpoint_id}`
+- **Test cases**: `POST /api/v1/test-cases/generate`, `POST /api/v1/test-cases/generate-flow`, `POST /api/v1/projects/{project_id}/test-cases/generate-flow`, `POST /api/v1/projects/{project_id}/test-cases/save`, `GET|DELETE /api/v1/projects/{project_id}/test-cases`, `DELETE|PUT /api/v1/projects/{project_id}/test-cases/{test_case_id}`, `POST /api/v1/test-cases/execute`
+- **Application state**: `GET /api/v1/memory/state`
 
 ## Data Storage
 
-PostgreSQL is initialized automatically at backend startup. Local app processes use `DATABASE_URL` from `.env` (default host `localhost`); the Compose backend connects to the `postgres` service. Projects, collections, saved requests, test cases, and execution history persist in PostgreSQL. Existing endpoint records are migrated once into each project's **Imported Endpoints** collection, preserving IDs, request fields, enabled fields, order, and generation eligibility. Legacy endpoint routes continue to operate on that collection. There is no automatic migration of old SQLite data. Open request tabs and responses are unsaved session drafts.
+PostgreSQL is initialized automatically at backend startup. Local app processes use `DATABASE_URL` from `.env` (default host `localhost`); the Compose backend connects to the `postgres` service. Projects, collections, saved requests, test cases, and execution history persist in PostgreSQL. Request playground assertions are stored with saved requests; generated test and flow-step assertions are stored with their test cases. Open request tabs and responses remain session drafts. Existing endpoint records are migrated once into each project's **Imported Endpoints** collection, preserving IDs, request fields, enabled fields, order, and generation eligibility. Legacy endpoint routes continue to operate on that collection. There is no automatic migration of old SQLite data.
 
-New requests are excluded from generation by default. Use the generation selection area to enable requests and order them for flow generation. Query/header row toggles and payload inclusion control what is sent; they are separate from generation eligibility. Export any collection as Postman Collection v2.1 JSON. Collection import and environment management are not included.
+New requests are excluded from generation by default. Enable eligible requests in API Workspace. In Test Cases, use the combined selection and ordering panel to choose requests for a run; drag selected requests to set flow order. The project order is restored after reloads, and rearranging a selected subset keeps unselected eligible requests in their existing positions. Collection request order remains independent. Saved-request rows show method, name, and open/delete actions without URLs. Query/header row toggles and payload inclusion control what is sent; they are separate from generation eligibility. Export any collection as Postman Collection v2.1 JSON. Collection import and environment management are not included.
+
+The home header summarizes the current project. The collapsed sidebar contains project selection, project actions, counts, and saved test-case fetch. API Workspace manages collections and persistent generation eligibility. Test Cases owns the single per-run selection and ordering panel. Project summaries and collection exports are cached briefly and refreshed after relevant writes.
 
 Flow generation does not request a fixed scenario count. The model returns as many complete scenarios as it can within its provider output limit; `API_AGENT_LLM_MAX_OUTPUT_TOKENS` sets a shared ceiling for providers that support it. Malformed or truncated JSON is reported as an error rather than displayed as partial results.

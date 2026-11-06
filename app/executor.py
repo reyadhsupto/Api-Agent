@@ -12,6 +12,8 @@ Returns:
 import time
 import json
 import requests
+from typing import Any
+from jsonschema import Draft202012Validator
 
 
 def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | None = None) -> dict:
@@ -39,12 +41,13 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
     test_case_id = test_case.get("id", "unknown")
 
     # Resolve assertion config: frontend overrides take precedence
-    # Supports multiple assertion instances per type (status, body_contains, jsonpath)
+    # Supports multiple assertion instances for every assertion type.
     assertions = assertions or {}
 
     status_cfg_list = _assertion_list(assertions.get("status"))
     body_contains_cfg_list = _assertion_list(assertions.get("body_contains"))
     jsonpath_cfg_list = _assertion_list(assertions.get("jsonpath"))
+    response_schema_cfg_list = _assertion_list(assertions.get("response_schema"))
 
     start_time = time.perf_counter()
     try:
@@ -52,7 +55,7 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
             method=method,
             url=url,
             headers=headers,
-            json=body if isinstance(body, dict) else None,
+            json=body if isinstance(body, (dict, list)) else None,
             data=body if isinstance(body, str) else None,
             timeout=30,
         )
@@ -65,6 +68,7 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
             body_contains_cfg_list,
             jsonpath_cfg_list,
             test_case,
+            response_schema_cfg_list,
         )
 
         passed = all_passed and len(assertion_results) > 0
@@ -154,6 +158,31 @@ def _assertion_list(config: dict | list | None) -> list[dict]:
     return []
 
 
+def _evaluate_response_schema(response_text: str, schema_value) -> tuple[bool, str]:
+    """Validate a JSON response body against a JSON Schema document.
+
+    Args:
+        response_text (str): Raw HTTP response body.
+        schema_value (Any): JSON Schema object or serialized JSON text.
+
+    Returns:
+        tuple[bool, str]: Validation result and a concise explanation.
+    """
+    try:
+        response_json = json.loads(response_text)
+    except (json.JSONDecodeError, TypeError):
+        return False, "Response body is not valid JSON."
+    try:
+        schema = json.loads(schema_value) if isinstance(schema_value, str) else schema_value
+        Draft202012Validator.check_schema(schema)
+        errors = list(Draft202012Validator(schema).iter_errors(response_json))
+    except Exception as exc:
+        return False, f"Invalid JSON Schema: {exc}."
+    if errors:
+        return False, errors[0].message
+    return True, "Response matches the JSON Schema."
+
+
 def _evaluate_assertions(
     response_status: int,
     response_text: str,
@@ -161,6 +190,7 @@ def _evaluate_assertions(
     body_configs: list[dict],
     jsonpath_configs: list[dict],
     test_case: dict | None = None,
+    response_schema_configs: list[dict] | None = None,
 ) -> tuple[list[str], bool]:
     """Evaluate all enabled assertion instances and return details plus overall status."""
     test_case = test_case or {}
@@ -194,7 +224,62 @@ def _evaluate_assertions(
         details.append(f"JSONPath '{path}': expected {expected}, got {actual} -> {'PASS' if passed else 'FAIL'}")
         all_passed = all_passed and passed
 
+    for config in response_schema_configs or []:
+        if not config.get("enabled", False):
+            continue
+        passed, detail = _evaluate_response_schema(response_text, config.get("schema", ""))
+        details.append(f"Response schema -> {'PASS' if passed else 'FAIL'}: {detail}")
+        all_passed = all_passed and passed
+
     return details, all_passed
+
+
+def evaluate_request_assertions(response_status: int, response_text: str, assertions: list[dict]) -> dict:
+    """Evaluate request-playground assertions against one already received response.
+
+    Args:
+        response_status (int): HTTP status code returned by the request.
+        response_text (str): Raw response body text.
+        assertions (list[dict]): Assertion instances selected for this execution.
+
+    Returns:
+        dict: Per-assertion results and the aggregate pass/fail status.
+    """
+    results = []
+    for assertion in assertions:
+        assertion_type = assertion.get("type")
+        assertion_id = assertion.get("id")
+        passed = False
+        if assertion_type == "status":
+            expected = assertion.get("expected_status")
+            passed = expected is not None and response_status == expected
+            detail = f"Expected status {expected}, received {response_status}."
+        elif assertion_type == "body_contains":
+            expected = assertion.get("value", "")
+            passed = bool(expected) and expected in response_text
+            detail = f"Response body {'contains' if passed else 'does not contain'} {expected!r}."
+        elif assertion_type == "jsonpath":
+            path = assertion.get("path", "")
+            expected = assertion.get("expected_value", "")
+            try:
+                passed, actual = _check_jsonpath(response_text, path, expected)
+                detail = f"{path}: expected {expected!r}, received {actual!r}."
+            except (ValueError, IndexError) as exc:
+                detail = f"Invalid JSONPath: {exc}."
+        elif assertion_type == "response_schema":
+            passed, detail = _evaluate_response_schema(response_text, assertion.get("schema", ""))
+        else:
+            detail = f"Unsupported assertion type: {assertion_type!r}."
+
+        results.append({
+            "id": assertion_id,
+            "type": assertion_type,
+            "passed": bool(passed),
+            "detail": detail,
+        })
+
+    all_passed = bool(results) and all(result["passed"] for result in results)
+    return {"results": results, "passed": all_passed}
 
 
 def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict | None = None) -> dict:
@@ -246,7 +331,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
                 method=method,
                 url=url,
                 headers=headers,
-                json=body if isinstance(body, dict) else None,
+                json=body if isinstance(body, (dict, list)) else None,
                 data=body if isinstance(body, str) else None,
                 timeout=30,
             )
@@ -264,6 +349,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
                 status_configs,
                 _assertion_list(step_assertions.get("body_contains")),
                 _assertion_list(step_assertions.get("jsonpath")),
+                response_schema_configs=_assertion_list(step_assertions.get("response_schema")),
             )
 
             step_results.append({
@@ -317,45 +403,64 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
     }
 
 
-def _extract_jsonpath(response_text: str, jsonpath: str) -> str:
+def _extract_jsonpath(response_text: str, jsonpath: str) -> Any:
     """
     Extract a value from the response body using a JSONPath expression.
 
     Args:
         response_text (str): Raw response body text.
-        jsonpath (str): JSONPath expression like $.token, $.user.id.
+        jsonpath (str): JSONPath expression, including array wildcards such as $.items[*].id.
 
     Returns:
-        str: The extracted value, or empty string if not found.
+        Any: Extracted scalar text or wildcard result list; empty string if not found.
     """
     try:
         data = json.loads(response_text)
     except (json.JSONDecodeError, TypeError):
         return ""
 
-    if not jsonpath.startswith("$"):
+    if not isinstance(jsonpath, str) or not jsonpath.startswith("$"):
         return ""
 
-    parts = jsonpath[2:].split(".")
+    if jsonpath == "$":
+        return str(data)
+
+    parts = jsonpath[2:].strip(".").split(".")
     current = data
+    wildcard_used = False
 
     for part in parts:
-        if part.endswith("]"):
-            key_part = part[: part.index("[")]
-            index_part = int(part[part.index("[") + 1 : part.index("]")])
-            if key_part:
-                if not isinstance(current, dict) or key_part not in current:
+        key_part, has_index, index_part = part.partition("[")
+        if key_part:
+            if isinstance(current, list):
+                current = [item[key_part] for item in current if isinstance(item, dict) and key_part in item]
+                if not current:
                     return ""
+            elif isinstance(current, dict) and key_part in current:
                 current = current[key_part]
-            if not isinstance(current, list) or index_part >= len(current):
+            else:
                 return ""
-            current = current[index_part]
-        else:
-            if not isinstance(current, dict) or part not in current:
-                return ""
-            current = current[part]
 
-    return str(current) if current is not None else ""
+        if has_index:
+            if not part.endswith("]"):
+                return ""
+            index_token = index_part[:-1]
+            if index_token == "*":
+                if not isinstance(current, list):
+                    return ""
+                wildcard_used = True
+            else:
+                try:
+                    index = int(index_token)
+                except ValueError:
+                    return ""
+                if not isinstance(current, list) or not -len(current) <= index < len(current):
+                    return ""
+                current = current[index]
+
+    if current is None:
+        return ""
+    return current if wildcard_used and isinstance(current, list) else str(current)
 
 
 def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
@@ -385,9 +490,13 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
     body = endpoint.get("body")
 
     for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
         from_path = mapping.get("from", "")
         to_path = mapping.get("to", "")
         transform = mapping.get("transform", "")
+        if not isinstance(from_path, str) or not isinstance(to_path, str):
+            continue
 
         # Extract value from previous response
         # from_path references the step index and JSONPath, e.g., "1:$.token"
@@ -410,29 +519,37 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
             continue
 
         # Apply transform if specified
+        mapped_value = extracted_value
         if transform:
-            try:
-                extracted_value = transform.replace("{value}", extracted_value)
-            except Exception:
-                pass
+            value_text = (
+                extracted_value if isinstance(extracted_value, str)
+                else json.dumps(extracted_value, ensure_ascii=False, separators=(",", ":"))
+            )
+            mapped_value = transform.replace("{value}", value_text) if isinstance(transform, str) else value_text
 
         # Inject into request
         if to_path.startswith("headers."):
             header_name = to_path[len("headers."):]
-            headers[header_name] = extracted_value
+            headers[header_name] = (
+                mapped_value if isinstance(mapped_value, str)
+                else json.dumps(mapped_value, ensure_ascii=False, separators=(",", ":"))
+            )
         elif to_path.startswith("request.body"):
             if body is None:
                 body = {}
             if isinstance(body, dict):
                 # Support nested like request.body.userId
                 field_path = to_path[len("request.body"):].strip(".")
-                parts = field_path.split(".")
-                target = body
-                for p in parts[:-1]:
-                    if p not in target:
-                        target[p] = {}
-                    target = target[p]
-                target[parts[-1]] = extracted_value
+                if not field_path:
+                    body = mapped_value
+                else:
+                    parts = field_path.split(".")
+                    target = body
+                    for part in parts[:-1]:
+                        if not isinstance(target.get(part), dict):
+                            target[part] = {}
+                        target = target[part]
+                    target[parts[-1]] = mapped_value
             elif isinstance(body, str):
                 # If body is a string, try to inject as JSON
                 try:
