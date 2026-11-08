@@ -320,6 +320,62 @@ class Database:
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
         return item
 
+    def import_requests(self, project_id: str, collection_id: str, requests_data: list[dict]) -> list[dict] | None:
+        """Persist a reviewed endpoint batch atomically.
+
+        Args:
+            project_id (str): Owning project identifier.
+            collection_id (str): Destination collection identifier.
+            requests_data (list[dict]): Reviewed normalized endpoint records.
+
+        Returns:
+            list[dict] | None: Imported request records, or None if collection is missing.
+
+        Raises:
+            ValueError: If a request ID already exists in another import/destination.
+        """
+        saved = []
+        with self.session() as connection:
+            collection = _execute(
+                connection,
+                "SELECT id FROM collections WHERE id=? AND project_id=?",
+                (collection_id, project_id),
+            ).fetchone()
+            if not collection:
+                return None
+            ordinal = _execute(
+                connection,
+                "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM endpoints WHERE collection_id=?",
+                (collection_id,),
+            ).fetchone()["ordinal"]
+            for offset, request in enumerate(requests_data):
+                item = dict(request)
+                item["id"] = item.get("id") or str(uuid.uuid4())
+                existing = _execute(
+                    connection,
+                    "SELECT project_id,collection_id FROM endpoints WHERE id=?",
+                    (item["id"],),
+                ).fetchone()
+                if existing:
+                    if existing["project_id"] != project_id or existing["collection_id"] != collection_id:
+                        raise ValueError("An imported request ID already belongs to another saved collection.")
+                    raise ValueError("An imported request ID already exists in the destination collection.")
+                item["collection_id"] = collection_id
+                item["include_for_generation"] = False
+                item["include"] = False
+                item["order"] = ordinal + offset
+                _execute(
+                    connection,
+                    "INSERT INTO endpoints(id,project_id,collection_id,ordinal,payload_json) VALUES(?,?,?,?,?)",
+                    (item["id"], project_id, collection_id, ordinal + offset, self._encode(item)),
+                )
+                saved.append(item)
+            if saved:
+                now = _now()
+                _execute(connection, "UPDATE collections SET updated_at=? WHERE id=?", (now, collection_id))
+                _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
+        return saved
+
     def update_request(self, project_id: str, request_id: str, updates: dict) -> dict | None:
         """Merge request fields while keeping the request's collection membership."""
         with self.session() as connection:

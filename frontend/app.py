@@ -15,14 +15,14 @@ import requests
 import json
 import uuid
 import os
-import hashlib
 import html
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-try:
-    from streamlit_sortables import sort_items
-except ImportError:
-    sort_items = None
+if __package__:
+    from .request_controls import render_curl_aware_url, render_request_order_list
+else:
+    from request_controls import render_curl_aware_url, render_request_order_list
 
 BACKEND_URL = os.getenv("API_BACKEND_URL", "http://localhost:8000")
 GLOBAL_CSS = """
@@ -107,6 +107,7 @@ div[class*="st-key-saved-req-"]:focus-within {
 .aa-saved-method-patch { color: #8043a2; background: rgba(155,89,182,.13); }
 .aa-saved-method-delete { color: #c9383d; background: rgba(229,72,77,.12); }
 .aa-saved-method-head, .aa-saved-method-options { color: #657174; background: rgba(127,140,141,.14); }
+.aa-saved-method-trace { color: #657174; background: rgba(127,140,141,.14); }
 .aa-saved-request-name {
     flex: 1 1 auto;
     min-width: 0;
@@ -311,7 +312,7 @@ div[class*="st-key-request-close-"] button:hover {
 """
 METHOD_COLORS = {
     "GET": "green", "POST": "orange", "PUT": "blue", "PATCH": "violet",
-    "DELETE": "red", "HEAD": "gray", "OPTIONS": "gray",
+    "DELETE": "red", "HEAD": "gray", "OPTIONS": "gray", "TRACE": "gray",
 }
 TEST_CASE_CSS = """
 <style>
@@ -647,8 +648,8 @@ def render_endpoint_card(endpoint: dict, index: int) -> dict:
         with col_method:
             method = st.selectbox(
                 "Method",
-                options=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
-                index=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].index(
+                options=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"],
+                index=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"].index(
                     endpoint.get("method", "GET").upper()
                 ),
                 key=f"ep_method_{endpoint_id}",
@@ -810,68 +811,74 @@ def _normalise_flow_steps(tc: dict) -> list[dict]:
 
 
 def _render_assertion_instance(assertions: dict, assertion_type: str, instance: int, tc_id: str) -> None:
-    """Render and persist one assertion instance in Streamlit session state."""
+    """Render one enabled, editable assertion row with consistent card styling."""
     config = assertions[assertion_type][instance]
     key_prefix = f"tc_assert_{assertion_type}_{tc_id}_{instance}"
-    remove_col, enabled_col, value_col = st.columns([0.5, 1.5, 4])
-    with remove_col:
-        remove = st.button("-", key=f"{key_prefix}_remove", help="Remove this assertion")
-    with enabled_col:
-        config["enabled"] = st.checkbox(
-            "Enabled",
-            value=config.get("enabled", assertion_type == "status"),
-            key=f"{key_prefix}_enabled",
-            label_visibility="collapsed",
-        )
-    with value_col:
+    remove = False
+    with st.container(border=True):
         if assertion_type == "status":
-            config["expected_status"] = st.number_input(
-                "Expected status",
-                min_value=100,
-                max_value=599,
-                value=int(config.get("expected_status") or 200),
-                key=f"{key_prefix}_value",
-                disabled=not config["enabled"],
-                label_visibility="collapsed",
+            enabled_col, value_col, remove_col = st.columns([0.55, 4.5, 0.7], vertical_alignment="center")
+            config["enabled"] = enabled_col.checkbox(
+                "Enabled", value=config.get("enabled", True),
+                key=f"{key_prefix}_enabled", label_visibility="collapsed",
+                help="Include in this test's assertions",
+            )
+            config["expected_status"] = value_col.number_input(
+                "Expected status", min_value=100, max_value=599,
+                value=int(config.get("expected_status") or 200), step=1,
+                key=f"{key_prefix}_value", disabled=not config["enabled"],
             )
         elif assertion_type == "body_contains":
-            config["value"] = st.text_input(
-                "Body text",
-                value=config.get("value", "") or "",
-                key=f"{key_prefix}_value",
-                placeholder="Text in response body",
+            enabled_col, value_col, remove_col = st.columns([0.55, 4.5, 0.7], vertical_alignment="center")
+            config["enabled"] = enabled_col.checkbox(
+                "Enabled", value=config.get("enabled", False),
+                key=f"{key_prefix}_enabled", label_visibility="collapsed",
+                help="Include in this test's assertions",
+            )
+            config["value"] = value_col.text_input(
+                "Text to find", value=config.get("value", "") or "",
+                key=f"{key_prefix}_value", placeholder="Text in response body",
                 disabled=not config["enabled"],
-                label_visibility="collapsed",
             )
         elif assertion_type == "jsonpath":
-            path_col, expected_col = st.columns(2)
-            with path_col:
-                config["path"] = st.text_input(
-                    "JSONPath",
-                    value=config.get("path", "") or "",
-                    key=f"{key_prefix}_path",
-                    placeholder="e.g. $.token",
-                    disabled=not config["enabled"],
-                    label_visibility="collapsed",
-                )
-            with expected_col:
-                config["expected_value"] = st.text_input(
-                    "Expected value",
-                    value=config.get("expected_value", "") or "",
-                    key=f"{key_prefix}_expected",
-                    placeholder="Expected field value",
-                    disabled=not config["enabled"],
-                    label_visibility="collapsed",
-                )
-        elif assertion_type == "response_schema":
-            config["schema"] = st.text_area(
-                "JSON Schema",
-                value=config.get("schema", "{}") or "{}",
-                key=f"{key_prefix}_schema",
-                height=150,
+            enabled_col, path_col, expected_col, remove_col = st.columns(
+                [0.5, 2.2, 2.2, 0.7], vertical_alignment="center"
+            )
+            config["enabled"] = enabled_col.checkbox(
+                "Enabled", value=config.get("enabled", False),
+                key=f"{key_prefix}_enabled", label_visibility="collapsed",
+                help="Include in this test's assertions",
+            )
+            config["path"] = path_col.text_input(
+                "JSONPath", value=config.get("path", "") or "",
+                key=f"{key_prefix}_path", placeholder="e.g. $.token",
+                disabled=not config["enabled"],
+            )
+            config["expected_value"] = expected_col.text_input(
+                "Expected value", value=config.get("expected_value", "") or "",
+                key=f"{key_prefix}_expected", placeholder="Expected field value",
+                disabled=not config["enabled"],
+            )
+        else:
+            enabled_col, schema_col, remove_col = st.columns(
+                [0.5, 4.5, 0.7], vertical_alignment="top"
+            )
+            config["enabled"] = enabled_col.checkbox(
+                "Enabled", value=config.get("enabled", False),
+                key=f"{key_prefix}_enabled", label_visibility="collapsed",
+                help="Include in this test's assertions",
+            )
+            config["schema"] = schema_col.text_area(
+                "JSON Schema", value=config.get("schema", "{}") or "{}",
+                key=f"{key_prefix}_schema", height=130,
                 placeholder='{"type": "object", "required": ["id"]}',
                 disabled=not config["enabled"],
-                label_visibility="collapsed",
+            )
+
+        with remove_col:
+            remove = st.button(
+                " ", key=f"{key_prefix}_remove", icon=":material/delete:",
+                help="Remove this assertion", type="tertiary",
             )
     if remove:
         assertions[assertion_type].pop(instance)
@@ -879,19 +886,40 @@ def _render_assertion_instance(assertions: dict, assertion_type: str, instance: 
 
 
 def _render_assertion_group(assertions: dict, assertion_type: str, label: str, tc_id: str) -> None:
-    """Render all instances of one assertion type and its add button."""
-    st.markdown(f"**{label}**")
-    for instance in range(len(assertions[assertion_type])):
-        _render_assertion_instance(assertions, assertion_type, instance, tc_id)
-    if st.button(f"+ Add {label}", key=f"tc_assert_{assertion_type}_{tc_id}_add"):
+    """Render one expandable assertion type group with repeatable card rows."""
+    group = assertions[assertion_type]
+    with st.expander(f"{label} · {len(group)}", expanded=assertion_type == "status"):
+        for instance in range(len(group)):
+            _render_assertion_instance(assertions, assertion_type, instance, tc_id)
         defaults = {
             "status": {"enabled": True, "expected_status": 200},
             "body_contains": {"enabled": True, "value": ""},
             "jsonpath": {"enabled": True, "path": "", "expected_value": ""},
             "response_schema": {"enabled": True, "schema": "{}"},
         }
-        assertions[assertion_type].append(defaults[assertion_type])
-        st.rerun()
+        if st.button(
+            f"Add {label.lower()} assertion", key=f"tc_assert_{assertion_type}_{tc_id}_add",
+            icon=":material/add:",
+        ):
+            group.append({**defaults[assertion_type]})
+            st.rerun()
+
+
+def _render_test_case_assertions(assertions: dict, uid: str) -> None:
+    """Render the Playground-style assertion groups for a test or flow step."""
+    enabled_count = sum(
+        bool(item.get("enabled"))
+        for group in assertions.values()
+        for item in group
+    )
+    st.caption(f"{enabled_count} enabled · used when this test runs")
+    for assertion_type, label in (
+        ("status", "Status code"),
+        ("body_contains", "Body contains"),
+        ("jsonpath", "Field value"),
+        ("response_schema", "Response schema"),
+    ):
+        _render_assertion_group(assertions, assertion_type, label, uid)
 
 
 def _toggle_test_case_state(key: str) -> None:
@@ -973,8 +1001,38 @@ def _render_headers(headers: dict | list | None) -> None:
         st.caption("No headers")
 
 
-def _render_request_details(method: str | None, url: str | None, headers: dict | None, body, uid: str) -> None:
-    """Render request line and its headers/body in compact detail tabs.
+def _request_query_rows(query_params: dict | list | None, url: str | None) -> list[dict]:
+    """Combine explicit request parameters with query values embedded in its URL.
+
+    Args:
+        query_params (dict | list | None): Stored parameter mapping or row list.
+        url (str | None): Request URL, possibly containing a query string.
+
+    Returns:
+        list[dict]: Parameter rows suitable for display, retaining duplicate URL keys.
+    """
+    if isinstance(query_params, dict):
+        rows = [{"Key": str(key), "Value": str(value)} for key, value in query_params.items()]
+    elif isinstance(query_params, list):
+        rows = [
+            {"Key": str(row.get("key", "")), "Value": str(row.get("value", ""))}
+            for row in query_params
+            if isinstance(row, dict) and row.get("key") and row.get("enabled", True)
+        ]
+    else:
+        rows = []
+    present_keys = {row["Key"] for row in rows}
+    for key, value in parse_qsl(urlsplit(url or "").query, keep_blank_values=True):
+        if key not in present_keys:
+            rows.append({"Key": key, "Value": value})
+    return rows
+
+
+def _render_request_details(
+    method: str | None, url: str | None, headers: dict | None, body, uid: str,
+    query_params: dict | list | None = None,
+) -> None:
+    """Render request line, query parameters, headers, and body in compact tabs.
 
     Args:
         method (str | None): HTTP method.
@@ -982,12 +1040,19 @@ def _render_request_details(method: str | None, url: str | None, headers: dict |
         headers (dict | None): Request headers.
         body (Any): Request payload.
         uid (str): Stable identifier for this request view.
+        query_params (dict | list | None): Explicit query parameter values, if present.
 
     Returns:
         None: Writes request details to the Streamlit page.
     """
     st.code(f"{(method or 'GET').upper()} {url or ''}", language="http", wrap_lines=True)
-    headers_tab, body_tab = st.tabs(["Headers", "Body"])
+    params_tab, headers_tab, body_tab = st.tabs(["Params", "Headers", "Body"])
+    with params_tab:
+        params = _request_query_rows(query_params, url)
+        if params:
+            st.dataframe(params, hide_index=True, width="stretch")
+        else:
+            st.caption("No query parameters")
     with headers_tab:
         _render_headers(headers)
     with body_tab:
@@ -1132,18 +1197,11 @@ def _render_flow_step(tc_id: str, step: dict, result: dict | None) -> None:
             st.caption(step["description"])
         assertions_tab, request_tab, response_tab = st.tabs(["Assertions", "Request", "Response"])
         with assertions_tab:
-            assertions = step["assertions"]
-            for assertion_type, label in (
-                ("status", "Status"),
-                ("body_contains", "Body contains"),
-                ("jsonpath", "JSONPath"),
-                ("response_schema", "Response schema"),
-            ):
-                _render_assertion_group(assertions, assertion_type, label, uid)
+            _render_test_case_assertions(step["assertions"], uid)
         with request_tab:
             _render_request_details(
                 endpoint.get("method"), endpoint.get("url"), endpoint.get("headers"),
-                endpoint.get("body"), f"{uid}_request",
+            endpoint.get("body"), f"{uid}_request", endpoint.get("query_params"),
             )
             mappings = step.get("variable_mappings", [])
             if mappings:
@@ -1249,17 +1307,11 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                 request = tc.get("request", {}) or {}
                 assertion_tab, request_tab, result_tab = st.tabs(["Assertions", "Request", "Result"])
                 with assertion_tab:
-                    for assertion_type, label in (
-                        ("status", "Status"),
-                        ("body_contains", "Body contains"),
-                        ("jsonpath", "JSONPath"),
-                        ("response_schema", "Response schema"),
-                    ):
-                        _render_assertion_group(assertions, assertion_type, label, tc_id)
+                    _render_test_case_assertions(assertions, tc_id)
                 with request_tab:
                     _render_request_details(
                         request.get("method"), request.get("url"), request.get("headers"),
-                        request.get("body"), f"{tc_id}_request",
+                        request.get("body"), f"{tc_id}_request", request.get("query_params"),
                     )
                 with result_tab:
                     if result:
@@ -1312,31 +1364,6 @@ def _select_all_generation_requests(endpoints: list[dict], selected: bool) -> No
         st.session_state[f"generation_selected_{endpoint.get('id')}"] = selected
 
 
-def _merge_selected_generation_order(
-    current_order: list[str],
-    eligible_ids: list[str],
-    selected_ids: list[str],
-    reordered_selected_ids: list[str],
-) -> list[str]:
-    """Reorder selected requests while retaining unselected request positions.
-
-    Args:
-        current_order (list[str]): Current eligible project order.
-        eligible_ids (list[str]): All currently generation-eligible request IDs.
-        selected_ids (list[str]): IDs selected for the current generation run.
-        reordered_selected_ids (list[str]): Selected IDs in their new order.
-
-    Returns:
-        list[str]: Complete canonical order with selected IDs moved among their slots.
-    """
-    eligible = set(eligible_ids)
-    order = [request_id for request_id in current_order if request_id in eligible]
-    order.extend(request_id for request_id in eligible_ids if request_id not in order)
-    selected = set(selected_ids)
-    selected_iter = iter(reordered_selected_ids)
-    return [next(selected_iter) if request_id in selected else request_id for request_id in order]
-
-
 def _test_case_sort_key(tc: dict) -> int:
     """Return the numeric suffix of a generated test-case ID.
 
@@ -1351,6 +1378,97 @@ def _test_case_sort_key(tc: dict) -> int:
         return int(tc_id.rsplit("_", 1)[-1])
     except (ValueError, AttributeError):
         return 0
+
+
+def _url_route_matches(endpoint_url: str, test_url: str) -> bool:
+    """Match a generated test URL against a saved endpoint route template.
+
+    Args:
+        endpoint_url (str): Saved endpoint URL or OpenAPI path template.
+        test_url (str): URL from a generated legacy test case.
+
+    Returns:
+        bool: Whether the request path matches the saved route.
+    """
+    template = (urlsplit(endpoint_url).path or endpoint_url).rstrip("/") or "/"
+    candidate = (urlsplit(test_url).path or test_url).rstrip("/") or "/"
+    escaped = re.escape(template)
+    escaped = re.sub(r"\\\{[^/]+?\\\}", r"[^/]+", escaped)
+    return bool(re.fullmatch(escaped, candidate))
+
+
+def _group_test_cases_by_endpoint(
+    test_cases: list[dict], endpoints: list[dict] | None = None,
+) -> list[tuple[str, str, list[dict]]]:
+    """Group single tests by source endpoint and keep flow scenarios together.
+
+    Args:
+        test_cases (list[dict]): Visible tests after status filtering.
+
+    Returns:
+        list[tuple[str, str, list[dict]]]: Ordered group key, heading, and cases.
+    """
+    if endpoints is None:
+        project = st.session_state.get("current_project") or {}
+        endpoints = project.get("endpoints", [])
+    endpoints_by_id = {item.get("id"): item for item in endpoints if item.get("id")}
+    groups: dict[str, tuple[str, list[dict]]] = {}
+
+    for tc in test_cases:
+        if tc.get("is_flow"):
+            key, title = "__flows__", "Flow scenarios"
+        else:
+            endpoint_id = tc.get("source_endpoint_id")
+            endpoint = endpoints_by_id.get(endpoint_id)
+            request = tc.get("request") or {}
+            test_url = str(request.get("url") or "")
+            if endpoint is None and test_url:
+                matches = [item for item in endpoints if _url_route_matches(item.get("url", ""), test_url)]
+                test_method = str(request.get("method", "")).upper()
+                method_matches = [item for item in matches if str(item.get("method", "")).upper() == test_method]
+                endpoint = (method_matches or matches or [None])[0]
+                endpoint_id = endpoint.get("id") if endpoint else None
+
+            endpoint_name = (
+                tc.get("source_endpoint_name")
+                or (endpoint or {}).get("name")
+                or (endpoint or {}).get("url")
+                or test_url
+                or "Unassigned endpoint"
+            )
+            key = f"endpoint:{endpoint_id}" if endpoint_id else f"endpoint-name:{endpoint_name}"
+            title = endpoint_name
+
+        if key not in groups:
+            groups[key] = (title, [])
+        groups[key][1].append(tc)
+
+    endpoint_group_order = [f"endpoint:{item.get('id')}" for item in endpoints]
+    ordered_keys = [key for key in endpoint_group_order if key in groups]
+    ordered_keys.extend(
+        key for key in groups
+        if key not in ordered_keys and key != "__flows__"
+    )
+    if "__flows__" in groups:
+        ordered_keys.append("__flows__")
+    return [(key, groups[key][0], groups[key][1]) for key in ordered_keys]
+
+
+def _generation_requests_in_order(
+    endpoints_by_id: dict[str, dict], ordered_ids: list[str], selected_ids: set[str],
+) -> list[dict]:
+    """Return only selected generation requests in their persisted order.
+
+    Args:
+        endpoints_by_id (dict[str, dict]): Eligible requests indexed by stable ID.
+        ordered_ids (list[str]): Full project ordering.
+        selected_ids (set[str]): IDs checked for this generation run.
+
+    Returns:
+        list[dict]: Selected requests ordered as they should be generated.
+    """
+    return [endpoints_by_id[request_id] for request_id in ordered_ids
+            if request_id in endpoints_by_id and request_id in selected_ids]
 
 
 def _generate_selected_cases(mode: str, selected: list[dict], business_req: str) -> list[dict]:
@@ -1383,6 +1501,7 @@ def _generate_selected_cases(mode: str, selected: list[dict], business_req: str)
             "parsed_curl": endpoint,
             "business_requirements": business_req or None,
             "project_id": project.get("id"),
+            "source_endpoint_id": endpoint.get("id"),
         }
         generated.extend(api_post("/api/v1/test-cases/generate", payload) or [])
     return generated
@@ -1414,14 +1533,14 @@ def render_generation_panel() -> None:
     current_order.extend(request_id for request_id in eligible_ids if request_id not in current_order)
     st.session_state["generation_order_ids"] = current_order
 
+    for endpoint in endpoints:
+        st.session_state.setdefault(f"generation_selected_{endpoint.get('id')}", True)
+
     with st.container(border=True):
         select_col, all_col, clear_col = st.columns([4.5, 1, 1], vertical_alignment="center")
         with select_col:
-            st.markdown("**Choose requests and set their order**")
-            st.caption(
-                "Select requests for this run, then drag selected requests to set flow order."
-                if mode == "Flow" else "Select requests for this run. Order is saved for later flow generation."
-            )
+            st.markdown("**Select requests for this run**")
+            st.caption("Drag any request to set the saved order. Checked requests are used for this run.")
         with all_col:
             st.button(
                 "Select all", key="generation_select_all", width="stretch",
@@ -1433,116 +1552,48 @@ def render_generation_panel() -> None:
                 on_click=_select_all_generation_requests, args=(endpoints, False),
             )
 
-        selected = []
-        for index, endpoint in enumerate(endpoints, start=1):
-            endpoint_id = endpoint.get("id", str(index))
-            selected_key = f"generation_selected_{endpoint_id}"
-            st.session_state.setdefault(selected_key, True)
-            with st.container(key=f"generation-row-{endpoint_id}"):
-                number_col, checkbox_col, method_col, name_col = st.columns(
-                    [0.45, 0.45, 0.85, 6], vertical_alignment="center"
-                )
-                number_col.caption(f"{index:02d}")
-                checkbox_col.checkbox(
-                    "Select request", key=selected_key, label_visibility="collapsed",
-                    help="Include this request in the current generation run",
-                )
-                method = str(endpoint.get("method", "GET")).upper()
-                method_col.markdown(f":{METHOD_COLORS.get(method, 'gray')}-badge[{method}]")
-                name_col.markdown(f"**{_truncate(endpoint.get('name') or 'Untitled request', 58)}**")
-            if st.session_state[selected_key]:
-                selected.append(endpoint)
+        order_rows = [
+            {
+                "id": request_id,
+                "method": requests_by_id[request_id].get("method", "GET"),
+                "name": requests_by_id[request_id].get("name") or "Untitled request",
+                "url": requests_by_id[request_id].get("url", ""),
+                "selected": bool(st.session_state.get(f"generation_selected_{request_id}", True)),
+            }
+            for request_id in current_order
+        ]
+        order_result = render_request_order_list(
+            order_rows, key=f"generation-request-order-{project_id or 'default'}",
+        )
+        changed = getattr(order_result, "rows_change", None)
+        if isinstance(changed, dict):
+            proposed_order = changed.get("order_ids", [])
+            proposed_selected = set(changed.get("selected_ids", []))
+            state_changed = False
+            if len(proposed_order) == len(eligible_ids) and set(proposed_order) == set(eligible_ids):
+                if proposed_order != current_order:
+                    try:
+                        if project_id:
+                            _persist_generation_order(project_id, proposed_order)
+                        else:
+                            st.session_state["generation_order_ids"] = proposed_order
+                        state_changed = True
+                    except Exception as exc:
+                        st.error(f"Could not save request order: {exc}")
+            if proposed_selected <= set(eligible_ids):
+                for request_id in eligible_ids:
+                    was_selected = st.session_state.get(f"generation_selected_{request_id}", True)
+                    st.session_state[f"generation_selected_{request_id}"] = request_id in proposed_selected
+                    state_changed = state_changed or was_selected != (request_id in proposed_selected)
+            if state_changed:
+                st.rerun()
 
-        selected_ids = [endpoint["id"] for endpoint in selected]
-        if len(selected_ids) > 1:
-            st.markdown(
-                '<div class="aa-inner-divider">Selected request order · drag to reorder</div>',
-                unsafe_allow_html=True,
-            )
-            if sort_items and project_id:
-                labels_by_id = {}
-                ids_by_label = {}
-                for request_id in selected_ids:
-                    endpoint = requests_by_id[request_id]
-                    base_label = (
-                        f"{endpoint.get('method', 'GET').upper()} · "
-                        f"{endpoint.get('name') or 'Untitled request'}"
-                    )
-                    label = base_label
-                    prefix_length = 4
-                    while label in ids_by_label:
-                        label = f"{base_label} · {request_id[:prefix_length]}"
-                        prefix_length += 2
-                    labels_by_id[request_id] = label
-                    ids_by_label[label] = request_id
-                sortable_style = """
-                .sortable-component { background: transparent; border: 0; padding: 0; }
-                .sortable-container { background: transparent; }
-                .sortable-item { background: rgba(128,128,128,.08); color: inherit;
-                    border: 1px solid rgba(128,128,128,.22); border-radius: 8px;
-                    margin: 4px 0; cursor: grab; }
-                .sortable-item:hover { border-color: #ff6c37; }
-                """
-                selection_hash = hashlib.sha1(
-                    ",".join(sorted(selected_ids)).encode("utf-8")
-                ).hexdigest()[:10]
-                sorted_labels = sort_items(
-                    [labels_by_id[request_id] for request_id in selected_ids],
-                    direction="vertical",
-                    custom_style=sortable_style,
-                    key=f"test-generation-order-{project_id}-{selection_hash}",
-                )
-                if sorted_labels and set(sorted_labels) == set(ids_by_label):
-                    reordered_selected = [ids_by_label[label] for label in sorted_labels]
-                    if reordered_selected != selected_ids:
-                        full_order = _merge_selected_generation_order(
-                            current_order, eligible_ids, selected_ids, reordered_selected
-                        )
-                        try:
-                            _persist_generation_order(project_id, full_order)
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not save flow order: {exc}")
-            elif project_id:
-                st.info(
-                    "Drag-and-drop is unavailable. Use the arrow controls to reorder selected requests. "
-                    "Install `streamlit-sortables` to enable dragging."
-                )
-                for position, request_id in enumerate(selected_ids):
-                    endpoint = requests_by_id[request_id]
-                    name = f"{endpoint.get('method', 'GET').upper()} · {endpoint.get('name') or 'Untitled request'}"
-                    name_col, up_col, down_col = st.columns(
-                        [5, 0.65, 0.65], vertical_alignment="center"
-                    )
-                    name_col.caption(f"{position + 1}. {_truncate(name, 54)}")
-                    if up_col.button(
-                        "↑", key=f"test_generation_up_{request_id}",
-                        help="Move selected request earlier", disabled=position == 0,
-                    ):
-                        reordered = selected_ids.copy()
-                        reordered[position - 1], reordered[position] = reordered[position], reordered[position - 1]
-                        full_order = _merge_selected_generation_order(
-                            current_order, eligible_ids, selected_ids, reordered
-                        )
-                        try:
-                            _persist_generation_order(project_id, full_order)
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not save flow order: {exc}")
-                    if down_col.button(
-                        "↓", key=f"test_generation_down_{request_id}",
-                        help="Move selected request later", disabled=position == len(selected_ids) - 1,
-                    ):
-                        reordered = selected_ids.copy()
-                        reordered[position], reordered[position + 1] = reordered[position + 1], reordered[position]
-                        full_order = _merge_selected_generation_order(
-                            current_order, eligible_ids, selected_ids, reordered
-                        )
-                        try:
-                            _persist_generation_order(project_id, full_order)
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not save flow order: {exc}")
+        ordered_ids = st.session_state.get("generation_order_ids", current_order)
+        selected_ids = {
+            request_id for request_id in eligible_ids
+            if st.session_state.get(f"generation_selected_{request_id}", True)
+        }
+        selected = _generation_requests_in_order(requests_by_id, ordered_ids, selected_ids)
 
         if not endpoints:
             st.info("Enable saved requests in API Workspace to start generation.")
@@ -1713,12 +1764,16 @@ def render_test_case_list() -> None:
         "All": None, "Passed": "passed", "Failed": "failed",
         "Error": "error", "Not run": "not_run",
     }[chosen_filter]
+    visible_cases = [
+        tc for tc in test_cases
+        if not filter_status or statuses.get(tc.get("id")) == filter_status
+    ]
     shown = 0
-    for index, tc in enumerate(test_cases):
-        if filter_status and statuses.get(tc.get("id")) != filter_status:
-            continue
-        shown += 1
-        render_test_case_card(tc, index)
+    for _, heading, grouped_cases in _group_test_cases_by_endpoint(visible_cases):
+        st.markdown(f"#### {heading}")
+        for tc in grouped_cases:
+            shown += 1
+            render_test_case_card(tc, test_cases.index(tc))
     if shown == 0:
         st.caption("No test cases match this result filter.")
 
@@ -1770,6 +1825,442 @@ def _request_rows(values) -> list[dict]:
     return rows
 
 
+def _contract_editor_rows(values) -> list[dict]:
+    """Normalize contract headers or query parameters for a review editor.
+
+    Args:
+        values (Any): Mapping or list of key/value rows from a contract parser.
+
+    Returns:
+        list[dict]: Editable rows with send, key, value, and description fields.
+    """
+    if isinstance(values, dict):
+        rows = [
+            {"send": True, "key": str(key), "value": "" if value is None else str(value), "description": ""}
+            for key, value in values.items()
+        ]
+    elif isinstance(values, list):
+        rows = [
+            {
+                "send": bool(row.get("enabled", not row.get("disabled", False))),
+                "key": str(row.get("key") or ""),
+                "value": "" if row.get("value") is None else str(row.get("value")),
+                "description": str(row.get("description") or ""),
+            }
+            for row in values if isinstance(row, dict)
+        ]
+    else:
+        rows = []
+    return rows
+
+
+def _render_contract_rows(label: str, rows: list[dict], key: str) -> list[dict]:
+    """Render editable header or query parameter rows for a contract request.
+
+    Args:
+        label (str): Section label displayed above the table.
+        rows (list[dict]): Initial editable key/value rows.
+        key (str): Stable Streamlit widget key for this endpoint and section.
+
+    Returns:
+        list[dict]: Edited rows in the saved-request row format.
+    """
+    st.markdown(f"**{label}**")
+    editor_rows = rows or [{"send": True, "key": "", "value": "", "description": ""}]
+    edited = st.data_editor(
+        editor_rows,
+        key=key,
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_order=["send", "key", "value", "description"],
+        column_config={
+            "send": st.column_config.CheckboxColumn("Send", width="small", default=True),
+            "key": st.column_config.TextColumn("Key", width="medium"),
+            "value": st.column_config.TextColumn("Value", width="large"),
+            "description": st.column_config.TextColumn("Description", width="medium"),
+        },
+        placeholder="Add a row",
+    )
+    return [
+        {
+            "enabled": True if row.get("send") is None else bool(row.get("send")),
+            "key": str(row.get("key") or "").strip(),
+            "value": "" if row.get("value") is None else str(row.get("value")),
+            "description": str(row.get("description") or ""),
+        }
+        for row in edited
+        if row.get("key") or row.get("value") or row.get("description")
+    ]
+
+
+def _render_contract_import_panel(project_id: str, collections: list[dict]) -> None:
+    """Render contract source input, endpoint review/import, and flow discovery controls.
+
+    Args:
+        project_id (str): Current project receiving imported requests.
+        collections (list[dict]): Existing collections available as destinations.
+
+    Returns:
+        None: Writes the import and discovery UI and updates session state.
+    """
+    notice = st.session_state.pop("contract_import_notice", None)
+    if notice:
+        st.success(notice)
+    preview_key = "contract_import_preview"
+    if st.session_state.get(preview_key, {}).get("project_id") not in (None, project_id):
+        st.session_state.pop(preview_key, None)
+    with st.expander("Import API docs or contract", expanded=False):
+        source_kind = st.selectbox(
+            "Source", ["Paste text or contract", "Upload file", "Public documentation URL"],
+            key=f"contract_source_kind_{project_id}",
+        )
+        format_label = st.selectbox(
+            "Format", ["Auto detect", "OpenAPI / Swagger", "Postman v2.1", "Prose / Markdown"],
+            key=f"contract_format_{project_id}",
+        )
+        format_hint = {
+            "Auto detect": "auto", "OpenAPI / Swagger": "openapi",
+            "Postman v2.1": "postman", "Prose / Markdown": "text",
+        }[format_label]
+        source_content, source_name = "", ""
+        source_type = "text"
+        if source_kind == "Public documentation URL":
+            source_type = "url"
+            source_content = st.text_input(
+                "Public docs URL", key=f"contract_url_{project_id}",
+                placeholder="https://docs.example.com/api",
+            )
+            source_name = source_content
+            st.caption("URL imports are anonymous and limited to publicly reachable pages up to 5 MB.")
+        elif source_kind == "Upload file":
+            uploaded = st.file_uploader(
+                "Choose a contract or documentation file",
+                type=["json", "yaml", "yml", "md", "txt"],
+                key=f"contract_file_{project_id}",
+            )
+            if uploaded:
+                source_name = uploaded.name
+                source_content = uploaded.getvalue().decode("utf-8", errors="replace")
+        else:
+            source_content = st.text_area(
+                "Paste OpenAPI, Postman, or API documentation text", height=150,
+                key=f"contract_text_{project_id}",
+                placeholder="Paste a JSON/YAML contract or Markdown/plain text API documentation...",
+            )
+            source_name = "Pasted API documentation"
+
+        preview_clicked = st.button(
+            "Discover endpoints", type="primary", icon=":material/search:",
+            key=f"contract_preview_button_{project_id}", disabled=not source_content,
+        )
+        if preview_clicked:
+            try:
+                with st.spinner("Reading contract and discovering endpoints..."):
+                    preview = api_post("/api/v1/contracts/preview", {
+                        "source_type": source_type, "content": source_content,
+                        "source_name": source_name, "format_hint": format_hint,
+                    })
+                st.session_state[preview_key] = {
+                    "project_id": project_id, "source": {
+                        "source_type": source_type, "content": source_content,
+                        "source_name": source_name, "format_hint": format_hint,
+                    },
+                    "data": preview,
+                }
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not discover endpoints: {exc}")
+
+    preview_state = st.session_state.get(preview_key)
+    if not preview_state or preview_state.get("project_id") != project_id:
+        preview_state = None
+    if preview_state:
+        preview = preview_state["data"]
+        with st.container(border=True):
+            heading_col, source_col = st.columns([3, 2], vertical_alignment="center")
+            heading_col.subheader(f"Review endpoints · {len(preview['endpoints'])}")
+            source_col.caption(f"{preview.get('source_name')} · {preview.get('source_format', '').upper()}")
+            if preview.get("base_url_required"):
+                base_col, apply_col = st.columns([4, 1], vertical_alignment="bottom")
+                with base_col:
+                    base_url = st.text_input(
+                        "API base URL", key=f"contract_base_url_{project_id}",
+                        placeholder="https://api.example.com/v1",
+                        help="Used to turn relative contract paths into executable request URLs.",
+                    )
+                with apply_col:
+                    apply_base = st.button(
+                        "Apply", key=f"contract_apply_base_{project_id}",
+                        disabled=not base_url.strip(), width="stretch",
+                    )
+                if apply_base:
+                    try:
+                        with st.spinner("Applying the API base URL..."):
+                            updated = api_post("/api/v1/contracts/preview", {
+                                **preview_state["source"], "base_url": base_url.strip(),
+                                "source_id": preview["source_id"],
+                            })
+                        preview_state["data"] = updated
+                        st.session_state[preview_key] = preview_state
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not apply the API base URL: {exc}")
+                st.info("Provide a base URL before importing endpoints with relative or unresolved URLs.")
+
+            st.caption("Every discovered endpoint is listed below. Uncheck entries you do not want to import.")
+            reviewed_endpoints = {}
+            for index, endpoint in enumerate(preview["endpoints"]):
+                endpoint_id = endpoint.get("id", str(index))
+                checkbox_key = f"contract_import_{preview['source_id']}_{endpoint_id}"
+                method_key = f"contract_method_{preview['source_id']}_{endpoint_id}"
+                st.session_state.setdefault(checkbox_key, True)
+                path = (endpoint.get("contract") or {}).get("path") or endpoint.get("url", "")
+                method = str(st.session_state.get(method_key, endpoint.get("method", "GET"))).upper()
+                include_col, method_col, name_col, path_col = st.columns(
+                    [0.45, 0.8, 2.4, 4.35], vertical_alignment="center"
+                )
+                include_col.checkbox("Import endpoint", key=checkbox_key, label_visibility="collapsed")
+                method_col.markdown(f":{METHOD_COLORS.get(method, 'gray')}-badge[{method}]")
+                name_col.markdown(f"**{_truncate(endpoint.get('name') or 'Untitled endpoint', 38)}**")
+                path_col.code(path, language="text", wrap_lines=True)
+                with st.expander(f"Edit request · {endpoint.get('name') or path}", expanded=False):
+                    if endpoint.get("deprecated"):
+                        st.caption("Deprecated operation is included from the source contract.")
+                    if endpoint.get("source_excerpt"):
+                        st.caption(endpoint["source_excerpt"])
+
+                    method_options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]
+                    st.session_state.setdefault(method_key, method if method in method_options else "GET")
+                    endpoint_method = st.selectbox(
+                        "Request type", method_options, key=method_key,
+                    )
+
+                    header_rows = _contract_editor_rows(endpoint.get("headers", {}))
+                    query_rows = _contract_editor_rows(endpoint.get("query_params", []))
+                    headers = _render_contract_rows(
+                        "Headers", header_rows,
+                        f"contract_headers_{preview['source_id']}_{endpoint_id}",
+                    )
+                    query_params = _render_contract_rows(
+                        "Query parameters", query_rows,
+                        f"contract_query_{preview['source_id']}_{endpoint_id}",
+                    )
+
+                    body_key = f"contract_body_{preview['source_id']}_{endpoint_id}"
+                    body_included_key = f"contract_body_enabled_{preview['source_id']}_{endpoint_id}"
+                    body_allowed = endpoint_method not in {"GET", "DELETE"}
+                    if body_key not in st.session_state:
+                        initial_body = endpoint.get("body")
+                        st.session_state[body_key] = (
+                            json.dumps(initial_body, ensure_ascii=False, indent=2)
+                            if isinstance(initial_body, (dict, list))
+                            else str(initial_body or "")
+                        )
+                    st.session_state.setdefault(
+                        body_included_key,
+                        bool(endpoint.get("include_body", endpoint.get("body") is not None)),
+                    )
+                    if body_allowed:
+                        include_body = st.checkbox(
+                            "Include payload", key=body_included_key,
+                            help="Send this payload with the imported request.",
+                        )
+                        body_text = st.text_area(
+                            "Payload", key=body_key, height=150,
+                            disabled=not include_body,
+                            placeholder='{"key": "value"}',
+                        )
+                        if include_body and body_text.strip():
+                            try:
+                                body = json.loads(body_text)
+                            except json.JSONDecodeError:
+                                body = body_text
+                        else:
+                            body = None
+                    else:
+                        st.session_state[body_included_key] = False
+                        st.session_state[body_key] = ""
+                        body = None
+                        st.caption(f"{endpoint_method} requests are imported without a payload.")
+
+                    endpoint.update({
+                        "method": endpoint_method,
+                        "headers": headers,
+                        "query_params": query_params,
+                        "body": body,
+                        "include_body": body_allowed and bool(st.session_state[body_included_key]),
+                    })
+                    reviewed_endpoints[endpoint_id] = endpoint
+
+            collection_options = {item["id"]: item["name"] for item in collections}
+            create_new_value = "__create_contract_collection__"
+            option_ids = list(collection_options) + [create_new_value]
+            default_collection = st.session_state.get("selected_collection_id")
+            default_index = option_ids.index(default_collection) if default_collection in option_ids else 0
+            destination = st.selectbox(
+                "Save imported requests to", option_ids,
+                index=default_index,
+                format_func=lambda value: "Create a new collection" if value == create_new_value else collection_options[value],
+                key=f"contract_destination_{project_id}_{preview['source_id']}",
+            )
+            new_collection_name = ""
+            if destination == create_new_value:
+                new_collection_name = st.text_input(
+                    "New collection name", value=preview.get("title") or "Imported API",
+                    key=f"contract_collection_name_{project_id}_{preview['source_id']}",
+                )
+            selected_endpoints = [
+                reviewed_endpoints.get(endpoint.get("id"), endpoint) for endpoint in preview["endpoints"]
+                if st.session_state.get(f"contract_import_{preview['source_id']}_{endpoint.get('id')}", True)
+            ]
+            blocked_by_url = any(endpoint.get("_base_url_required") for endpoint in selected_endpoints)
+            import_col, clear_col = st.columns([1.3, 5], vertical_alignment="center")
+            with import_col:
+                import_clicked = st.button(
+                    f"Import {len(selected_endpoints)} endpoint(s)",
+                    type="primary", icon=":material/download:",
+                    key=f"contract_import_button_{project_id}_{preview['source_id']}",
+                    disabled=not selected_endpoints or blocked_by_url,
+                )
+            with clear_col:
+                if st.button("Discard preview", key=f"contract_discard_{project_id}_{preview['source_id']}"):
+                    st.session_state.pop(preview_key, None)
+                    st.rerun()
+            if import_clicked:
+                try:
+                    if destination == create_new_value:
+                        if not new_collection_name.strip():
+                            raise ValueError("Enter a name for the destination collection.")
+                        created = api_post(
+                            f"/api/v1/projects/{project_id}/collections",
+                            {"name": new_collection_name.strip()},
+                        )
+                        destination = created["id"]
+                    payload_endpoints = []
+                    for endpoint in selected_endpoints:
+                        clean = dict(endpoint)
+                        clean.pop("_base_url_required", None)
+                        if clean.get("method") in {"GET", "DELETE"}:
+                            clean["body"] = None
+                            clean["include_body"] = False
+                        payload_endpoints.append(clean)
+                    with st.spinner("Saving reviewed endpoints to the project..."):
+                        result = api_post(
+                            f"/api/v1/projects/{project_id}/contracts/import",
+                            {"collection_id": destination, "endpoints": payload_endpoints},
+                        )
+                    _refresh_project_preserving_drafts(project_id)
+                    st.session_state["selected_collection_id"] = destination
+                    st.session_state.setdefault("contract_flow_discoveries", {})[result["source_id"]] = {
+                        "dependencies": result.get("dependencies", []),
+                        "candidate_flows": result.get("candidate_flows", []),
+                    }
+                    st.session_state.pop(preview_key, None)
+                    st.session_state["contract_import_notice"] = (
+                        f"Imported {len(result['imported'])} endpoint(s). "
+                        "They remain excluded from test generation until enabled."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not import endpoints: {exc}")
+
+    project = st.session_state.get("current_project") or {}
+    contract_sources = {}
+    for endpoint in project.get("endpoints", []):
+        contract = endpoint.get("contract") or {}
+        if contract.get("source_id"):
+            contract_sources[contract["source_id"]] = contract.get("source_name") or contract["source_id"]
+    if not contract_sources:
+        return
+    with st.expander("Discover flows from imported contracts", expanded=False):
+        labels = {source_id: f"{name} · {source_id[:8]}" for source_id, name in contract_sources.items()}
+        source_ids = list(labels)
+        source_id = st.selectbox(
+            "Imported contract", source_ids,
+            format_func=lambda value: labels[value],
+            key=f"contract_flow_source_{project_id}",
+        )
+        discoveries = st.session_state.setdefault("contract_flow_discoveries", {})
+        if source_id not in discoveries:
+            if st.button("Analyze dependencies", key=f"contract_discover_{project_id}_{source_id}", type="primary"):
+                try:
+                    with st.spinner("Analyzing response and request schemas..."):
+                        discoveries[source_id] = api_post(
+                            f"/api/v1/projects/{project_id}/contracts/flow-candidates",
+                            {"source_id": source_id},
+                        )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not discover contract flows: {exc}")
+            return
+        discovery = discoveries[source_id]
+        dependencies = discovery.get("dependencies", [])
+        candidates = discovery.get("candidate_flows", [])
+        if not dependencies:
+            st.info("No response-to-request field dependencies were found in this contract.")
+            return
+        endpoint_by_id = {item["id"]: item for item in project.get("endpoints", [])}
+        st.markdown(f"**{len(dependencies)} dependency link(s) · {len(candidates)} candidate flow(s)**")
+        with st.expander("Dependency evidence", expanded=False):
+            for edge in dependencies:
+                producer = endpoint_by_id.get(edge["from"], {})
+                consumer = endpoint_by_id.get(edge["to"], {})
+                evidence = ", ".join(
+                    f"{item.get('response_field')} → {item.get('request_field')}"
+                    for item in edge.get("evidence", [])
+                )
+                cycle_label = " · cycle edge" if edge.get("cyclic") else ""
+                st.caption(
+                    f"{producer.get('method')} {producer.get('name')} → "
+                    f"{consumer.get('method')} {consumer.get('name')} · {evidence}{cycle_label}"
+                )
+        selected_candidates = []
+        for candidate in candidates:
+            candidate_id = candidate["id"]
+            ordered = [endpoint_by_id.get(item, {}) for item in candidate["endpoint_ids"]]
+            path_label = " → ".join(
+                f"{item.get('method', 'GET')} {item.get('name') or item.get('url')}" for item in ordered
+            )
+            selected = st.checkbox(
+                path_label, value=True,
+                key=f"contract_candidate_{project_id}_{candidate_id}",
+            )
+            for edge in candidate.get("dependencies", []):
+                evidence_text = ", ".join(
+                    f"{item.get('response_field')} → {item.get('request_field')}"
+                    for item in edge.get("evidence", [])
+                )
+                st.caption(evidence_text)
+            if selected:
+                selected_candidates.append(candidate_id)
+        if not candidates:
+            st.caption("The dependency graph has no acyclic multi-endpoint paths to execute.")
+            return
+        business_requirements = st.text_area(
+            "Business meaning or rules for these flows (optional)", height=90,
+            key=f"contract_flow_requirements_{project_id}_{source_id}",
+            placeholder="For example, describe what makes a checkout complete or which outcomes should be asserted.",
+        )
+        if st.button(
+            "Generate flow test cases", type="primary", icon=":material/auto_awesome:",
+            key=f"contract_generate_flows_{project_id}_{source_id}",
+            disabled=not selected_candidates,
+        ):
+            try:
+                with st.spinner("Generating business-named flow scenarios..."):
+                    generated = api_post(
+                        f"/api/v1/projects/{project_id}/contracts/generate-flows",
+                        {"source_id": source_id, "candidate_ids": selected_candidates,
+                         "business_requirements": business_requirements or None},
+                    )
+                st.session_state["test_cases"] = generated
+                st.session_state["executions"] = {}
+                st.success(f"Generated {len(generated)} flow test case(s). Open the Test Cases tab to review and run them.")
+            except Exception as exc:
+                st.error(f"Could not generate flow test cases: {exc}")
+
+
 def _new_request_draft(saved: dict | None = None) -> dict:
     """Create independent editor state, optionally initialized from a saved request."""
     saved = dict(saved or {})
@@ -1786,6 +2277,9 @@ def _new_request_draft(saved: dict | None = None) -> dict:
         "body": saved.get("body") if isinstance(saved.get("body"), str) else json.dumps(saved.get("body"), ensure_ascii=False) if saved.get("body") is not None else "",
         "include_body": saved.get("include_body", True),
         "include_for_generation": saved.get("include_for_generation", saved.get("include", False)),
+        "contract": saved.get("contract"),
+        "source_excerpt": saved.get("source_excerpt", ""),
+        "deprecated": saved.get("deprecated", False),
         "assertions": assertions,
         "response": None,
     }
@@ -2000,6 +2494,9 @@ def _save_request_draft(draft: dict, collection_id: str, project_id: str) -> dic
         "include_body": bool(draft["include_body"]),
         "include_for_generation": bool(draft.get("include_for_generation", False)),
         "assertions": draft.get("assertions", {}),
+        **({"contract": draft["contract"]} if draft.get("contract") else {}),
+        **({"source_excerpt": draft["source_excerpt"]} if draft.get("source_excerpt") else {}),
+        **({"deprecated": True} if draft.get("deprecated") else {}),
     }
     saved = api_post(
         f"/api/v1/projects/{project_id}/collections/{collection_id}/requests",
@@ -2010,6 +2507,25 @@ def _save_request_draft(draft: dict, collection_id: str, project_id: str) -> dic
     draft["headers"] = _request_rows(saved.get("headers", []))
     draft["query_params"] = _request_rows(saved.get("query_params", []))
     return saved
+
+
+def _resolve_curl_url_sync(draft: dict, control_text: str) -> str:
+    """Use the parsed URL while the browser component replaces stale cURL state.
+
+    Args:
+        draft (dict): Active request draft with an optional cURL synchronization marker.
+        control_text (str): Current text reported by the browser component.
+
+    Returns:
+        str: Parsed URL during synchronization, otherwise the current component text.
+    """
+    sync_state = draft.get("curl_url_sync")
+    if not sync_state:
+        return control_text
+    if control_text == sync_state["source"]:
+        return sync_state["url"]
+    draft.pop("curl_url_sync", None)
+    return control_text
 
 
 def _render_request_assertions(draft: dict, tab_id: str) -> tuple[bool, dict | None]:
@@ -2142,20 +2658,26 @@ def _render_request_assertions(draft: dict, tab_id: str) -> tuple[bool, dict | N
 def _render_request_draft(draft: dict, collections: list[dict], project_id: str) -> None:
     """Render one request editor tab, send/save actions, and its response panel."""
     tab_id = draft["tab_id"]
-    method_options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    method_options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]
 
     # Apply imported values before creating keyed widgets on this rerun.
-    parsed = st.session_state.pop(f"pending_curl_{tab_id}", None)
-    if parsed:
+    pending_curl = st.session_state.pop(f"pending_curl_{tab_id}", None)
+    if pending_curl:
+        parsed = pending_curl["parsed"]
         draft["method"] = parsed.get("method", "GET")
         draft["url"] = parsed.get("url", "")
+        draft["curl_url_sync"] = {
+            "source": pending_curl["source"],
+            "url": draft["url"],
+        }
         draft["headers"] = _request_rows(parsed.get("headers", {}))
         draft["query_params"] = _request_rows(parsed.get("query_params", {}))
         draft["body"] = parsed.get("body") or ""
         draft["include_body"] = True
         draft["response"] = None
         st.session_state[f"method_{tab_id}"] = draft["method"] if draft["method"] in method_options else "GET"
-        st.session_state[f"url_{tab_id}"] = draft["url"]
+        st.session_state[f"request-url-control-{tab_id}"] = {"text": draft["url"]}
+        st.session_state.pop(f"curl_error_{tab_id}", None)
         st.session_state[f"body_{tab_id}"] = draft["body"]
         st.session_state[f"body_mode_{tab_id}"] = "raw"
         st.session_state.pop(f"header_editor_{tab_id}", None)
@@ -2164,7 +2686,6 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
     # Seed keyed widget values before construction. Keyed widgets read these
     # values directly, so passing a second default value would conflict.
     st.session_state.setdefault(f"method_{tab_id}", draft.get("method", "GET"))
-    st.session_state.setdefault(f"url_{tab_id}", draft.get("url", ""))
     st.session_state.setdefault(f"body_{tab_id}", draft.get("body", ""))
 
     name_col, collection_col, save_col = st.columns([3.2, 2.2, 1.1], vertical_alignment="bottom")
@@ -2187,24 +2708,32 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
     with save_col:
         save_clicked = st.button("Save", key=f"save_{tab_id}", disabled=not collections, icon=":material/save:", use_container_width=True)
 
-    method_col, request_url_col, curl_col, send_col = st.columns([1.15, 5.2, 1.1, 1.2], vertical_alignment="bottom")
+    method_col, request_url_col, send_col = st.columns([1.15, 6.3, 1.2], vertical_alignment="bottom")
     with method_col:
         if draft["method"] not in method_options:
             draft["method"] = "GET"
         st.session_state.setdefault(f"method_{tab_id}", draft["method"])
         draft["method"] = st.selectbox("Method", method_options, key=f"method_{tab_id}")
     with request_url_col:
-        draft["url"] = st.text_input("URL", key=f"url_{tab_id}", placeholder="https://api.example.com/resource")
-    with curl_col:
-        with st.popover("cURL", icon=":material/code:", help="Import a cURL command", use_container_width=True):
-            curl = st.text_area("Paste cURL", height=120, key=f"curl_{tab_id}", placeholder="curl -X POST 'https://api.example.com/items' -H 'Content-Type: application/json' -d '{\"name\":\"item\"}'")
-            if st.button("Apply to request", key=f"parse_curl_{tab_id}", type="primary", use_container_width=True):
-                try:
-                    parsed = api_post("/api/v1/curl/parse", {"curl": curl})
-                    st.session_state[f"pending_curl_{tab_id}"] = parsed
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not apply cURL: {exc}")
+        url_control = render_curl_aware_url(draft.get("url", ""), tab_id)
+        control_text = getattr(url_control, "text", draft.get("url", ""))
+        draft["url"] = _resolve_curl_url_sync(draft, control_text)
+        curl_ready = getattr(url_control, "curl_ready", None)
+        curl_error_key = f"curl_error_{tab_id}"
+        if curl_ready:
+            try:
+                parsed = api_post("/api/v1/curl/parse", {"curl": curl_ready})
+                st.session_state[f"pending_curl_{tab_id}"] = {
+                    "parsed": parsed,
+                    "source": curl_ready,
+                }
+                st.session_state.pop(curl_error_key, None)
+                st.rerun()
+            except Exception as exc:
+                st.session_state[curl_error_key] = {"text": curl_ready, "message": str(exc)}
+        curl_error = st.session_state.get(curl_error_key)
+        if curl_error and curl_error.get("text") == draft["url"]:
+            st.error(f"Could not parse cURL: {curl_error['message']}")
     with send_col:
         send_clicked = st.button("Send", type="primary", key=f"send_{tab_id}", use_container_width=True, icon=":material/send:")
 
@@ -2246,6 +2775,8 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
 
     if save_clicked and selected_collection:
         try:
+            if re.match(r"^\s*curl(?:\.exe)?(?:\s|$)", draft.get("url", ""), re.IGNORECASE):
+                raise ValueError("Wait for cURL parsing to finish before saving the request.")
             _save_request_draft(draft, selected_collection, project_id)
             _refresh_project_preserving_drafts(project_id)
             st.success("Request saved to collection.")
@@ -2254,6 +2785,8 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
             st.error(f"Could not save request: {exc}")
     if send_clicked or run_all_assertions or single_assertion:
         try:
+            if re.match(r"^\s*curl(?:\.exe)?(?:\s|$)", draft.get("url", ""), re.IGNORECASE):
+                raise ValueError("Wait for cURL parsing to finish before sending the request.")
             request_payload = _request_http_payload(draft)
             if run_all_assertions or single_assertion:
                 selected_assertions = _selected_request_assertions(
@@ -2276,6 +2809,13 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
     if response:
         st.divider()
         st.subheader("Response")
+        # if "assertion_results" in response:
+        #     if response.get("assertions_passed"):
+        #         st.success("Assertions completed successfully. Review the individual results and response below.")
+        #     else:
+        #         st.warning("Assertions completed with failures. Review the results and response below.")
+        # else:
+        #     st.info("Response received. Review the response body and headers below.")
         status = response.get("status", 0)
         state = "Success" if 200 <= status < 300 else "Redirect" if 300 <= status < 400 else "Error"
         status_col, state_col, elapsed_col = st.columns([1, 1, 1])
@@ -2350,6 +2890,8 @@ def render_api_workspace() -> None:
         st.warning("Select or create a project to manage request collections.")
         return
 
+    collections = project.get("collections", [])
+    _render_contract_import_panel(project_id, collections)
     left, editor = st.columns([1.15, 3.7], gap="large")
     with left:
         st.subheader("Collections")
@@ -2368,7 +2910,6 @@ def render_api_workspace() -> None:
                 except Exception as exc:
                     st.error(f"Could not create collection: {exc}")
 
-        collections = project.get("collections", [])
         collection_by_id = {item["id"]: item for item in collections}
         if collections:
             selected_id = st.selectbox(

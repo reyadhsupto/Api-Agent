@@ -191,6 +191,29 @@ def test_generated_cases_are_persisted_to_selected_project(database, monkeypatch
     assert len(saved) == 2
 
 
+def test_generated_cases_keep_source_endpoint_group_metadata(database, monkeypatch):
+    """Generation validates and persists its originating endpoint label and ID."""
+    project = database.create_project("Endpoint grouping")
+    monkeypatch.setattr(main, "database", database)
+    database.add_endpoint(project["id"], {
+        "id": "source-request", "name": "", "method": "GET",
+        "url": "https://example.test/items",
+    })
+    monkeypatch.setattr(main, "generate_test_cases", lambda **kwargs: [{
+        "type": "positive", "name": "Returns items",
+        "request": {"method": "GET", "url": "https://example.test/items"},
+    }])
+
+    generated = main.generate_test_cases_endpoint(GenerateRequest(
+        parsed_curl={"method": "GET", "url": "https://example.test/items"},
+        project_id=project["id"], source_endpoint_id="source-request",
+    ))
+
+    assert generated[0]["source_endpoint_id"] == "source-request"
+    assert generated[0]["source_endpoint_name"] == "https://example.test/items"
+    assert database.get_project(project["id"])["test_cases"][0]["source_endpoint_id"] == "source-request"
+
+
 def test_project_and_execution_routes_read_and_write_postgres(database, monkeypatch):
     """API CRUD operations and execution history use the PostgreSQL repository."""
     monkeypatch.setattr(main, "database", database)

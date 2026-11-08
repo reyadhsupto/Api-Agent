@@ -23,9 +23,18 @@ from app.schemas import (
     HttpAssertionExecutionRequest,
     FlowGenerateRequest,
     TestCaseGenerateRequest,
+    ContractPreviewRequest,
+    ContractImportRequest,
+    FlowDiscoveryRequest,
+    DiscoveredFlowGenerateRequest,
 )
 from app.parser import parse_curl
-from app.generator import generate_test_cases, generate_flow_test_cases
+from app.generator import generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases
+from app.contracts import (
+    build_dependency_graph,
+    fetch_public_document,
+    parse_contract_document,
+)
 from app.executor import execute_test_case, execute_flow_test_case, evaluate_request_assertions
 # Load environment variables from .env file
 load_dotenv()
@@ -451,13 +460,219 @@ def export_collection(project_id: str, collection_id: str) -> dict:
     return _postman_collection(collection)
 
 
+@app.post("/api/v1/contracts/preview")
+def preview_contract(request: ContractPreviewRequest) -> dict:
+    """Parse a contract or prose document and return every endpoint for review.
+
+    Args:
+        request (ContractPreviewRequest): Source content/URL and parser options.
+
+    Returns:
+        dict: Endpoint previews, source metadata, dependencies, and candidates.
+
+    Raises:
+        HTTPException: If source fetching, parsing, or LLM extraction fails.
+    """
+    content = request.content
+    content_type = ""
+    if request.source_type == "url":
+        try:
+            content, content_type = fetch_public_document(request.content)
+        except (ValueError, requests.RequestException) as exc:
+            raise HTTPException(status_code=422, detail=f"Could not fetch documentation: {exc}") from exc
+    if len(content.encode("utf-8")) > 5_000_000:
+        raise HTTPException(status_code=413, detail="Contract content exceeds the 5 MB import limit.")
+    try:
+        source_name = request.source_name or (request.content if request.source_type == "url" else "")
+        result = parse_contract_document(
+            content=content,
+            source_name=source_name,
+            format_hint=request.format_hint,
+            base_url=request.base_url,
+            source_id=request.source_id,
+            is_html="text/html" in content_type.lower(),
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse API documentation: {exc}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not extract endpoints with the configured LLM: {exc}") from exc
+    if not result["endpoints"]:
+        raise HTTPException(status_code=422, detail="The source did not contain any API endpoints.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/contracts/import")
+def import_contract_requests(project_id: str, request: ContractImportRequest) -> dict:
+    """Persist reviewed endpoints and return their dependency candidates.
+
+    Args:
+        project_id (str): Project receiving the imported requests.
+        request (ContractImportRequest): Destination collection and reviewed endpoints.
+
+    Returns:
+        dict: Imported requests, dependency evidence, and candidate paths.
+
+    Raises:
+        HTTPException: If the project/collection is missing or data is invalid.
+    """
+    if not database.get_project(project_id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    endpoints = []
+    for raw_endpoint in request.endpoints:
+        endpoint = dict(raw_endpoint)
+        endpoint.pop("_base_url_required", None)
+        url = str(endpoint.get("url", ""))
+        method = str(endpoint.get("method", "GET")).upper()
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail=f"Endpoint {endpoint.get('name', '')!r} needs an absolute URL. Set an API base URL and preview again.")
+        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}:
+            raise HTTPException(status_code=422, detail=f"Unsupported HTTP method: {method}")
+        endpoint["method"] = method
+        if method in {"GET", "DELETE"}:
+            endpoint["body"] = None
+            endpoint["include_body"] = False
+            contract = endpoint.get("contract")
+            if isinstance(contract, dict):
+                contract["request_fields"] = [
+                    field for field in contract.get("request_fields", [])
+                    if not str(field.get("target", "")).startswith("request.body.")
+                ]
+        endpoints.append(endpoint)
+    if not endpoints:
+        raise HTTPException(status_code=422, detail="Select at least one endpoint to import.")
+    try:
+        saved = database.import_requests(project_id, request.collection_id, endpoints)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Destination collection not found")
+    project = database.get_project(project_id)
+    source_ids = {item.get("contract", {}).get("source_id") for item in saved}
+    source_id = next(iter(source_ids)) if len(source_ids) == 1 else None
+    graph = build_dependency_graph(project.get("endpoints", []))
+    candidates = [item for item in graph["candidate_flows"] if item.get("source_id") == source_id]
+    source_endpoint_ids = {item["id"] for item in saved}
+    dependencies = [
+        item for item in graph["dependencies"]
+        if item.get("from") in source_endpoint_ids and item.get("to") in source_endpoint_ids
+    ]
+    return {"imported": saved, "source_id": source_id, "dependencies": dependencies, "candidate_flows": candidates}
+
+
+@app.post("/api/v1/projects/{project_id}/contracts/flow-candidates")
+def discover_contract_flows(project_id: str, request: FlowDiscoveryRequest) -> dict:
+    """Rebuild graph edges and ranked paths from saved contract metadata.
+
+    Args:
+        project_id (str): Project owning the imported contract operations.
+        request (FlowDiscoveryRequest): Source ID to analyze.
+
+    Returns:
+        dict: Dependency evidence and ranked candidate flows.
+
+    Raises:
+        HTTPException: If the project or imported source is missing.
+    """
+    project = database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    endpoints = [
+        item for item in project.get("endpoints", [])
+        if item.get("contract", {}).get("source_id") == request.source_id
+    ]
+    if not endpoints:
+        raise HTTPException(status_code=404, detail="No imported contract endpoints found for this source.")
+    graph = build_dependency_graph(endpoints)
+    return {"source_id": request.source_id, **graph}
+
+
+@app.post("/api/v1/projects/{project_id}/contracts/generate-flows")
+def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequest) -> list:
+    """Generate flow cases from selected dependency paths and persist them.
+
+    Args:
+        project_id (str): Project where generated cases are stored.
+        request (DiscoveredFlowGenerateRequest): Selected candidates and business context.
+
+    Returns:
+        list: Validated, persisted flow test cases.
+
+    Raises:
+        HTTPException: If candidates are invalid or LLM output cannot form valid flows.
+    """
+    project = database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    endpoints = [
+        item for item in project.get("endpoints", [])
+        if item.get("contract", {}).get("source_id") == request.source_id
+    ]
+    if not endpoints:
+        raise HTTPException(status_code=404, detail="No imported contract endpoints found for this source.")
+    graph = build_dependency_graph(endpoints)
+    candidates_by_id = {item["id"]: item for item in graph["candidate_flows"]}
+    selected_ids = list(dict.fromkeys(request.candidate_ids))
+    if not selected_ids or any(candidate_id not in candidates_by_id for candidate_id in selected_ids):
+        raise HTTPException(status_code=422, detail="Choose one or more valid dependency flow candidates.")
+    candidates = [candidates_by_id[item] for item in selected_ids]
+    try:
+        test_cases = generate_discovered_flow_test_cases(
+            endpoints=endpoints,
+            candidates=candidates,
+            business_requirements=request.business_requirements,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=f"LLM returned invalid flow data: {exc}") from exc
+    if not isinstance(test_cases, list) or not test_cases:
+        raise HTTPException(status_code=502, detail="LLM returned no usable flow scenarios.")
+    candidates_by_id = {item["id"]: item for item in candidates}
+    endpoints_by_id = {item["id"]: _effective_request(item) for item in endpoints}
+    for test_case in test_cases:
+        if not isinstance(test_case, dict):
+            raise HTTPException(status_code=502, detail="LLM flow scenarios must be JSON objects.")
+        candidate = candidates_by_id.get(test_case.get("candidate_id"))
+        if candidate is None:
+            raise HTTPException(status_code=502, detail="LLM flow references an unknown candidate.")
+        steps = test_case.get("steps")
+        if not isinstance(steps, list) or len(steps) != len(candidate["endpoint_ids"]):
+            raise HTTPException(status_code=502, detail="LLM flow steps do not match the selected dependency path.")
+        edges = {(edge["from"], edge["to"]): edge for edge in candidate["dependencies"]}
+        for index, (step, endpoint_id) in enumerate(zip(steps, candidate["endpoint_ids"]), start=1):
+            if not isinstance(step, dict):
+                raise HTTPException(status_code=502, detail="LLM flow steps must be JSON objects.")
+            if step.get("endpoint_id") != endpoint_id:
+                raise HTTPException(status_code=502, detail="LLM flow endpoint order does not match its selected dependency path.")
+            step["step_order"] = index
+            step["endpoint"] = endpoints_by_id[endpoint_id]
+            step.setdefault("assertions", {})
+            mappings = step.get("variable_mappings", [])
+            if not isinstance(mappings, list) or any(not isinstance(mapping, dict) for mapping in mappings):
+                raise HTTPException(status_code=502, detail="LLM variable mappings must be an array of JSON objects.")
+            if index > 1:
+                edge = edges[(candidate["endpoint_ids"][index - 2], endpoint_id)]
+                allowed = {(item["response_field"], item["request_field"]) for item in edge["evidence"]}
+                step["variable_mappings"] = [
+                    mapping for mapping in mappings
+                    if (mapping.get("from"), mapping.get("to")) in allowed
+                ]
+            else:
+                step["variable_mappings"] = []
+        test_case["is_flow"] = True
+        test_case.setdefault("id", str(uuid.uuid4()))
+    _ensure_response_schema_defaults(test_cases)
+    _assign_test_case_ids(project_id, test_cases)
+    if not database.save_test_cases(project_id, test_cases):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return test_cases
+
+
 @app.post("/api/v1/http/send")
 def send_api_request(request: ApiRequest) -> dict:
     """Send one ad hoc HTTP request and return response details without persistence."""
     if not request.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Enter an absolute http:// or https:// URL.")
     method = request.method.upper()
-    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}:
         raise HTTPException(status_code=400, detail="Unsupported HTTP method.")
     started = time.perf_counter()
     try:
@@ -498,7 +713,7 @@ def execute_http_assertions(request: HttpAssertionExecutionRequest) -> dict:
     if not api_request.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Enter an absolute http:// or https:// URL.")
     method = api_request.method.upper()
-    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}:
         raise HTTPException(status_code=400, detail="Unsupported HTTP method.")
 
     started = time.perf_counter()
@@ -631,6 +846,18 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
     Returns:
         list: Generated test cases.
     """
+    project_id = request.project_id or database.current_project_id()
+    source_endpoint = None
+    if request.source_endpoint_id:
+        project = database.get_project(project_id) if project_id else None
+        source_endpoint = next(
+            (endpoint for endpoint in (project or {}).get("endpoints", [])
+             if endpoint.get("id") == request.source_endpoint_id),
+            None,
+        )
+        if source_endpoint is None:
+            raise HTTPException(status_code=404, detail="Source endpoint not found in project")
+
     test_cases = _generate_or_raise(
         generate_test_cases,
         parsed_curl=_effective_request(request.parsed_curl),
@@ -646,7 +873,11 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
                 "jsonpath": {"enabled": False, "path": "", "expected_value": ""},
             }
     _ensure_response_schema_defaults(test_cases)
-    project_id = request.project_id or database.current_project_id()
+    if source_endpoint:
+        display_name = source_endpoint.get("name") or source_endpoint.get("url") or "Unnamed endpoint"
+        for tc in test_cases:
+            tc["source_endpoint_id"] = source_endpoint["id"]
+            tc["source_endpoint_name"] = display_name
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")

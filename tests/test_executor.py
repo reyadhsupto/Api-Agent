@@ -188,3 +188,33 @@ def test_playground_schema_assertion_fails_on_schema_mismatch():
 
     assert result["passed"] is False
     assert "name" in result["results"][0]["detail"]
+
+
+def test_flow_mapping_substitutes_and_encodes_openapi_path_parameters(monkeypatch):
+    """A response field can fill a downstream OpenAPI path placeholder safely."""
+    responses = iter([
+        type("Response", (), {"status_code": 200, "text": '{"cart_id":"cart/42"}', "headers": {}})(),
+        type("Response", (), {"status_code": 200, "text": '{"ok":true}', "headers": {}})(),
+    ])
+    sent = []
+
+    def fake_request(**kwargs):
+        sent.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(executor.requests, "request", fake_request)
+    result = executor.execute_flow_test_case({
+        "id": "flow-path-mapping",
+        "steps": [
+            {"step_order": 1, "endpoint": {"method": "POST", "url": "https://api.example.test/carts"}},
+            {
+                "step_order": 2,
+                "endpoint": {"method": "POST", "url": "https://api.example.test/carts/{cart_id}/checkout"},
+                "variable_mappings": [{"from": "$.cart_id", "to": "request.path.cart_id"}],
+                "assertions": {"status": {"enabled": True, "expected_status": 200}},
+            },
+        ],
+    })
+
+    assert result["status"] == "passed"
+    assert sent[1]["url"] == "https://api.example.test/carts/cart%2F42/checkout"
