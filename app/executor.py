@@ -13,6 +13,7 @@ import time
 import json
 import requests
 from typing import Any
+from urllib.parse import quote
 from jsonschema import Draft202012Validator
 
 
@@ -488,6 +489,7 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
 
     headers = endpoint.get("headers", {}) or {}
     body = endpoint.get("body")
+    url = str(endpoint.get("url", ""))
 
     for mapping in mappings:
         if not isinstance(mapping, dict):
@@ -566,9 +568,16 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
                     body = _json.dumps(body_dict)
                 except _json.JSONDecodeError:
                     body = extracted_value
+        elif to_path.startswith("request.path."):
+            parameter_name = to_path[len("request.path."):]
+            value_text = mapped_value if isinstance(mapped_value, str) else json.dumps(
+                mapped_value, ensure_ascii=False, separators=(",", ":")
+            )
+            url = url.replace("{" + parameter_name + "}", quote(value_text, safe=""))
 
     step["endpoint"] = {
         **endpoint,
+        "url": url,
         "headers": headers,
         "body": body,
     }

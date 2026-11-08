@@ -20,6 +20,7 @@ class TestCaseGenerateRequest(BaseModel):
     parsed_curl: dict
     business_requirements: Optional[str] = None
     project_id: Optional[str] = None
+    source_endpoint_id: Optional[str] = None
 
 
 class FlowGenerateRequest(BaseModel):
@@ -29,6 +30,62 @@ class FlowGenerateRequest(BaseModel):
     project_id: Optional[str] = None
     # Accepted for older clients; flow generation now lets the model determine output size.
     scenario_count: Optional[int] = None
+
+
+class ContractPreviewRequest(BaseModel):
+    """Source text or anonymous URL used to preview imported API requests.
+
+    Attributes:
+        source_type: Whether content is pasted/uploaded text or a public URL.
+        content: Source document, prose, or URL.
+        source_name: Friendly source label shown in review.
+        format_hint: Optional parser selection; auto-detect by default.
+        base_url: Optional override for relative operation URLs.
+        source_id: Existing source ID used to retain identity on re-preview.
+    """
+
+    source_type: Literal["text", "url"]
+    content: str
+    source_name: str = ""
+    format_hint: Literal["auto", "openapi", "postman", "text"] = "auto"
+    base_url: str = ""
+    source_id: Optional[str] = None
+
+
+class ContractImportRequest(BaseModel):
+    """Reviewed requests and destination collection for an atomic import.
+
+    Attributes:
+        collection_id: Project collection receiving the requests.
+        endpoints: Reviewed endpoint records selected for persistence.
+    """
+
+    collection_id: str
+    endpoints: list[dict] = Field(default_factory=list)
+
+
+class FlowDiscoveryRequest(BaseModel):
+    """Source contract identifier used to recalculate dependency candidates.
+
+    Attributes:
+        source_id: Stable identifier shared by imported contract requests.
+    """
+
+    source_id: str
+
+
+class DiscoveredFlowGenerateRequest(BaseModel):
+    """Selected dependency paths and optional business context for LLM generation.
+
+    Attributes:
+        source_id: Stable identifier shared by imported contract requests.
+        candidate_ids: Ranked dependency paths selected by the user.
+        business_requirements: Optional domain context for scenario generation.
+    """
+
+    source_id: str
+    candidate_ids: list[str] = Field(default_factory=list)
+    business_requirements: Optional[str] = None
 
 
 class ApiRequest(BaseModel):
