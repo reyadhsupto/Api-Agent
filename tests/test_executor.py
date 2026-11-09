@@ -218,3 +218,62 @@ def test_flow_mapping_substitutes_and_encodes_openapi_path_parameters(monkeypatc
 
     assert result["status"] == "passed"
     assert sent[1]["url"] == "https://api.example.test/carts/cart%2F42/checkout"
+
+
+def test_execute_single_request_sends_enabled_query_parameter_rows(monkeypatch):
+    """Single generated tests pass enabled editable query params to requests."""
+    captured = {}
+
+    def fake_request(**kwargs):
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(executor.requests, "request", fake_request)
+    executor.execute_test_case({
+        "id": "tc-query",
+        "request": {
+            "method": "GET",
+            "url": "https://example.test/items",
+            "query_params": [
+                {"key": "page", "value": "2", "enabled": True},
+                {"key": "internal", "value": "x", "enabled": False},
+            ],
+        },
+    })
+
+    assert captured["params"] == {"page": "2"}
+
+
+def test_flow_mappings_inject_query_parameters_and_headers(monkeypatch):
+    """Mappings can use an earlier response for query params and auth headers."""
+    responses = iter([
+        type("Response", (), {"status_code": 200, "text": '{"access_token":"abc"}', "headers": {}})(),
+        type("Response", (), {"status_code": 200, "text": '{"ok":true}', "headers": {}})(),
+    ])
+    sent = []
+
+    def fake_request(**kwargs):
+        sent.append(kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(executor.requests, "request", fake_request)
+    executor.execute_flow_test_case({
+        "id": "flow-token-query",
+        "steps": [
+            {"step_order": 1, "endpoint": {"method": "POST", "url": "https://example.test/login"}},
+            {
+                "step_order": 2,
+                "endpoint": {
+                    "method": "GET", "url": "https://example.test/items",
+                    "query_params": [{"key": "page", "value": "1", "enabled": True}],
+                },
+                "variable_mappings": [
+                    {"from": "1:$.access_token", "to": "headers.Authorization", "transform": "Bearer {value}"},
+                    {"from": "1:$.access_token", "to": "request.query.token"},
+                ],
+            },
+        ],
+    })
+
+    assert sent[1]["headers"]["Authorization"] == "Bearer abc"
+    assert sent[1]["params"] == {"page": "1", "token": "abc"}

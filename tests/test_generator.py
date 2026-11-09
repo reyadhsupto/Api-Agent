@@ -57,6 +57,36 @@ def test_flow_prompt_uses_compact_endpoint_context_without_headers_or_cookies():
     assert "password" in prompt and "<string>" in prompt
 
 
+def test_generation_prompts_use_examples_as_context_without_copying_results():
+    """Single and flow prompts include selected examples but omit execution data."""
+    example = {
+        "name": "Rejects missing token", "type": "negative",
+        "description": "Checks unauthenticated access", "request": {
+            "method": "GET", "url": "https://example.test/profile",
+            "headers": {"Authorization": "Bearer secret"},
+            "body": None,
+        },
+        "assertions": {"status": [{"enabled": True, "expected_status": 401}]},
+        "execution": {"response_body": "private response"},
+    }
+
+    single_prompt = generator._build_prompt(
+        {"method": "GET", "url": "https://example.test/profile"},
+        "Require authentication", [example],
+    )
+    flow_prompt = _build_flow_prompt(
+        [{"id": "profile", "method": "GET", "url": "https://example.test/profile"}],
+        "Require authentication", example_test_cases=[example],
+    )
+
+    for prompt in (single_prompt, flow_prompt):
+        assert "Rejects missing token" in prompt
+        assert "401" in prompt
+        assert "Generate additional" in prompt
+        assert "Bearer secret" not in prompt
+        assert "private response" not in prompt
+
+
 def test_flow_generation_restores_full_endpoint_after_compact_llm_output(monkeypatch):
     """Compact endpoint references are hydrated with canonical saved request data."""
     endpoint = {
@@ -70,12 +100,21 @@ def test_flow_generation_restores_full_endpoint_after_compact_llm_output(monkeyp
         '"assertions":{"status":[{"enabled":true,"expected_status":200}]},'
         '"variable_mappings":[]}]}]'
     )
-    monkeypatch.setattr(generator, "_call_llm_with_fallback", lambda prompt: compact_response)
+    prompt_calls = []
 
-    result = generator.generate_flow_test_cases([endpoint])
+    def generate(prompt):
+        prompt_calls.append(prompt)
+        return compact_response
+
+    monkeypatch.setattr(generator, "_call_llm_with_fallback", generate)
+
+    result = generator.generate_flow_test_cases(
+        [endpoint], example_test_cases=[{"name": "Example checkout", "type": "positive"}],
+    )
 
     assert result[0]["steps"][0]["endpoint_id"] == "saved-doctors"
     assert result[0]["steps"][0]["endpoint"] == endpoint
+    assert "Example checkout" in prompt_calls[0]
 
 
 def test_parser_rejects_truncated_response_instead_of_partial_cases():

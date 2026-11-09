@@ -13,19 +13,21 @@ if "app.main" not in sys.modules:
 else:
     from app import main
 
-from app.schemas import TestCaseGenerateRequest as GenerateRequest
+from app.schemas import FlowGenerateRequest, TestCaseGenerateRequest as GenerateRequest
 
 
 def test_single_generation_persists_endpoint_group_metadata(monkeypatch):
     """Generated cases keep the validated saved endpoint identity and label."""
     project = {
         "id": "project-1",
+        "test_cases": [{"id": "example-1", "name": "Example negative", "type": "negative"}],
         "endpoints": [{
             "id": "request-1", "name": "", "method": "GET",
             "url": "https://api.test/items",
         }],
     }
     saved = []
+    generation_calls = []
 
     class FakeDatabase:
         def get_project(self, project_id):
@@ -36,21 +38,92 @@ def test_single_generation_persists_endpoint_group_metadata(monkeypatch):
             return True
 
     monkeypatch.setattr(main, "database", FakeDatabase())
-    monkeypatch.setattr(main, "generate_test_cases", lambda **kwargs: [{
-        "name": "Returns items", "type": "positive",
-        "request": {"method": "GET", "url": "https://api.test/items"},
-    }])
+    def generate(**kwargs):
+        generation_calls.append(kwargs)
+        return [{
+            "name": "Returns items", "type": "positive",
+            "request": {"method": "GET", "url": "https://api.test/items"},
+        }]
+
+    monkeypatch.setattr(main, "generate_test_cases", generate)
     monkeypatch.setattr(main, "_assign_test_case_ids", lambda project_id, cases: None)
     monkeypatch.setattr(main, "_ensure_response_schema_defaults", lambda cases: None)
 
     generated = main.generate_test_cases_endpoint(GenerateRequest(
         parsed_curl={"method": "GET", "url": "https://api.test/items"},
         project_id="project-1", source_endpoint_id="request-1",
+        example_test_case_ids=["example-1"],
     ))
 
     assert generated[0]["source_endpoint_id"] == "request-1"
     assert generated[0]["source_endpoint_name"] == "https://api.test/items"
     assert saved == generated
+    assert generation_calls[0]["example_test_cases"] == project["test_cases"]
+
+
+def test_generation_examples_are_loaded_in_requested_order_and_project_scoped(monkeypatch):
+    """Only saved cases owned by the selected project may become LLM examples."""
+    project = {"id": "project-1", "test_cases": [
+        {"id": "example-a", "name": "A"},
+        {"id": "example-b", "name": "B"},
+    ]}
+
+    class FakeDatabase:
+        def get_project(self, project_id):
+            return project if project_id == "project-1" else None
+
+    monkeypatch.setattr(main, "database", FakeDatabase())
+
+    assert [item["id"] for item in main._load_generation_examples(
+        "project-1", ["example-b", "example-a", "example-b"],
+    )] == ["example-b", "example-a"]
+    try:
+        main._load_generation_examples("project-1", ["from-another-project"])
+    except main.HTTPException as exc:
+        assert exc.status_code == 404
+        assert "from-another-project" in exc.detail
+    else:
+        raise AssertionError("Expected unknown project example to be rejected")
+
+
+def test_flow_generation_passes_saved_examples_and_requirements_to_generator(monkeypatch):
+    """Project flow generation uses validated examples with the selected endpoints."""
+    project = {
+        "id": "project-1",
+        "endpoints": [],
+        "test_cases": [{"id": "example-flow", "name": "Existing checkout flow"}],
+    }
+    calls = []
+
+    class FakeDatabase:
+        def get_project(self, project_id):
+            return project if project_id == "project-1" else None
+
+        def save_test_cases(self, project_id, cases):
+            return True
+
+    def generate(**kwargs):
+        calls.append(kwargs)
+        return [{"name": "New checkout flow", "steps": [{
+            "step_order": 1, "endpoint_id": "request-1",
+            "endpoint": {"method": "GET", "url": "https://api.test/items"},
+        }]}]
+
+    monkeypatch.setattr(main, "database", FakeDatabase())
+    monkeypatch.setattr(main, "generate_flow_test_cases", generate)
+    monkeypatch.setattr(main, "_assign_test_case_ids", lambda project_id, cases: None)
+    monkeypatch.setattr(main, "_ensure_response_schema_defaults", lambda cases: None)
+
+    result = main.generate_flow_test_cases_project("project-1", FlowGenerateRequest(
+        endpoints=[{"id": "request-1", "method": "GET", "url": "https://api.test/items"}],
+        business_requirements="Keep authentication mandatory",
+        example_test_case_ids=["example-flow"],
+    ))
+
+    assert result[0]["is_flow"] is True
+    assert calls[0]["business_requirements"] == "Keep authentication mandatory"
+    assert calls[0]["example_test_cases"] == project["test_cases"]
+    assert calls[0]["endpoints"][0]["id"] == "request-1"
 
 
 def test_single_generation_rejects_endpoint_outside_project(monkeypatch):

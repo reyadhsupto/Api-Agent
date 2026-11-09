@@ -1,3 +1,5 @@
+# frontend/app.py
+
 """
 Streamlit frontend for Api-Agent.
 
@@ -13,6 +15,7 @@ reorderable endpoints, named endpoints.
 import streamlit as st
 import requests
 import json
+import copy
 import uuid
 import os
 import html
@@ -54,86 +57,6 @@ h1, h2, h3 { letter-spacing: -.02em; }
 div[data-baseweb="tab-list"] { gap: .35rem; border-bottom: 1px solid var(--aa-border); }
 button[data-baseweb="tab"] { border-radius: var(--aa-radius-sm) var(--aa-radius-sm) 0 0; }
 div[data-testid="stExpander"] details { border-radius: var(--aa-radius) !important; }
-div[class*="st-key-generation-row-"] {
-    border-radius: 10px; padding: .15rem .35rem; transition: background .12s ease;
-}
-div[class*="st-key-saved-req-"] {
-    border: 1px solid transparent;
-    border-left: 2px solid transparent;
-    border-radius: var(--aa-radius-sm);
-    padding: .16rem .42rem !important;
-    margin: .12rem 0;
-    min-height: 2.5rem;
-    transition: background .14s ease, border-color .14s ease;
-}
-div[class*="st-key-saved-req-"]:hover,
-div[class*="st-key-saved-req-"]:focus-within {
-    background: var(--aa-surface-hover);
-    border-color: var(--aa-border);
-    border-left-color: var(--aa-accent);
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stHorizontalBlock"] {
-    align-items: center;
-    gap: .35rem !important;
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stColumn"] {
-    min-width: 0;
-    padding: 0;
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stMarkdownContainer"] p {
-    margin: 0 !important;
-}
-.aa-saved-request-label {
-    display: flex;
-    align-items: center;
-    gap: .55rem;
-    width: 100%;
-    min-width: 0;
-}
-.aa-saved-method {
-    display: inline-block;
-    flex: 0 0 3.55rem;
-    min-width: 3.55rem;
-    box-sizing: border-box;
-    padding: .18rem .34rem;
-    border-radius: 5px;
-    font: 700 .66rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    text-align: center;
-    letter-spacing: .015em;
-}
-.aa-saved-method-get { color: #21834a; background: rgba(46,158,91,.12); }
-.aa-saved-method-post { color: #c84d22; background: rgba(255,108,55,.14); }
-.aa-saved-method-put { color: #315fca; background: rgba(74,124,255,.13); }
-.aa-saved-method-patch { color: #8043a2; background: rgba(155,89,182,.13); }
-.aa-saved-method-delete { color: #c9383d; background: rgba(229,72,77,.12); }
-.aa-saved-method-head, .aa-saved-method-options { color: #657174; background: rgba(127,140,141,.14); }
-.aa-saved-method-trace { color: #657174; background: rgba(127,140,141,.14); }
-.aa-saved-request-name {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    color: inherit;
-    font: 550 .86rem/1.35 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stButton"] button {
-    width: 2rem;
-    min-width: 2rem;
-    height: 2rem;
-    min-height: 2rem;
-    padding: 0;
-    opacity: 0;
-    transition: opacity .12s ease, background .12s ease, color .12s ease;
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"]:hover [data-testid="stButton"] button,
-.st-key-saved-request-library div[class*="st-key-saved-req-"]:focus-within [data-testid="stButton"] button,
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stButton"] button:focus-visible {
-    opacity: 1;
-}
-.st-key-saved-request-library div[class*="st-key-saved-req-"] [data-testid="stButton"] button:hover {
-    color: var(--aa-accent);
-}
 .aa-hero { display:flex; align-items:center; gap:.8rem; margin:.1rem 0 .35rem; }
 .aa-hero-mark {
     width:36px; height:36px; border-radius:10px; background:var(--aa-accent-soft);
@@ -149,7 +72,6 @@ div[class*="st-key-saved-req-"]:focus-within {
 .aa-empty { border:1px dashed var(--aa-border-strong); border-radius:var(--aa-radius); padding:1.4rem 1rem; text-align:center; background:var(--aa-surface); }
 .aa-empty-title { font-weight:650; }
 .aa-empty-body { color:rgba(128,128,128,.95); font-size:.88rem; margin-top:.25rem; }
-.aa-saved-request { border-bottom:1px solid var(--aa-border); }
 .aa-inner-divider { margin:.7rem 0 .35rem; padding-top:.45rem; border-top:1px dashed var(--aa-border); font-size:.7rem; text-transform:uppercase; letter-spacing:.07em; opacity:.65; text-align:center; }
 </style>
 """
@@ -316,9 +238,15 @@ METHOD_COLORS = {
 }
 TEST_CASE_CSS = """
 <style>
+.st-key-test-case-toolbar { container-type: inline-size; min-width: 0; }
+.st-key-test-run-manager { container-type: inline-size; min-width: 0; }
+.st-key-test-case-quick-actions { container-type: inline-size; min-width: 0; }
+.st-key-test-cases-workspace { container-type: inline-size; min-width: 0; }
 div[class*="st-key-tc-card-"] {
+    container-type: inline-size;
     border-left: 4px solid rgba(128,128,128,.38) !important;
     border-radius: .65rem !important;
+    min-width: 0;
 }
 div[class*="st-key-tc-card-passed-"] { border-left-color: #2e9e5b !important; }
 div[class*="st-key-tc-card-failed-"] { border-left-color: #e5484d !important; }
@@ -327,6 +255,112 @@ div[class*="st-key-tc-step-"] { background: rgba(128,128,128,.035); }
 div[class*="st-key-tc-card-"] button[kind="tertiary"] {
     padding: 0 .25rem;
     min-height: 1.9rem;
+}
+@container (max-width: 980px) {
+    .st-key-test-case-toolbar [data-testid="stHorizontalBlock"] {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        gap: .45rem !important;
+    }
+    .st-key-test-case-toolbar [data-testid="column"] { width: auto !important; min-width: 0; }
+}
+@container (max-width: 820px) {
+    .st-key-test-cases-workspace [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        row-gap: .55rem;
+    }
+    .st-key-test-cases-workspace [data-testid="column"] {
+        min-width: 145px;
+    }
+}
+@container (max-width: 520px) {
+    .st-key-test-case-quick-actions [data-testid="stHorizontalBlock"] {
+        display: grid !important;
+        grid-template-columns: 1fr;
+        gap: .4rem !important;
+    }
+    .st-key-test-case-quick-actions [data-testid="column"] { width: auto !important; min-width: 0; }
+}
+@container (max-width: 680px) {
+    .st-key-test-run-manager [data-testid="stHorizontalBlock"] {
+        display: grid !important;
+        grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+        gap: .45rem !important;
+    }
+    .st-key-test-run-manager [data-testid="column"] { width: auto !important; min-width: 0; }
+}
+@container (max-width: 680px) {
+    div[class*="st-key-tc-card-"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+        row-gap: .45rem;
+    }
+    div[class*="st-key-tc-card-"] [data-testid="column"] { min-width: 0; }
+}
+</style>
+"""
+TEST_CASES_TOPBAR_CSS = """
+<style>
+.st-key-test-cases-topbar {
+    padding-bottom: .7rem;
+    border-bottom: 1px solid var(--aa-border);
+    margin-bottom: .9rem;
+}
+.st-key-test-cases-topbar [data-testid="stHorizontalBlock"] { align-items: center; }
+.st-key-test-cases-topbar h3 {
+    margin: 0 !important; font-size: 1.35rem; letter-spacing: -.02em;
+}
+.st-key-test-cases-topbar .stCaption p { margin-bottom: 0; font-size: .82rem; }
+.st-key-add-manual-test-action [data-testid="stPopover"] > button {
+    background: var(--aa-accent) !important;
+    color: #fff !important;
+    border: 1px solid var(--aa-accent) !important;
+    font-weight: 650;
+    min-height: 2.5rem;
+    box-shadow: 0 2px 10px rgba(255,108,55,.22);
+    transition: box-shadow .15s ease, transform .08s ease;
+}
+.st-key-add-manual-test-action [data-testid="stPopover"] > button:hover {
+    box-shadow: 0 3px 16px rgba(255,108,55,.32);
+    transform: translateY(-1px);
+}
+.st-key-add-manual-test-action [data-testid="stPopover"] > button:active { transform: translateY(0); }
+.st-key-add-manual-test-action [data-testid="stPopover"] > button p,
+.st-key-add-manual-test-action [data-testid="stPopover"] > button span,
+.st-key-add-manual-test-action [data-testid="stPopover"] > button svg {
+    color: #fff !important; fill: #fff !important;
+}
+.st-key-reusable-runs-action [data-testid="stPopover"] > button {
+    font-weight: 600; min-height: 2.5rem;
+    transition: box-shadow .15s ease, transform .08s ease, border-color .15s ease;
+}
+.st-key-reusable-runs-action [data-testid="stPopover"] > button:hover {
+    border-color: var(--aa-accent) !important; transform: translateY(-1px);
+}
+.aa-popover-section {
+    font-size: .68rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .07em; color: var(--aa-accent); margin: .35rem 0 .1rem;
+    opacity: .92;
+}
+.aa-popover-hint {
+    font-size: .78rem; color: rgba(128,128,128,.95);
+    margin: -.15rem 0 .45rem; line-height: 1.35;
+}
+@container (max-width: 980px) {
+    .st-key-test-cases-topbar [data-testid="stHorizontalBlock"] {
+        display: grid !important; grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: .45rem !important;
+    }
+    .st-key-test-cases-topbar [data-testid="column"] { width: auto !important; min-width: 0; }
+}
+@container (max-width: 620px) {
+    .st-key-test-cases-topbar [data-testid="stHorizontalBlock"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .st-key-test-cases-topbar [data-testid="column"]:first-child { grid-column: 1 / -1; }
+    .st-key-test-cases-topbar [data-testid="stPopover"] > button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .st-key-test-cases-topbar button { transition: none !important; }
 }
 </style>
 """
@@ -449,18 +483,52 @@ def log_to_console(data: dict, label: str = "API") -> None:
     st.iframe(src="data:text/html," + html, height=1, width=1)
 
 
-def api_post(path: str, payload: dict) -> dict:
-    """Send a POST request to the backend and log to browser console."""
-    log_to_console(payload, f"REQUEST {path}")
-    response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=300)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
+def _queue_toast(message: str, kind: str = "success") -> None:
+    """Queue a short toast so it can be rendered after a Streamlit rerun."""
+    st.session_state.setdefault("_toast_queue", []).append({"message": message, "kind": kind})
+
+
+def _flush_toasts() -> None:
+    """Render queued notices once, including notices created before a rerun."""
+    toast = getattr(st, "toast", None)
+    notices = st.session_state.pop("_toast_queue", [])
+    if not callable(toast):
+        return
+    for notice in notices:
+        message = notice["message"]
+        if notice.get("kind") == "error":
+            message = f":red[Error] · {message}"
+            icon = ":material/error:"
+        else:
+            message = f":green[Success] · {message}"
+            icon = ":material/check_circle:"
+        toast(message, icon=icon, duration=5)
+
+
+def _api_error_message(exc: Exception, response=None) -> str:
+    """Extract a useful API error detail and notify the user once."""
+    detail = None
+    if response is not None:
         try:
             detail = response.json().get("detail")
         except (ValueError, AttributeError):
-            detail = None
-        raise RuntimeError(detail or str(exc)) from exc
+            pass
+    message = str(detail or exc)
+    _queue_toast(message, "error")
+    return message
+
+
+def api_post(path: str, payload: dict) -> dict:
+    """Send a POST request to the backend and log to browser console."""
+    log_to_console(payload, f"REQUEST {path}")
+    try:
+        response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=300)
+    except requests.RequestException as exc:
+        raise RuntimeError(_api_error_message(exc)) from exc
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(_api_error_message(exc, response)) from exc
     result = response.json()
     log_to_console(result, f"RESPONSE {path}")
     return result
@@ -469,8 +537,11 @@ def api_post(path: str, payload: dict) -> dict:
 def api_get(path: str) -> dict:
     """Send a GET request to the backend and log to browser console."""
     log_to_console({}, f"REQUEST {path}")
-    response = requests.get(f"{BACKEND_URL}{path}", timeout=300)
-    response.raise_for_status()
+    try:
+        response = requests.get(f"{BACKEND_URL}{path}", timeout=300)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
     result = response.json()
     log_to_console(result, f"RESPONSE {path}")
     return result
@@ -479,8 +550,11 @@ def api_get(path: str) -> dict:
 def api_delete(path: str) -> dict:
     """Send a DELETE request to the backend and log to browser console."""
     log_to_console({}, f"REQUEST {path}")
-    response = requests.delete(f"{BACKEND_URL}{path}", timeout=300)
-    response.raise_for_status()
+    try:
+        response = requests.delete(f"{BACKEND_URL}{path}", timeout=300)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
     result = response.json()
     log_to_console(result, f"RESPONSE {path}")
     return result
@@ -489,8 +563,11 @@ def api_delete(path: str) -> dict:
 def api_put(path: str, payload: dict) -> dict:
     """Send a PUT request to the backend and log to browser console."""
     log_to_console(payload, f"REQUEST {path}")
-    response = requests.put(f"{BACKEND_URL}{path}", json=payload, timeout=300)
-    response.raise_for_status()
+    try:
+        response = requests.put(f"{BACKEND_URL}{path}", json=payload, timeout=300)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
     result = response.json()
     log_to_console(result, f"RESPONSE {path}")
     return result
@@ -802,11 +879,14 @@ def _normalize_assertions(tc: dict) -> dict:
 
 
 def _normalise_flow_steps(tc: dict) -> list[dict]:
-    """Sort flow steps by their declared order and normalize step assertions."""
+    """Sort flow steps, normalize assertions, and remove impossible first-step mappings."""
     steps = tc.get("steps", [])
     steps.sort(key=lambda step: step.get("step_order", 0))
-    for step in steps:
+    for index, step in enumerate(steps):
+        step.setdefault("step_id", str(uuid.uuid4()))
         step["assertions"] = _normalize_assertions(step)
+        if index == 0:
+            step["variable_mappings"] = []
     return steps
 
 
@@ -963,6 +1043,21 @@ def _status_badge(status: str | None) -> str:
     return f":{colors.get(normalized, 'gray')}-badge[{labels.get(normalized, normalized.upper())}]"
 
 
+def _format_latency(latency_ms: int | float | None) -> str:
+    """Format measured latency in milliseconds or seconds.
+
+    Args:
+        latency_ms (int | float | None): Duration measured in milliseconds.
+
+    Returns:
+        str: Milliseconds through 1000 ms, otherwise seconds with two decimals.
+    """
+    latency = float(latency_ms or 0)
+    if latency > 1000:
+        return f"{latency / 1000:.2f} s"
+    return f"{latency:g} ms"
+
+
 def _pretty_payload(body) -> tuple[str, bool]:
     """Format payloads for display and identify valid JSON.
 
@@ -1081,7 +1176,7 @@ def _render_response_details(status, latency_ms, body, headers, uid: str) -> Non
     size_label = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KB"
     st.markdown(
         f":{color}-badge[{status if status is not None else '—'}] "
-        f":gray-badge[{latency_ms or 0} ms] :gray-badge[{size_label}]"
+        f":gray-badge[{_format_latency(latency_ms)}] :gray-badge[{size_label}]"
     )
     body_tab, headers_tab = st.tabs(["Body", "Headers"])
     with body_tab:
@@ -1101,8 +1196,8 @@ def _render_response_details(status, latency_ms, body, headers, uid: str) -> Non
         _render_headers(headers)
 
 
-def _execute_test_case(tc: dict) -> dict:
-    """Persist current edits, execute a test or flow, and retain its result.
+def _execute_test_case(tc: dict, notify: bool = True) -> dict:
+    """Execute current in-memory case data and retain its result.
 
     Args:
         tc (dict): Test case with current assertion edits.
@@ -1112,16 +1207,22 @@ def _execute_test_case(tc: dict) -> dict:
     """
     tc_id = tc.get("id")
     project = st.session_state.get("current_project") or {}
-    if project:
-        api_put(f"/api/v1/projects/{project['id']}/test-cases/{tc_id}", tc)
     assertions = {} if tc.get("is_flow") else _normalize_assertions(tc)
     payload = {kind: [dict(config) for config in configs] for kind, configs in assertions.items()}
     result = api_post("/api/v1/test-cases/execute", {
         "test_case_id": tc_id,
         "project_id": project.get("id"),
+        "test_case": tc,
         "assertions": payload,
     })
     st.session_state.setdefault("executions", {})[tc_id] = result
+    if notify:
+        status = _test_case_status(result)
+        label = tc.get("name") or "Test case"
+        _queue_toast(
+            f"{label}: {status.replace('_', ' ')}.",
+            "error" if status in {"failed", "error"} else "success",
+        )
     return result
 
 
@@ -1139,7 +1240,7 @@ def _render_execution_result(result: dict, uid: str) -> None:
     latency = result.get("latency_ms") or sum(
         step.get("latency_ms", 0) for step in result.get("step_results", [])
     )
-    st.markdown(f"{_status_badge(status)} :gray-badge[{latency} ms]")
+    st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]")
     if result.get("assertion_detail"):
         (st.success if status == "passed" else st.error)(result["assertion_detail"])
     if result.get("step_results"):
@@ -1150,6 +1251,7 @@ def _render_execution_result(result: dict, uid: str) -> None:
         _render_request_details(
             result.get("request_method"), result.get("request_url"),
             result.get("request_headers"), result.get("request_body"), f"{uid}_request",
+            result.get("request_query_params"),
         )
     with response_col, st.container(border=True):
         st.markdown("**Response**")
@@ -1159,54 +1261,65 @@ def _render_execution_result(result: dict, uid: str) -> None:
         )
 
 
-def _render_flow_step(tc_id: str, step: dict, result: dict | None) -> None:
-    """Render an expandable flow step with assertion, request, and response views.
-
-    Args:
-        tc_id (str): Parent flow test-case identifier.
-        step (dict): Flow step configuration.
-        result (dict | None): Execution result for this step.
-
-    Returns:
-        None: Writes the step card to the Streamlit page.
-    """
-    order = step.get("step_order", "?")
-    uid = f"{tc_id}_step_{order}"
+def _render_flow_step(test_case: dict, step: dict, result: dict | None, index: int) -> None:
+    """Render an editable flow step with request, mapping, assertion, and result controls."""
+    steps = test_case.get("steps", [])
+    order = index + 1
+    step_id = step.setdefault("step_id", str(uuid.uuid4()))
+    tc_id = test_case.get("id", "flow")
+    uid = f"{tc_id}_{step_id}"
     open_key = f"step_open_{uid}"
     is_open = st.session_state.get(open_key, False)
-    endpoint = step.get("endpoint", {}) or {}
+    endpoint = step.setdefault("endpoint", {})
     status = _test_case_status(result) if result else "not_run"
     with st.container(border=True, key=f"tc-step-{uid}"):
-        toggle_col, title_col, status_col = st.columns([0.45, 6, 2], vertical_alignment="center")
-        with toggle_col:
-            st.button(
-                " ", icon=":material/expand_more:" if is_open else ":material/chevron_right:",
-                key=f"toggle_{uid}", type="tertiary", help="Expand or collapse step",
-                on_click=_toggle_test_case_state, args=(open_key,),
-            )
-        with title_col:
-            url = endpoint.get("url", "")
-            st.markdown(f"**Step {order}** :blue-badge[{endpoint.get('method', 'GET')}] `{url[:76]}`")
-        with status_col:
-            st.markdown(
-                f"{_status_badge(status)} :gray-badge[{(result or {}).get('latency_ms', 0)} ms]"
-            )
+        toggle_col, title_col, up_col, down_col, remove_col, status_col = st.columns(
+            [0.35, 5, 0.45, 0.45, 0.45, 1.6], vertical_alignment="center",
+        )
+        toggle_col.button(
+            " ", icon=":material/expand_more:" if is_open else ":material/chevron_right:",
+            key=f"toggle_{uid}", type="tertiary", help="Expand or collapse step",
+            on_click=_toggle_test_case_state, args=(open_key,),
+        )
+        title_col.markdown(
+            f"**Step {order}** :blue-badge[{endpoint.get('method', 'GET')}] "
+            f"`{_truncate(endpoint.get('url', ''), 68)}`"
+        )
+        if up_col.button(" ", icon=":material/arrow_upward:", key=f"step_up_{uid}", help="Move step earlier", disabled=index == 0):
+            steps[index - 1], steps[index] = steps[index], steps[index - 1]
+            for position, item in enumerate(steps, start=1):
+                item["step_order"] = position
+            st.session_state.get("executions", {}).pop(tc_id, None)
+            st.rerun()
+        if down_col.button(" ", icon=":material/arrow_downward:", key=f"step_down_{uid}", help="Move step later", disabled=index == len(steps) - 1):
+            steps[index], steps[index + 1] = steps[index + 1], steps[index]
+            for position, item in enumerate(steps, start=1):
+                item["step_order"] = position
+            st.session_state.get("executions", {}).pop(tc_id, None)
+            st.rerun()
+        if remove_col.button(" ", icon=":material/delete:", key=f"step_remove_{uid}", help="Remove step", disabled=len(steps) <= 1):
+            steps.pop(index)
+            for position, item in enumerate(steps, start=1):
+                item["step_order"] = position
+            st.session_state.get("executions", {}).pop(tc_id, None)
+            st.rerun()
+        status_col.markdown(
+            f"{_status_badge(status)} :gray-badge[{_format_latency((result or {}).get('latency_ms'))}]"
+        )
         if not is_open:
             return
-        if step.get("description"):
-            st.caption(step["description"])
-        assertions_tab, request_tab, response_tab = st.tabs(["Assertions", "Request", "Response"])
+        description_key = f"tc_step_description_{uid}"
+        st.session_state.setdefault(description_key, str(step.get("description", "")))
+        step["description"] = st.text_input("Step description", key=description_key)
+        assertions_tab, request_tab, response_tab = st.tabs(["Assertions", "Request & mappings", "Response"])
         with assertions_tab:
             _render_test_case_assertions(step["assertions"], uid)
         with request_tab:
-            _render_request_details(
-                endpoint.get("method"), endpoint.get("url"), endpoint.get("headers"),
-            endpoint.get("body"), f"{uid}_request", endpoint.get("query_params"),
-            )
-            mappings = step.get("variable_mappings", [])
-            if mappings:
-                st.markdown("**Variable mappings**")
-                st.json(mappings)
+            _render_editable_test_request(endpoint, f"{uid}_request")
+            if index == 0:
+                st.caption("The first step starts the flow and has no earlier response to map.")
+            else:
+                _render_variable_mappings(step, uid)
         with response_tab:
             if result:
                 if result.get("assertion_detail"):
@@ -1217,6 +1330,389 @@ def _render_flow_step(tc_id: str, step: dict, result: dict | None) -> None:
                 )
             else:
                 st.caption("Run the scenario to see this step's response.")
+
+
+def _new_flow_step(saved_request: dict, order: int) -> dict:
+    """Create an editable flow step by copying a saved project request.
+
+    Args:
+        saved_request (dict): Saved request configuration to copy.
+        order (int): One-based position for the new step.
+
+    Returns:
+        dict: Flow step with copied request fields and default assertions.
+    """
+    endpoint = {
+        "id": saved_request.get("id"),
+        "name": saved_request.get("name", ""),
+        "method": saved_request.get("method", "GET"),
+        "url": saved_request.get("url", ""),
+        "headers": _clean_request_rows(_request_rows(saved_request.get("headers", {}))),
+        "query_params": _clean_request_rows(_request_rows(saved_request.get("query_params", {}))),
+        "body": copy.deepcopy(saved_request.get("body")) if saved_request.get("include_body", True) else None,
+    }
+    step = {
+        "step_id": str(uuid.uuid4()),
+        "step_order": order,
+        "endpoint_id": saved_request.get("id"),
+        "endpoint": endpoint,
+        "description": "",
+        "assertions": {},
+        "variable_mappings": [],
+    }
+    _normalize_assertions(step)
+    return step
+
+
+def _new_manual_test_case(
+    saved_requests: list[dict], name: str, is_flow: bool,
+) -> dict:
+    """Build a manual case by copying one or more saved project requests.
+
+    Args:
+        saved_requests (list[dict]): Request(s) used by the new case.
+        name (str): Optional user-supplied case name.
+        is_flow (bool): Whether to create an ordered multi-step flow.
+
+    Returns:
+        dict: New editable case with a stable ID.
+
+    Raises:
+        ValueError: No saved requests were supplied.
+    """
+    if not saved_requests:
+        raise ValueError("Choose at least one saved request.")
+    display_name = name.strip()
+    if is_flow:
+        steps = [_new_flow_step(request, index) for index, request in enumerate(saved_requests, 1)]
+        title = display_name or "Manual flow"
+        case = {
+            "id": str(uuid.uuid4()), "type": "manual", "name": title,
+            "description": "", "is_flow": True, "steps": steps,
+        }
+        return case
+
+    saved = saved_requests[0]
+    url = str(saved.get("url", ""))
+    title = display_name or saved.get("name") or url or "Manual test"
+    body = copy.deepcopy(saved.get("body")) if saved.get("include_body", True) else None
+    case = {
+        "id": str(uuid.uuid4()), "type": "manual", "name": title,
+        "description": "", "is_flow": False,
+        "source_endpoint_id": saved.get("id"),
+        "source_endpoint_name": saved.get("name") or url,
+        "request": {
+            "method": saved.get("method", "GET"), "url": url,
+            "headers": copy.deepcopy(saved.get("headers", {})),
+            "query_params": copy.deepcopy(saved.get("query_params", {})),
+            "body": body,
+        },
+    }
+    _normalize_assertions(case)
+    return case
+
+
+def _append_manual_test_case(test_case: dict) -> None:
+    """Persist a manual case and open it in the Test Cases editor.
+
+    Args:
+        test_case (dict): New single or flow case to save by stable ID.
+
+    Returns:
+        None: Updates project state and queues a success toast.
+
+    Raises:
+        ValueError: No project is selected.
+    """
+    project = st.session_state.get("current_project") or {}
+    project_id = project.get("id")
+    if not project_id:
+        raise ValueError("Select a project before creating a test case.")
+    api_post(
+        f"/api/v1/projects/{project_id}/test-cases/save",
+        {"test_cases": [test_case]},
+    )
+    cases = st.session_state.setdefault("test_cases", [])
+    cases.append(test_case)
+    project.setdefault("test_cases", []).append(copy.deepcopy(test_case))
+    st.session_state.setdefault("executions", {}).pop(test_case["id"], None)
+    st.session_state[f"tc_selected_{test_case['id']}"] = True
+    st.session_state[f"tc_open_{test_case['id']}"] = True
+    st.session_state[f"tc_detail_tabs_{test_case['id']}"] = "Steps (1)" if test_case.get("is_flow") else "Assertions"
+    _queue_toast("Manual flow added to the project." if test_case.get("is_flow") else "Manual test case added to the project.")
+
+
+def _render_manual_case_builder(project: dict) -> None:
+    """Render controls for creating manual cases from saved requests.
+
+    Args:
+        project (dict): Current project and its saved requests.
+
+    Returns:
+        None: Renders single-test and flow creation controls.
+    """
+    requests = project.get("endpoints", [])
+    with st.popover(
+        "Add manual test", icon=":material/add:", width="stretch",
+        help="Create a single test or a flow from saved requests",
+    ):
+        st.markdown(
+            "<div class='aa-popover-section'>Create from saved requests</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='aa-popover-hint'>Build a request test or ordered flow from "
+            "the latest saved request data.</div>",
+            unsafe_allow_html=True,
+        )
+        if not requests:
+            st.info(
+                "Save a request in API Workspace before creating a manual test.",
+                icon=":material/info:",
+            )
+            return
+        st.markdown(
+            "<div class='aa-popover-section'>1 · Case type</div>",
+            unsafe_allow_html=True,
+        )
+        mode = st.segmented_control(
+            "Case type", ["Single test", "Flow"],
+            key=f"manual_case_mode_{project.get('id', 'local')}",
+            label_visibility="collapsed",
+        ) or "Single test"
+        request_by_id = {item["id"]: item for item in requests}
+        project_id = project.get("id", "local")
+        if mode == "Single test":
+            st.markdown(
+                "<div class='aa-popover-section'>2 · Choose request</div>",
+                unsafe_allow_html=True,
+            )
+            request_id = st.selectbox(
+                "Saved request", list(request_by_id),
+                label_visibility="collapsed",
+                format_func=lambda item_id: (
+                    f"{request_by_id[item_id].get('method', 'GET')} · "
+                    f"{request_by_id[item_id].get('name') or request_by_id[item_id].get('url', 'Request')}"
+                ),
+                key=f"manual_single_request_{project_id}",
+            )
+            st.markdown(
+                "<div class='aa-popover-section'>3 · Name</div>",
+                unsafe_allow_html=True,
+            )
+            test_name = st.text_input(
+                "Test case name", key=f"manual_single_name_{project_id}",
+                label_visibility="collapsed",
+                placeholder="Defaults to the saved request name or URL",
+            )
+            if st.button(
+                "Create single test", key=f"manual_single_create_{project_id}",
+                type="primary", icon=":material/add:", width="stretch",
+            ):
+                try:
+                    test_case = _new_manual_test_case([request_by_id[request_id]], test_name, False)
+                    _append_manual_test_case(test_case)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create test case: {exc}")
+            return
+
+        order_key = f"manual_flow_order_{project_id}"
+        selected_key = f"manual_flow_selected_{project_id}"
+        request_ids = [item["id"] for item in requests]
+        order_ids = [item for item in st.session_state.get(order_key, []) if item in request_by_id]
+        order_ids.extend(item for item in request_ids if item not in order_ids)
+        selected_ids = set(st.session_state.get(selected_key, [])) & set(request_ids)
+        st.session_state[order_key] = order_ids
+        st.markdown(
+            "<div class='aa-popover-section'>2 · Select and order requests</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='aa-popover-hint'>Drag to reorder. Checked requests run in "
+            "the order shown.</div>",
+            unsafe_allow_html=True,
+        )
+        rows = [
+            {
+                "id": request_id,
+                "method": request_by_id[request_id].get("method", "GET"),
+                "name": request_by_id[request_id].get("name") or "Untitled request",
+                "url": request_by_id[request_id].get("url", ""),
+                "selected": request_id in selected_ids,
+            }
+            for request_id in order_ids
+        ]
+        order_result = render_request_order_list(
+            rows, key=f"manual-flow-request-order-{project_id}",
+        )
+        changed = getattr(order_result, "rows_change", None)
+        if isinstance(changed, dict):
+            proposed = changed.get("order_ids", [])
+            included = set(changed.get("selected_ids", []))
+            if len(proposed) == len(request_ids) and set(proposed) == set(request_ids) and included <= set(request_ids):
+                st.session_state[order_key] = proposed
+                st.session_state[selected_key] = [item for item in proposed if item in included]
+                st.rerun()
+        st.markdown(
+            "<div class='aa-popover-section'>3 · Name</div>",
+            unsafe_allow_html=True,
+        )
+        flow_name = st.text_input(
+            "Flow name", key=f"manual_flow_name_{project_id}",
+            label_visibility="collapsed", placeholder="e.g. Create and review cart",
+        )
+        ordered_selected = [request_by_id[item] for item in order_ids if item in selected_ids]
+        st.caption(f"{len(ordered_selected)} request(s) selected in flow order.")
+        if st.button(
+            "Create flow", key=f"manual_flow_create_{project_id}",
+            type="primary", icon=":material/add:", width="stretch",
+            disabled=not ordered_selected,
+        ):
+            try:
+                test_case = _new_manual_test_case(ordered_selected, flow_name, True)
+                _append_manual_test_case(test_case)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not create flow: {exc}")
+
+
+def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | None:
+    """Render saved-run selection and persistence controls for the project.
+
+    Args:
+        project (dict): Current project and its saved run summaries.
+        test_cases (list[dict]): Cases currently displayed in the workspace.
+
+    Returns:
+        str | None: ID of the loaded run, if one is selected.
+    """
+    project_id = project.get("id")
+    if not project_id:
+        with st.popover(
+            "Reusable runs", icon=":material/playlist_play:", width="stretch",
+            help="Save and reuse named groups of test cases",
+        ):
+            st.info("Create or select a project first.", icon=":material/info:")
+        return None
+    runs = project.get("test_runs", [])
+    run_by_id = {item["id"]: item for item in runs}
+    picker_key = f"test_run_picker_{project_id}"
+    name_key = f"test_run_name_{project_id}"
+    loaded_key = f"test_run_loaded_{project_id}"
+    pending_key = f"test_run_pending_picker_{project_id}"
+    pending_name_key = f"test_run_pending_name_{project_id}"
+    pending = st.session_state.pop(pending_key, None)
+    if pending is not None:
+        st.session_state[picker_key] = pending
+    st.session_state.setdefault(picker_key, "")
+    st.session_state.setdefault(loaded_key, st.session_state[picker_key])
+    pending_name = st.session_state.pop(pending_name_key, None)
+    if pending_name is not None:
+        st.session_state[name_key] = pending_name
+
+    with st.popover(
+        "Reusable runs", icon=":material/playlist_play:", width="stretch",
+        help="Load, save, update, or delete a named case selection",
+    ):
+        st.markdown(
+            "<div class='aa-popover-section'>Named case selection</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='aa-popover-hint'>A run uses the latest saved version of "
+            "each selected case, so saved case updates carry forward.</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div class='aa-popover-section'>1 · Load existing run</div>",
+            unsafe_allow_html=True,
+        )
+        picker_col, name_col = st.columns([1.1, 2], vertical_alignment="bottom")
+        options = [""] + list(run_by_id)
+        with picker_col:
+            chosen_run = st.selectbox(
+                "Load a saved run", options, key=picker_key,
+                format_func=lambda run_id: "New run" if not run_id else run_by_id[run_id]["name"],
+            )
+        if chosen_run != st.session_state.get(loaded_key):
+            included = set(run_by_id.get(chosen_run, {}).get("case_ids", []))
+            for case in test_cases:
+                st.session_state[f"tc_selected_{case.get('id')}"] = case.get("id") in included
+            st.session_state[name_key] = run_by_id.get(chosen_run, {}).get("name", "")
+            st.session_state[loaded_key] = chosen_run
+        st.markdown(
+            "<div class='aa-popover-section'>2 · Save current selection</div>",
+            unsafe_allow_html=True,
+        )
+        with name_col:
+            st.text_input("Run name", key=name_key, placeholder="e.g. Checkout regression")
+
+        selected_ids = [
+            case.get("id") for case in test_cases
+            if st.session_state.get(f"tc_selected_{case.get('id')}", True)
+        ]
+        save_col, delete_col, hint_col = st.columns([1.1, 0.8, 2.2], vertical_alignment="center")
+        with save_col:
+            save_label = "Update run" if chosen_run else "Save run"
+            save_clicked = st.button(
+                save_label, key=f"test_run_save_{project_id}",
+                icon=":material/save:", type="primary", width="stretch",
+                disabled=(not selected_ids and not chosen_run)
+                or not st.session_state.get(name_key, "").strip(),
+            )
+        with delete_col:
+            delete_clicked = st.button(
+                "Delete run", key=f"test_run_delete_{project_id}",
+                icon=":material/delete:", width="stretch", disabled=not chosen_run,
+            )
+        with hint_col:
+            st.caption(f"{len(selected_ids)} case(s) selected")
+
+        if save_clicked:
+            payload = {"name": st.session_state[name_key], "case_ids": selected_ids}
+            try:
+                saved_cases = api_get(f"/api/v1/projects/{project_id}/test-cases")
+                saved_case_ids = {item.get("id") for item in saved_cases}
+                new_cases = [
+                    copy.deepcopy(case) for case in test_cases
+                    if case.get("id") in selected_ids and case.get("id") not in saved_case_ids
+                ]
+                if new_cases:
+                    api_post(
+                        f"/api/v1/projects/{project_id}/test-cases/save",
+                        {"test_cases": new_cases},
+                    )
+                    project.setdefault("test_cases", []).extend(new_cases)
+                path = f"/api/v1/projects/{project_id}/test-runs"
+                saved = api_put(f"{path}/{chosen_run}", payload) if chosen_run else api_post(path, payload)
+                updated_runs = [item for item in runs if item.get("id") != saved["id"]]
+                updated_runs.insert(0, saved)
+                project["test_runs"] = updated_runs
+                st.session_state[pending_key] = saved["id"]
+                saved_note = f" and {len(new_cases)} new case(s)" if new_cases else ""
+                _queue_toast(f"Test run '{saved['name']}'{saved_note} saved.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save test run: {exc}")
+        if delete_clicked:
+            try:
+                api_delete(f"/api/v1/projects/{project_id}/test-runs/{chosen_run}")
+                project["test_runs"] = [item for item in runs if item.get("id") != chosen_run]
+                st.session_state[pending_key] = ""
+                st.session_state[pending_name_key] = ""
+                st.session_state[loaded_key] = None
+                _queue_toast("Test run deleted.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not delete test run: {exc}")
+    return chosen_run or None
+
+
+def _test_case_request_snapshot(test_case: dict):
+    """Copy request configuration used to invalidate stale execution results."""
+    field = "steps" if test_case.get("is_flow") else "request"
+    return copy.deepcopy(test_case.get(field))
 
 
 def render_test_case_card(tc: dict, index: int) -> dict:
@@ -1244,6 +1740,9 @@ def render_test_case_card(tc: dict, index: int) -> dict:
         assertions = {}
         for step in _normalise_flow_steps(tc):
             step["assertions"] = _normalize_assertions(step)
+    project = st.session_state.get("current_project") or {}
+    snapshot_key = f"tc_saved_request_snapshot_{project.get('id', 'local')}_{tc_id}"
+    st.session_state.setdefault(snapshot_key, _test_case_request_snapshot(tc))
 
     with st.container(border=True, key=f"tc-card-{status}-{tc_id}"):
         toggle_col, select_col, title_col, status_col, run_col = st.columns(
@@ -1264,7 +1763,7 @@ def render_test_case_card(tc: dict, index: int) -> dict:
             latency = (result or {}).get("latency_ms") or sum(
                 item.get("latency_ms", 0) for item in (result or {}).get("step_results", [])
             )
-            st.markdown(f"{_status_badge(status)} :gray-badge[{latency} ms]")
+            st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]")
         with run_col:
             run_clicked = st.button(
                 "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
@@ -1277,20 +1776,62 @@ def render_test_case_card(tc: dict, index: int) -> dict:
             with st.spinner("Executing scenario sequentially..." if is_flow else "Executing request..."):
                 try:
                     _execute_test_case(tc)
+                    st.session_state[open_key] = True
+                    detail_tab_key = f"tc_detail_tabs_{tc_id}"
+                    st.session_state[detail_tab_key] = "Scenario result" if is_flow else "Result"
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Execution failed: {exc}")
 
         if is_open:
+            save_notice_key = f"tc_save_notice_{project.get('id', 'local')}_{tc_id}"
+            if notice := st.session_state.pop(save_notice_key, None):
+                _queue_toast(notice)
+            name_key = f"tc_name_{tc_id}"
+            description_key = f"tc_description_{tc_id}"
+            st.session_state.setdefault(name_key, str(tc.get("name", "")))
+            st.session_state.setdefault(description_key, str(tc.get("description", "")))
+            title_col, description_col = st.columns([1, 2])
+            tc["name"] = title_col.text_input("Test case name", key=name_key)
+            tc["description"] = description_col.text_input("Description", key=description_key)
             if is_flow:
                 step_results = {
                     item.get("step_order"): item
                     for item in (result or {}).get("step_results", [])
                 }
-                steps_tab, summary_tab = st.tabs([f"Steps ({len(tc.get('steps', []))})", "Scenario result"])
+                detail_tab_key = f"tc_detail_tabs_{tc_id}"
+                steps_tab, summary_tab = st.tabs(
+                    [f"Steps ({len(tc.get('steps', []))})", "Scenario result"],
+                    key=detail_tab_key, on_change="rerun",
+                )
                 with steps_tab:
-                    for step in _normalise_flow_steps(tc):
-                        _render_flow_step(tc_id, step, step_results.get(step.get("step_order")))
+                    steps = _normalise_flow_steps(tc)
+                    project_requests = project.get("endpoints", [])
+                    if project_requests:
+                        request_by_id = {item["id"]: item for item in project_requests}
+                        add_col, add_button_col = st.columns([4, 1], vertical_alignment="bottom")
+                        selected_request_id = add_col.selectbox(
+                            "Add saved request as a step",
+                            list(request_by_id),
+                            format_func=lambda request_id: (
+                                f"{request_by_id[request_id].get('method', 'GET')} · "
+                                f"{request_by_id[request_id].get('name') or request_by_id[request_id].get('url', 'Request')}"
+                            ),
+                            key=f"tc_add_step_request_{tc_id}",
+                        )
+                        if add_button_col.button(
+                            "Add step", key=f"tc_add_step_{tc_id}",
+                            icon=":material/add:", type="primary", width="stretch",
+                        ):
+                            steps.append(_new_flow_step(request_by_id[selected_request_id], len(steps) + 1))
+                            st.session_state.get("executions", {}).pop(tc_id, None)
+                            st.rerun()
+                    else:
+                        st.info("Save a request in API Workspace before adding it to this flow.")
+                    for step_index, step in enumerate(steps):
+                        _render_flow_step(
+                            tc, step, step_results.get(step.get("step_order")), step_index,
+                        )
                 with summary_tab:
                     if result:
                         _render_execution_result(result, tc_id)
@@ -1305,21 +1846,22 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                         st.caption("Run this scenario to see the overall and per-step results.")
             else:
                 request = tc.get("request", {}) or {}
-                assertion_tab, request_tab, result_tab = st.tabs(["Assertions", "Request", "Result"])
+                detail_tab_key = f"tc_detail_tabs_{tc_id}"
+                assertion_tab, request_tab, result_tab = st.tabs(
+                    ["Assertions", "Request", "Result"],
+                    key=detail_tab_key, on_change="rerun",
+                )
                 with assertion_tab:
                     _render_test_case_assertions(assertions, tc_id)
                 with request_tab:
-                    _render_request_details(
-                        request.get("method"), request.get("url"), request.get("headers"),
-                        request.get("body"), f"{tc_id}_request", request.get("query_params"),
-                    )
+                    _render_editable_test_request(request, f"{tc_id}_request")
                 with result_tab:
                     if result:
                         _render_execution_result(result, tc_id)
                     else:
                         st.caption("Run this test to inspect its response and assertion results.")
 
-            delete_col, save_hint_col = st.columns([1, 5], vertical_alignment="center")
+            delete_col, save_col, save_hint_col = st.columns([1, 1.35, 4], vertical_alignment="center")
             with delete_col:
                 if st.button("Delete", key=f"delete_tc_{tc_id}", icon=":material/delete:", help="Delete test case"):
                     current_project = st.session_state.get("current_project") or {}
@@ -1328,11 +1870,41 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                             api_delete(f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}")
                         st.session_state["test_cases"] = [item for item in st.session_state["test_cases"] if item.get("id") != tc_id]
                         st.session_state.get("executions", {}).pop(tc_id, None)
+                        _queue_toast("Test case deleted.")
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Could not delete test case: {exc}")
+            with save_col:
+                save_case_clicked = st.button(
+                    "Save changes", key=f"save_tc_{tc_id}",
+                    icon=":material/save:", type="primary", width="stretch",
+                    disabled=not project.get("id"),
+                )
+                if save_case_clicked:
+                    try:
+                        saved = api_put(
+                            f"/api/v1/projects/{project['id']}/test-cases/{tc_id}", tc,
+                        )
+                        tc.update(saved)
+                        new_snapshot = _test_case_request_snapshot(tc)
+                        if st.session_state[snapshot_key] != new_snapshot:
+                            st.session_state.get("executions", {}).pop(tc_id, None)
+                        st.session_state[snapshot_key] = new_snapshot
+                        project_cases = project.get("test_cases", [])
+                        case_found = False
+                        for case_index, saved_case in enumerate(project_cases):
+                            if saved_case.get("id") == tc_id:
+                                project_cases[case_index] = copy.deepcopy(saved)
+                                case_found = True
+                                break
+                        if not case_found:
+                            project_cases.append(copy.deepcopy(saved))
+                        _queue_toast("Test case changes saved to the project.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not save test case changes: {exc}")
             with save_hint_col:
-                st.caption("Assertion edits are saved with the scenario when you save test cases or run it.")
+                st.caption("Request, step, mapping, and assertion edits stay in this session until you save changes.")
     return tc
 
 
@@ -1380,6 +1952,36 @@ def _test_case_sort_key(tc: dict) -> int:
         return 0
 
 
+def _deduplicate_test_cases(test_cases: list[dict]) -> list[dict]:
+    """Keep the latest payload for each stable case ID, preserving list order.
+
+    Args:
+        test_cases (list[dict]): Cases that may contain repeated IDs.
+
+    Returns:
+        list[dict]: One case per ID, with the last payload retained.
+    """
+    unique_cases = {}
+    for index, test_case in enumerate(test_cases):
+        case_id = test_case.get("id")
+        key = str(case_id) if case_id else f"__missing_id_{index}"
+        unique_cases[key] = test_case
+    return list(unique_cases.values())
+
+
+def _merge_generated_test_cases(existing: list[dict], generated: list[dict]) -> list[dict]:
+    """Append generated cases while retaining existing cases and deduplicating by ID.
+
+    Args:
+        existing (list[dict]): Current project cases in the frontend session.
+        generated (list[dict]): Newly generated cases returned by the API.
+
+    Returns:
+        list[dict]: Existing and new cases, with the latest payload for each ID.
+    """
+    return _deduplicate_test_cases([*existing, *generated])
+
+
 def _url_route_matches(endpoint_url: str, test_url: str) -> bool:
     """Match a generated test URL against a saved endpoint route template.
 
@@ -1397,6 +1999,143 @@ def _url_route_matches(endpoint_url: str, test_url: str) -> bool:
     return bool(re.fullmatch(escaped, candidate))
 
 
+def _resolve_saved_endpoint(
+    endpoint_id: str | None, url: str, method: str, endpoints: list[dict],
+) -> dict | None:
+    """Resolve case provenance by saved endpoint ID, then URL route and method.
+
+    Args:
+        endpoint_id (str | None): Stable saved request ID, when present.
+        url (str): Request URL stored in the case or flow step.
+        method (str): HTTP method stored in the case or flow step.
+        endpoints (list[dict]): Saved project endpoint records.
+
+    Returns:
+        dict | None: Matching saved endpoint or None when provenance is unknown.
+    """
+    endpoint = next((item for item in endpoints if item.get("id") == endpoint_id), None)
+    if endpoint or not url:
+        return endpoint
+    matches = [item for item in endpoints if _url_route_matches(item.get("url", ""), url)]
+    method_matches = [item for item in matches if str(item.get("method", "")).upper() == str(method).upper()]
+    return (method_matches or matches or [None])[0]
+
+
+def _case_step_endpoints(test_case: dict, endpoints: list[dict]) -> list[dict]:
+    """Return unique saved endpoints represented by a single case or flow steps.
+
+    Args:
+        test_case (dict): Single test or flow scenario.
+        endpoints (list[dict]): Saved project endpoint records.
+
+    Returns:
+        list[dict]: Resolved endpoints in first-seen request order.
+    """
+    resolved = []
+    if test_case.get("is_flow") or isinstance(test_case.get("steps"), list):
+        requests = []
+        for step in test_case.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            endpoint = step.get("endpoint") or {}
+            requests.append((
+                step.get("endpoint_id") or endpoint.get("id"),
+                endpoint.get("url", ""), endpoint.get("method", ""),
+            ))
+    else:
+        request = test_case.get("request") or {}
+        requests = [(test_case.get("source_endpoint_id"), request.get("url", ""), request.get("method", ""))]
+
+    seen = set()
+    for endpoint_id, url, method in requests:
+        endpoint = _resolve_saved_endpoint(endpoint_id, str(url or ""), str(method or ""), endpoints)
+        if endpoint and endpoint.get("id") not in seen:
+            seen.add(endpoint.get("id"))
+            resolved.append(endpoint)
+    return resolved
+
+
+def _filter_test_cases_by_scope(
+    test_cases: list[dict], endpoints: list[dict], run_ids: list[str],
+    runs: list[dict], collection_ids: list[str], endpoint_ids: list[str],
+) -> list[dict]:
+    """Apply run, collection, and endpoint filters to cases without duplicating flows.
+
+    Args:
+        test_cases (list[dict]): All project cases.
+        endpoints (list[dict]): Saved project endpoint records.
+        run_ids (list[str]): Selected reusable run IDs, combined as alternatives.
+        runs (list[dict]): Project reusable run records.
+        collection_ids (list[str]): Selected collection IDs, combined as alternatives.
+        endpoint_ids (list[str]): Selected endpoint IDs, combined as alternatives.
+
+    Returns:
+        list[dict]: Cases satisfying every active filter category.
+    """
+    selected_run_case_ids = {
+        case_id for run in runs if run.get("id") in run_ids
+        for case_id in run.get("case_ids", [])
+    }
+    filtered = []
+    for case in test_cases:
+        if run_ids and case.get("id") not in selected_run_case_ids:
+            continue
+        case_endpoints = _case_step_endpoints(case, endpoints)
+        if endpoint_ids or collection_ids:
+            matching_endpoints = [
+                endpoint for endpoint in case_endpoints
+                if (not endpoint_ids or endpoint.get("id") in endpoint_ids)
+                and (not collection_ids or endpoint.get("collection_id") in collection_ids)
+            ]
+            if not matching_endpoints:
+                continue
+        filtered.append(case)
+    return filtered
+
+
+def _clear_test_case_filters(project_id: str) -> None:
+    """Clear project-scoped case filters and the execution-result filter.
+
+    Args:
+        project_id (str): Project namespace for the filter widget state.
+
+    Returns:
+        None: Resets filter selections in Streamlit session state.
+    """
+    for name in ("runs", "collections", "endpoints"):
+        st.session_state[f"tc_scope_{name}_{project_id}"] = []
+    st.session_state["test_case_filter"] = "All"
+
+
+def _flow_provenance_label(test_case: dict, endpoints: list[dict], collections: list[dict]) -> str:
+    """Format every endpoint and collection used by a flow for its visible card group.
+
+    Args:
+        test_case (dict): Flow scenario whose steps provide provenance.
+        endpoints (list[dict]): Saved project endpoint records.
+        collections (list[dict]): Saved project collection records.
+
+    Returns:
+        str: Readable endpoint and collection provenance caption.
+    """
+    case_endpoints = _case_step_endpoints(test_case, endpoints)
+    collection_names = {item.get("id"): item.get("name", "Collection") for item in collections}
+    endpoint_labels = [
+        f"{item.get('method', 'GET')} {item.get('name') or item.get('url') or 'Request'}"
+        for item in case_endpoints
+    ]
+    collection_labels = list(dict.fromkeys(
+        collection_names.get(item.get("collection_id"), "Unassigned collection")
+        for item in case_endpoints
+    ))
+    parts = []
+    if endpoint_labels:
+        parts.append("Endpoints: " + " → ".join(endpoint_labels))
+    if collection_labels:
+        parts.append("Collections: " + ", ".join(collection_labels))
+    return " · ".join(parts) or "No saved endpoint provenance"
+
+
 def _group_test_cases_by_endpoint(
     test_cases: list[dict], endpoints: list[dict] | None = None,
 ) -> list[tuple[str, str, list[dict]]]:
@@ -1411,23 +2150,19 @@ def _group_test_cases_by_endpoint(
     if endpoints is None:
         project = st.session_state.get("current_project") or {}
         endpoints = project.get("endpoints", [])
-    endpoints_by_id = {item.get("id"): item for item in endpoints if item.get("id")}
     groups: dict[str, tuple[str, list[dict]]] = {}
 
     for tc in test_cases:
         if tc.get("is_flow"):
             key, title = "__flows__", "Flow scenarios"
         else:
-            endpoint_id = tc.get("source_endpoint_id")
-            endpoint = endpoints_by_id.get(endpoint_id)
             request = tc.get("request") or {}
             test_url = str(request.get("url") or "")
-            if endpoint is None and test_url:
-                matches = [item for item in endpoints if _url_route_matches(item.get("url", ""), test_url)]
-                test_method = str(request.get("method", "")).upper()
-                method_matches = [item for item in matches if str(item.get("method", "")).upper() == test_method]
-                endpoint = (method_matches or matches or [None])[0]
-                endpoint_id = endpoint.get("id") if endpoint else None
+            endpoint = _resolve_saved_endpoint(
+                tc.get("source_endpoint_id"), test_url,
+                str(request.get("method", "")), endpoints,
+            )
+            endpoint_id = endpoint.get("id") if endpoint else None
 
             endpoint_name = (
                 tc.get("source_endpoint_name")
@@ -1471,13 +2206,17 @@ def _generation_requests_in_order(
             if request_id in endpoints_by_id and request_id in selected_ids]
 
 
-def _generate_selected_cases(mode: str, selected: list[dict], business_req: str) -> list[dict]:
+def _generate_selected_cases(
+    mode: str, selected: list[dict], business_req: str,
+    example_test_case_ids: list[str] | None = None,
+) -> list[dict]:
     """Call the matching generation route for selected requests.
 
     Args:
         mode (str): Single or Flow generation mode.
         selected (list[dict]): Ordered saved request configurations.
         business_req (str): Optional business requirements text.
+        example_test_case_ids (list[str] | None): Existing cases used as generation examples.
 
     Returns:
         list[dict]: Generated test cases.
@@ -1488,6 +2227,7 @@ def _generate_selected_cases(mode: str, selected: list[dict], business_req: str)
             "endpoints": selected,
             "business_requirements": business_req or None,
             "project_id": project.get("id"),
+            "example_test_case_ids": example_test_case_ids or [],
         }
         route = (
             f"/api/v1/projects/{project['id']}/test-cases/generate-flow"
@@ -1502,6 +2242,7 @@ def _generate_selected_cases(mode: str, selected: list[dict], business_req: str)
             "business_requirements": business_req or None,
             "project_id": project.get("id"),
             "source_endpoint_id": endpoint.get("id"),
+            "example_test_case_ids": example_test_case_ids or [],
         }
         generated.extend(api_post("/api/v1/test-cases/generate", payload) or [])
     return generated
@@ -1598,8 +2339,35 @@ def render_generation_panel() -> None:
         if not endpoints:
             st.info("Enable saved requests in API Workspace to start generation.")
 
+    project_test_cases = _deduplicate_test_cases(st.session_state.get("test_cases", []))
+    examples_by_id = {str(case.get("id")): case for case in project_test_cases if case.get("id")}
+    example_key = f"generation_example_ids_{project_id or 'default'}"
+    st.session_state.setdefault(example_key, [])
+    st.session_state[example_key] = [
+        case_id for case_id in st.session_state[example_key]
+        if case_id in examples_by_id
+    ]
+
     with st.container(border=True):
-        st.markdown("**2 · Add business requirements** · Optional")
+        st.markdown("**2 · Use existing cases as examples** · Optional")
+        example_ids = st.multiselect(
+            "Reference test cases",
+            options=list(examples_by_id),
+            key=example_key,
+            label_visibility="collapsed",
+            placeholder="Choose cases whose coverage or style you want more of",
+            format_func=lambda case_id: (
+                f"{'Flow' if examples_by_id[case_id].get('is_flow') else str(examples_by_id[case_id].get('type', 'test')).title()} · "
+                f"{examples_by_id[case_id].get('name') or 'Untitled case'}"
+            ),
+        )
+        if not examples_by_id:
+            st.caption("Generate or add a test case first to use it as an example.")
+        elif example_ids:
+            st.caption("Examples guide scenario coverage and style. They remain unchanged; generated cases are added alongside them.")
+
+    with st.container(border=True):
+        st.markdown("**3 · Add business requirements** · Optional")
         business_req = st.text_area(
             "Business requirements", height=95, key="generation_business_requirements",
             label_visibility="collapsed",
@@ -1639,6 +2407,7 @@ def render_generation_panel() -> None:
                         api_delete(f"/api/v1/projects/{project['id']}/test-cases")
                     st.session_state["test_cases"] = []
                     st.session_state["executions"] = {}
+                    _queue_toast("All test cases cleared.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not clear test cases: {exc}")
@@ -1653,83 +2422,165 @@ def render_generation_panel() -> None:
     if generate_clicked and selected:
         with st.spinner("Generating with the configured LLM providers..."):
             try:
-                result = _generate_selected_cases(mode, selected, business_req)
+                result = _generate_selected_cases(mode, selected, business_req, example_ids)
                 if result:
-                    st.session_state["test_cases"] = result
-                    st.session_state["executions"] = {}
+                    st.session_state["test_cases"] = _merge_generated_test_cases(
+                        st.session_state.get("test_cases", []), result,
+                    )
                     for tc in result:
                         st.session_state[f"tc_selected_{tc.get('id')}"] = True
-                    st.success(f"Generated {len(result)} test case(s).")
+                    _queue_toast(f"Generated {len(result)} additional test case(s). Existing cases were kept.")
                 else:
                     st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
             except Exception as exc:
                 st.error(f"Failed to generate test cases: {exc}")
 
 
-def render_test_case_list() -> None:
+
+def render_test_case_list(loaded_run_id: str | None = None) -> None:
     """Render status counts, filters, batch execution, and test-case cards.
+
+    Args:
+        loaded_run_id (str | None): Currently loaded named run, if any.
 
     Returns:
         None: Writes test-case results to the Streamlit page.
     """
-    test_cases = sorted(st.session_state.get("test_cases", []), key=_test_case_sort_key)
+    raw_test_cases = st.session_state.get("test_cases", [])
+    test_cases = _deduplicate_test_cases(raw_test_cases)
+    if len(test_cases) != len(raw_test_cases):
+        st.session_state["test_cases"] = test_cases
+        st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+    test_cases.sort(key=_test_case_sort_key)
+    project = st.session_state.get("current_project") or {}
     if not test_cases:
-        st.info("No test cases yet. Choose requests above and generate a set.")
+        st.info("No test cases yet. Generate a set or add a manual case from a saved request.")
         return
 
+    endpoints = project.get("endpoints", [])
+    collections = project.get("collections", [])
+    runs = project.get("test_runs", [])
+    project_id = project.get("id", "default")
+    scope_keys = {
+        name: f"tc_scope_{name}_{project_id}"
+        for name in ("runs", "collections", "endpoints")
+    }
+    options_by_name = {
+        "runs": [item.get("id") for item in runs if item.get("id")],
+        "collections": [item.get("id") for item in collections if item.get("id")],
+        "endpoints": [item.get("id") for item in endpoints if item.get("id")],
+    }
+    for name, key in scope_keys.items():
+        st.session_state.setdefault(key, [])
+        st.session_state[key] = [value for value in st.session_state[key] if value in options_by_name[name]]
+    st.session_state.setdefault("test_case_filter", "All")
+
+    with st.container(key="test-case-scope-filters"):
+        filter_cols = st.columns([1.2, 1.2, 1.6, 0.65], vertical_alignment="bottom")
+        with filter_cols[0]:
+            selected_run_ids = st.multiselect(
+                "Reusable runs", options_by_name["runs"], key=scope_keys["runs"],
+                placeholder="All runs", format_func=lambda run_id: next(
+                    (item.get("name", "Untitled run") for item in runs if item.get("id") == run_id), run_id,
+                ),
+            )
+        with filter_cols[1]:
+            selected_collection_ids = st.multiselect(
+                "Collections", options_by_name["collections"], key=scope_keys["collections"],
+                placeholder="All collections", format_func=lambda collection_id: next(
+                    (item.get("name", "Untitled collection") for item in collections if item.get("id") == collection_id), collection_id,
+                ),
+            )
+        with filter_cols[2]:
+            selected_endpoint_ids = st.multiselect(
+                "Endpoints", options_by_name["endpoints"], key=scope_keys["endpoints"],
+                placeholder="All endpoints", format_func=lambda endpoint_id: next(
+                    (f"{item.get('method', 'GET')} · {item.get('name') or item.get('url') or 'Untitled request'}"
+                     for item in endpoints if item.get("id") == endpoint_id), endpoint_id,
+                ),
+            )
+        with filter_cols[3]:
+            st.button(
+                "Clear", key=f"tc_clear_scope_filters_{project_id}",
+                help="Clear run, collection, endpoint, and result filters",
+                on_click=_clear_test_case_filters, args=(project_id,), width="stretch",
+            )
+
+    scoped_cases = _filter_test_cases_by_scope(
+        test_cases, endpoints, selected_run_ids, runs,
+        selected_collection_ids, selected_endpoint_ids,
+    )
     executions = st.session_state.get("executions", {})
     statuses = {tc.get("id"): _test_case_status(executions.get(tc.get("id"))) for tc in test_cases}
     counts = {
-        "passed": sum(status == "passed" for status in statuses.values()),
-        "failed": sum(status == "failed" for status in statuses.values()),
-        "error": sum(status == "error" for status in statuses.values()),
-        "not_run": sum(status == "not_run" for status in statuses.values()),
+        "passed": sum(statuses.get(tc.get("id")) == "passed" for tc in scoped_cases),
+        "failed": sum(statuses.get(tc.get("id")) == "failed" for tc in scoped_cases),
+        "error": sum(statuses.get(tc.get("id")) == "error" for tc in scoped_cases),
+        "not_run": sum(statuses.get(tc.get("id")) == "not_run" for tc in scoped_cases),
     }
 
     st.divider()
-    st.subheader(f"Test cases · {len(test_cases)}")
+    st.subheader(
+        f"Test cases · {len(scoped_cases)} of {len(test_cases)}"
+        if selected_run_ids or selected_collection_ids or selected_endpoint_ids
+        else f"Test cases · {len(test_cases)}"
+    )
     st.markdown(
-        f":gray-badge[{len(test_cases)} total] :green-badge[{counts['passed']} passed] "
+        f":gray-badge[{len(scoped_cases)} in scope] :green-badge[{counts['passed']} passed] "
         f":red-badge[{counts['failed']} failed] :orange-badge[{counts['error']} error] "
         f":gray-badge[{counts['not_run']} not run]"
     )
 
-    filter_col, all_col, none_col, expand_col, collapse_col, run_col, save_col = st.columns(
-        [2.5, 0.9, 0.8, 1.1, 1.2, 1.35, 1.4], vertical_alignment="center"
-    )
-    with filter_col:
-        st.session_state.setdefault("test_case_filter", "All")
-        chosen_filter = st.segmented_control(
-            "Result filter", ["All", "Passed", "Failed", "Error", "Not run"],
-            key="test_case_filter", label_visibility="collapsed",
-        ) or "All"
-    with all_col:
-        st.button("Select all", key="tc_select_all", width="stretch",
-                  on_click=_select_all_test_cases, args=(test_cases, True))
-    with none_col:
-        st.button("Clear", key="tc_select_none", width="stretch",
-                  on_click=_select_all_test_cases, args=(test_cases, False))
-    with expand_col:
-        st.button("Expand all", key="tc_expand_all", icon=":material/unfold_more:", width="stretch",
-                  on_click=_set_all_test_cases_open, args=(test_cases, True))
-    with collapse_col:
-        st.button("Collapse all", key="tc_collapse_all", icon=":material/unfold_less:", width="stretch",
-                  on_click=_set_all_test_cases_open, args=(test_cases, False))
-    with run_col:
-        run_selected = st.button(
-            "Run selected", key="tc_run_selected", icon=":material/play_arrow:",
-            type="primary", width="stretch", help="Execute checked test cases",
+    with st.container(key="test-case-toolbar"):
+        filter_col, selection_col, expand_col, collapse_col, run_col, save_col = st.columns(
+            [2.5, 1.1, 1.1, 1.2, 1.35, 1.4], vertical_alignment="center"
         )
-    with save_col:
-        project = st.session_state.get("current_project") or {}
-        save_clicked = st.button(
-            "Save to project", key="tc_save_project", icon=":material/save:",
-            width="stretch", disabled=not project,
+        with filter_col:
+            st.session_state.setdefault("test_case_filter", "All")
+            chosen_filter = st.segmented_control(
+                "Result filter", ["All", "Passed", "Failed", "Error", "Not run"],
+                key="test_case_filter", label_visibility="collapsed",
+            ) or "All"
+        all_selected = all(
+            st.session_state.get(f"tc_selected_{case.get('id')}", True)
+            for case in test_cases
         )
+        with selection_col:
+            st.button(
+                "Deselect all" if all_selected else "Select all",
+                key="tc_toggle_all_selection", width="stretch",
+                on_click=_select_all_test_cases, args=(test_cases, not all_selected),
+            )
+        with expand_col:
+            st.button("Expand all", key="tc_expand_all", icon=":material/unfold_more:", width="stretch",
+                      on_click=_set_all_test_cases_open, args=(test_cases, True))
+        with collapse_col:
+            st.button("Collapse all", key="tc_collapse_all", icon=":material/unfold_less:", width="stretch",
+                      on_click=_set_all_test_cases_open, args=(test_cases, False))
+        with run_col:
+            run_selected = st.button(
+                "Run selected", key="tc_run_selected", icon=":material/play_arrow:",
+                type="primary", width="stretch", help="Execute checked test cases",
+            )
+        with save_col:
+            save_clicked = st.button(
+                "Save to project", key="tc_save_project", icon=":material/save:",
+                width="stretch", disabled=not project,
+            )
 
     if run_selected:
         targets = [tc for tc in test_cases if st.session_state.get(f"tc_selected_{tc.get('id')}", True)]
         errors = []
+        if targets and loaded_run_id and project.get("id"):
+            try:
+                saved_cases = api_get(f"/api/v1/projects/{project['id']}/test-cases")
+                saved_by_id = {case.get("id"): case for case in saved_cases}
+                targets = [saved_by_id[case.get("id")] for case in targets if case.get("id") in saved_by_id]
+                if not targets:
+                    st.warning("The saved run has no remaining saved test cases. Save the run again to update its selection.")
+            except Exception as exc:
+                st.error(f"Could not load the latest saved test cases: {exc}")
+                targets = []
         if not targets:
             st.warning("Select at least one test case to run.")
         else:
@@ -1740,10 +2591,33 @@ def render_test_case_list() -> None:
                     text=f"Running {tc.get('name', tc.get('id'))} ({number}/{len(targets)})",
                 )
                 try:
-                    _execute_test_case(tc)
+                    _execute_test_case(tc, notify=False)
                 except Exception as exc:
                     errors.append(f"{tc.get('name', tc.get('id'))}: {exc}")
             progress.progress(1.0, text="Execution complete")
+            batch_results = [
+                st.session_state.get("executions", {}).get(tc.get("id")) for tc in targets
+            ]
+            passed = sum(_test_case_status(result) == "passed" for result in batch_results)
+            failed = sum(_test_case_status(result) == "failed" for result in batch_results)
+            errored = sum(_test_case_status(result) == "error" for result in batch_results) + len(errors)
+            _queue_toast(
+                f"Ran {len(targets)} test case(s): {passed} passed, {failed} failed, {errored} errors.",
+                "error" if failed or errored else "success",
+            )
+            focus_case = next(
+                (
+                    tc for tc in targets
+                    if _test_case_status(st.session_state.get("executions", {}).get(tc.get("id")))
+                    in {"failed", "error"}
+                ),
+                targets[-1],
+            )
+            focus_id = focus_case.get("id")
+            st.session_state[f"tc_open_{focus_id}"] = True
+            st.session_state[f"tc_detail_tabs_{focus_id}"] = (
+                "Scenario result" if focus_case.get("is_flow") else "Result"
+            )
             st.session_state["tc_run_errors"] = errors
             st.rerun()
 
@@ -1753,7 +2627,7 @@ def render_test_case_list() -> None:
                 f"/api/v1/projects/{project['id']}/test-cases/save",
                 {"test_cases": test_cases},
             )
-            st.success(result.get("message", "Test cases saved."))
+            _queue_toast(result.get("message", "Test cases saved."))
         except Exception as exc:
             st.error(f"Could not save test cases: {exc}")
 
@@ -1765,17 +2639,19 @@ def render_test_case_list() -> None:
         "Error": "error", "Not run": "not_run",
     }[chosen_filter]
     visible_cases = [
-        tc for tc in test_cases
+        tc for tc in scoped_cases
         if not filter_status or statuses.get(tc.get("id")) == filter_status
     ]
     shown = 0
-    for _, heading, grouped_cases in _group_test_cases_by_endpoint(visible_cases):
+    for _, heading, grouped_cases in _group_test_cases_by_endpoint(visible_cases, endpoints):
         st.markdown(f"#### {heading}")
         for tc in grouped_cases:
             shown += 1
+            if tc.get("is_flow") or isinstance(tc.get("steps"), list):
+                st.caption(_flow_provenance_label(tc, endpoints, collections))
             render_test_case_card(tc, test_cases.index(tc))
     if shown == 0:
-        st.caption("No test cases match this result filter.")
+        st.caption("No test cases match the selected filters.")
 
 
 def _set_all_test_cases_open(test_cases: list[dict], is_open: bool) -> None:
@@ -1802,12 +2678,33 @@ def render_test_cases_tab() -> None:
         None: Writes the Test Cases page to the Streamlit app.
     """
     st.markdown(TEST_CASE_CSS, unsafe_allow_html=True)
-    st.header("Test Cases")
-    if st.session_state.get("endpoints"):
-        render_generation_panel()
-    else:
-        st.warning("Save a request in API Workspace and enable it for generation first.")
-    render_test_case_list()
+    st.markdown(TEST_CASES_TOPBAR_CSS, unsafe_allow_html=True)
+    with st.container(key="test-cases-workspace"):
+        raw_test_cases = st.session_state.get("test_cases", [])
+        test_cases = _deduplicate_test_cases(raw_test_cases)
+        if len(test_cases) != len(raw_test_cases):
+            st.session_state["test_cases"] = test_cases
+            st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+        project = st.session_state.get("current_project") or {}
+        test_cases.sort(key=_test_case_sort_key)
+        with st.container(key="test-cases-topbar"):
+            title_col, add_col, runs_col = st.columns(
+                [6, 1.5, 1.6], vertical_alignment="center",
+            )
+            with title_col:
+                st.markdown("### Test Cases")
+                st.caption("Generate, review, and run test cases across your saved requests.")
+            with add_col:
+                with st.container(key="add-manual-test-action"):
+                    _render_manual_case_builder(project)
+            with runs_col:
+                with st.container(key="reusable-runs-action"):
+                    loaded_run_id = _render_test_run_manager(project, test_cases)
+        if st.session_state.get("endpoints"):
+            render_generation_panel()
+        else:
+            st.warning("Save a request in API Workspace and enable it for generation first.")
+        render_test_case_list(loaded_run_id)
 
 
 def _request_rows(values) -> list[dict]:
@@ -1873,6 +2770,7 @@ def _render_contract_rows(label: str, rows: list[dict], key: str) -> list[dict]:
         num_rows="dynamic",
         hide_index=True,
         width="stretch",
+        height=170,
         column_order=["send", "key", "value", "description"],
         column_config={
             "send": st.column_config.CheckboxColumn("Send", width="small", default=True),
@@ -1906,16 +2804,30 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
     """
     notice = st.session_state.pop("contract_import_notice", None)
     if notice:
-        st.success(notice)
+        _queue_toast(notice)
     preview_key = "contract_import_preview"
     if st.session_state.get(preview_key, {}).get("project_id") not in (None, project_id):
         st.session_state.pop(preview_key, None)
-    with st.expander("Import API docs or contract", expanded=False):
-        source_kind = st.selectbox(
+    active_panel = st.session_state.get("workspace_contract_panel")
+    if active_panel not in {"import", "discover"}:
+        return
+    with st.container(key="contract-import-expander"):
+        title_col, close_col = st.columns([8, .5], vertical_alignment="center")
+        title_col.markdown("### Import API docs or contract")
+        with close_col:
+            if st.button(
+                "Close import", key=f"close_contract_import_{project_id}",
+                icon=":material/close:", help="Close the contract import panel",
+                type="tertiary",
+            ):
+                st.session_state["workspace_contract_panel"] = None
+                st.rerun()
+        source_col, format_col = st.columns([1.3, 1], gap="small")
+        source_kind = source_col.selectbox(
             "Source", ["Paste text or contract", "Upload file", "Public documentation URL"],
             key=f"contract_source_kind_{project_id}",
         )
-        format_label = st.selectbox(
+        format_label = format_col.selectbox(
             "Format", ["Auto detect", "OpenAPI / Swagger", "Postman v2.1", "Prose / Markdown"],
             key=f"contract_format_{project_id}",
         )
@@ -1944,7 +2856,7 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                 source_content = uploaded.getvalue().decode("utf-8", errors="replace")
         else:
             source_content = st.text_area(
-                "Paste OpenAPI, Postman, or API documentation text", height=150,
+                "Paste OpenAPI, Postman, or API documentation text", height=100,
                 key=f"contract_text_{project_id}",
                 placeholder="Paste a JSON/YAML contract or Markdown/plain text API documentation...",
             )
@@ -2038,14 +2950,17 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
 
                     header_rows = _contract_editor_rows(endpoint.get("headers", {}))
                     query_rows = _contract_editor_rows(endpoint.get("query_params", []))
-                    headers = _render_contract_rows(
-                        "Headers", header_rows,
-                        f"contract_headers_{preview['source_id']}_{endpoint_id}",
-                    )
-                    query_params = _render_contract_rows(
-                        "Query parameters", query_rows,
-                        f"contract_query_{preview['source_id']}_{endpoint_id}",
-                    )
+                    headers_col, query_col = st.columns(2, gap="small")
+                    with headers_col:
+                        headers = _render_contract_rows(
+                            "Headers", header_rows,
+                            f"contract_headers_{preview['source_id']}_{endpoint_id}",
+                        )
+                    with query_col:
+                        query_params = _render_contract_rows(
+                            "Query parameters", query_rows,
+                            f"contract_query_{preview['source_id']}_{endpoint_id}",
+                        )
 
                     body_key = f"contract_body_{preview['source_id']}_{endpoint_id}"
                     body_included_key = f"contract_body_enabled_{preview['source_id']}_{endpoint_id}"
@@ -2067,7 +2982,7 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                             help="Send this payload with the imported request.",
                         )
                         body_text = st.text_area(
-                            "Payload", key=body_key, height=150,
+                            "Payload", key=body_key, height=100,
                             disabled=not include_body,
                             placeholder='{"key": "value"}',
                         )
@@ -2173,7 +3088,17 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
             contract_sources[contract["source_id"]] = contract.get("source_name") or contract["source_id"]
     if not contract_sources:
         return
-    with st.expander("Discover flows from imported contracts", expanded=False):
+    with st.container(key="contract-discovery-expander"):
+        title_col, close_col = st.columns([8, .5], vertical_alignment="center")
+        title_col.markdown("### Discover flows from imported contracts")
+        with close_col:
+            if st.button(
+                "Close discovery", key=f"close_contract_discovery_{project_id}",
+                icon=":material/close:", help="Close contract flow discovery",
+                type="tertiary",
+            ):
+                st.session_state["workspace_contract_panel"] = None
+                st.rerun()
         labels = {source_id: f"{name} · {source_id[:8]}" for source_id, name in contract_sources.items()}
         source_ids = list(labels)
         source_id = st.selectbox(
@@ -2190,6 +3115,8 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                             f"/api/v1/projects/{project_id}/contracts/flow-candidates",
                             {"source_id": source_id},
                         )
+                    candidate_count = len(discoveries[source_id].get("candidate_flows", []))
+                    _queue_toast(f"Contract analysis complete · {candidate_count} flow candidate(s).")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not discover contract flows: {exc}")
@@ -2216,24 +3143,25 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                     f"{consumer.get('method')} {consumer.get('name')} · {evidence}{cycle_label}"
                 )
         selected_candidates = []
-        for candidate in candidates:
-            candidate_id = candidate["id"]
-            ordered = [endpoint_by_id.get(item, {}) for item in candidate["endpoint_ids"]]
-            path_label = " → ".join(
-                f"{item.get('method', 'GET')} {item.get('name') or item.get('url')}" for item in ordered
-            )
-            selected = st.checkbox(
-                path_label, value=True,
-                key=f"contract_candidate_{project_id}_{candidate_id}",
-            )
-            for edge in candidate.get("dependencies", []):
-                evidence_text = ", ".join(
-                    f"{item.get('response_field')} → {item.get('request_field')}"
-                    for item in edge.get("evidence", [])
+        with st.container(key="contract-candidate-list"):
+            for candidate in candidates:
+                candidate_id = candidate["id"]
+                ordered = [endpoint_by_id.get(item, {}) for item in candidate["endpoint_ids"]]
+                path_label = " → ".join(
+                    f"{item.get('method', 'GET')} {item.get('name') or item.get('url')}" for item in ordered
                 )
-                st.caption(evidence_text)
-            if selected:
-                selected_candidates.append(candidate_id)
+                selected = st.checkbox(
+                    path_label, value=True,
+                    key=f"contract_candidate_{project_id}_{candidate_id}",
+                )
+                for edge in candidate.get("dependencies", []):
+                    evidence_text = ", ".join(
+                        f"{item.get('response_field')} → {item.get('request_field')}"
+                        for item in edge.get("evidence", [])
+                    )
+                    st.caption(evidence_text)
+                if selected:
+                    selected_candidates.append(candidate_id)
         if not candidates:
             st.caption("The dependency graph has no acyclic multi-endpoint paths to execute.")
             return
@@ -2256,7 +3184,7 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                     )
                 st.session_state["test_cases"] = generated
                 st.session_state["executions"] = {}
-                st.success(f"Generated {len(generated)} flow test case(s). Open the Test Cases tab to review and run them.")
+                _queue_toast(f"Generated {len(generated)} flow test case(s). Review them in Test Cases.")
             except Exception as exc:
                 st.error(f"Could not generate flow test cases: {exc}")
 
@@ -2431,6 +3359,468 @@ def _persist_generation_order(project_id: str, request_ids: list[str]) -> list[s
     return saved_order
 
 
+def _set_generation_eligibility(
+    project_id: str, endpoints: list[dict], eligible: bool,
+) -> None:
+    """Persist generation eligibility for requests and synchronize their order.
+
+    Args:
+        project_id (str): Project owning the saved requests.
+        endpoints (list[dict]): Requests whose generation eligibility changes.
+        eligible (bool): Whether requests should be available for generation.
+
+    Returns:
+        None: Updates request records, saved order, project data, and widget state.
+    """
+    order = list(st.session_state.get("generation_order_ids", []))
+    for endpoint in endpoints:
+        request_id = endpoint["id"]
+        was_eligible = bool(endpoint.get(
+            "include_for_generation", endpoint.get("include", False)
+        ))
+        if was_eligible != eligible:
+            api_put(
+                f"/api/v1/projects/{project_id}/collections/{endpoint['collection_id']}/requests/{request_id}",
+                {"include_for_generation": eligible, "include": eligible},
+            )
+        if eligible and request_id not in order:
+            order.append(request_id)
+        elif not eligible:
+            order = [item for item in order if item != request_id]
+
+    _persist_generation_order(project_id, order)
+    _refresh_project_preserving_drafts(project_id)
+
+
+def _toggle_collection_expanded(collection_id: str) -> None:
+    """Toggle one collection in the API Workspace request browser.
+
+    Args:
+        collection_id (str): Collection whose request list should be shown or hidden.
+
+    Returns:
+        None: Updates the expanded collection IDs in session state.
+    """
+    expanded = set(st.session_state.get("workspace_expanded_collections", []))
+    if collection_id in expanded:
+        expanded.remove(collection_id)
+    else:
+        expanded.add(collection_id)
+    st.session_state["workspace_expanded_collections"] = list(expanded)
+
+
+def _sync_generation_eligibility_widget(
+    widget_key: str, revision_key: str, enabled: bool, revision: int,
+) -> None:
+    """Refresh a keyed eligibility checkbox after a persisted bulk update.
+
+    Args:
+        widget_key (str): Session-state key assigned to the checkbox.
+        revision_key (str): Key storing the revision last seen by that checkbox.
+        enabled (bool): Current persisted eligibility value.
+        revision (int): Current project eligibility revision.
+
+    Returns:
+        None: Seeds or refreshes widget state before the checkbox is rendered.
+    """
+    if widget_key not in st.session_state or st.session_state.get(revision_key) != revision:
+        st.session_state[widget_key] = enabled
+        st.session_state[revision_key] = revision
+
+
+def _render_collection_navigator(project: dict, project_id: str) -> str | None:
+    """Render the searchable Postman-style project collection tree.
+
+    Args:
+        project (dict): Current project and its collections and requests.
+        project_id (str): Stable identifier of the active project.
+
+    Returns:
+        str | None: Selected collection ID used as the default save destination.
+    """
+    collections = project.get("collections", [])
+    all_requests = project.get("endpoints", [])
+    collection_ids = {item["id"] for item in collections}
+    selected_id = st.session_state.get("selected_collection_id")
+    if selected_id not in collection_ids:
+        selected_id = collections[0]["id"] if collections else None
+        st.session_state["selected_collection_id"] = selected_id
+
+    expanded_ids = st.session_state.setdefault(
+        "workspace_expanded_collections", [selected_id] if selected_id else [],
+    )
+    expanded_ids = [item for item in expanded_ids if item in collection_ids]
+    st.session_state["workspace_expanded_collections"] = expanded_ids
+
+    with st.container(key="collection-browser-header"):
+        project_name = html.escape(str(project.get("name") or "Workspace"), quote=True)
+        st.markdown(
+            f"<div class='aa-navigator-title'>{project_name}</div>"
+            "<div class='aa-navigator-subtitle'>API Workspace</div>",
+            unsafe_allow_html=True,
+        )
+        new_col, import_col, discover_col = st.columns(
+            [1, 1, 1], vertical_alignment="center",
+        )
+        if new_col.button(
+            "New", key=f"navigator_new_request_{project_id}",
+            icon=":material/add:",
+            type="secondary", width="stretch",
+        ):
+            draft = _new_request_draft()
+            draft["collection_id"] = selected_id
+            st.session_state["request_drafts"].append(draft)
+            st.session_state["active_request_tab_id"] = draft["tab_id"]
+            st.rerun()
+        if import_col.button(
+            "Import", key=f"navigator_import_contract_{project_id}",
+            icon=":material/file_upload:",
+            type="primary", width="stretch",
+        ):
+            st.session_state["workspace_contract_panel"] = "import"
+            st.rerun()
+        contract_sources = {
+            (endpoint.get("contract") or {}).get("source_id")
+            for endpoint in all_requests
+            if (endpoint.get("contract") or {}).get("source_id")
+        }
+        if discover_col.button(
+            "Discover", key=f"navigator_discover_flows_{project_id}",
+            icon=":material/account_tree:",
+            disabled=not contract_sources, width="stretch",
+        ):
+            st.session_state["workspace_contract_panel"] = "discover"
+            st.rerun()
+
+    with st.container(key="navigator-search-row"):
+        create_col, search_col, actions_col = st.columns([.48, 4.3, .55], vertical_alignment="center")
+        with create_col:
+            with st.popover(
+                "Create collection", icon=":material/add:",
+                key=f"navigator_create_collection_{project_id}",
+            ):
+                with st.form(f"create_request_collection_{project_id}", clear_on_submit=True):
+                    collection_name = st.text_input("Collection name", placeholder="e.g. Authentication")
+                    create_clicked = st.form_submit_button(
+                        "Create collection", type="primary", width="stretch",
+                    )
+                if create_clicked:
+                    if not collection_name.strip():
+                        st.error("Enter a collection name.")
+                    else:
+                        try:
+                            created = api_post(
+                                f"/api/v1/projects/{project_id}/collections",
+                                {"name": collection_name.strip()},
+                            )
+                            _refresh_project_preserving_drafts(project_id)
+                            st.session_state["selected_collection_id"] = created["id"]
+                            st.session_state["workspace_expanded_collections"] = [created["id"]]
+                            _queue_toast("Collection created.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not create collection: {exc}")
+        with search_col:
+            search_text = st.text_input(
+                "Search collections and requests",
+                key=f"workspace_nav_search_{project_id}",
+                placeholder="Search collections and requests",
+                label_visibility="collapsed",
+            ).strip().casefold()
+        with actions_col:
+            with st.popover(
+                "Generation options", icon=":material/more_horiz:",
+                key=f"navigator_generation_options_{project_id}",
+            ):
+                enabled_count = sum(
+                    bool(item.get("include_for_generation", item.get("include", False)))
+                    for item in all_requests
+                )
+                st.caption(f"{enabled_count} of {len(all_requests)} requests enabled")
+                if st.button(
+                    "Select all for generation", key=f"eligible_select_all_{project_id}",
+                    icon=":material/select_all:", width="stretch", disabled=not all_requests,
+                ):
+                    try:
+                        _set_generation_eligibility(project_id, all_requests, True)
+                        st.session_state["generation_eligibility_revision"] = (
+                            st.session_state.get("generation_eligibility_revision", 0) + 1
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not enable all requests for generation: {exc}")
+                if st.button(
+                    "Deselect all", key=f"eligible_deselect_all_{project_id}",
+                    icon=":material/deselect:", width="stretch", disabled=not all_requests,
+                ):
+                    try:
+                        _set_generation_eligibility(project_id, all_requests, False)
+                        st.session_state["generation_eligibility_revision"] = (
+                            st.session_state.get("generation_eligibility_revision", 0) + 1
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not disable all requests for generation: {exc}")
+
+    with st.container(key="collection-browser-scroll"):
+        if not collections:
+            _empty_state("No collections yet", "Create a collection here or import an API contract.")
+            return selected_id
+
+        visible_collection_count = 0
+        for collection in collections:
+            collection_id = collection["id"]
+            saved_requests = collection.get("requests", [])
+            collection_name = str(collection.get("name") or "Untitled collection")
+            collection_matches = search_text in collection_name.casefold() if search_text else True
+            matching_requests = [
+                request for request in saved_requests
+                if not search_text or collection_matches or any(
+                    search_text in str(request.get(field) or "").casefold()
+                    for field in ("name", "url", "method")
+                )
+            ]
+            if search_text and not collection_matches and not matching_requests:
+                continue
+            visible_collection_count += 1
+            is_expanded = collection_id in expanded_ids or bool(search_text)
+            collection_eligible = bool(saved_requests) and all(
+                bool(request.get("include_for_generation", request.get("include", False)))
+                for request in saved_requests
+            )
+            collection_eligibility_key = f"collection_generation_{collection_id}"
+            revision = st.session_state.get("generation_eligibility_revision", 0)
+            _sync_generation_eligibility_widget(
+                collection_eligibility_key,
+                f"collection_generation_revision_{collection_id}",
+                collection_eligible,
+                revision,
+            )
+            selected_collection_class = "selected-" if collection_id == selected_id else ""
+            with st.container(key=f"collection-tree-row-{selected_collection_class}{collection_id}"):
+                eligibility_col, title_col, menu_col = st.columns(
+                    [.45, 5.2, .65], vertical_alignment="center",
+                )
+                with eligibility_col:
+                    selected_collection_eligible = st.checkbox(
+                        f"Include all {collection_name} requests for generation",
+                        key=collection_eligibility_key,
+                        label_visibility="collapsed",
+                        disabled=not saved_requests,
+                    )
+                if title_col.button(
+                    f"{'▾' if is_expanded else '▸'}  {collection_name}  ·  {len(saved_requests)}",
+                    key=f"toggle_collection_{collection_id}",
+                    type="tertiary", width="stretch",
+                ):
+                    _toggle_collection_expanded(collection_id)
+                    st.session_state["selected_collection_id"] = collection_id
+                    st.rerun()
+                if selected_collection_eligible != collection_eligible:
+                    try:
+                        _set_generation_eligibility(
+                            project_id, saved_requests, selected_collection_eligible,
+                        )
+                        st.session_state["generation_eligibility_revision"] = revision + 1
+                        _queue_toast(
+                            f"All requests in {collection_name} enabled for generation."
+                            if selected_collection_eligible
+                            else f"All requests in {collection_name} excluded from generation."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not update collection eligibility: {exc}")
+                with menu_col:
+                    with st.popover(
+                        "Collection actions", icon=":material/more_vert:",
+                        key=f"collection_menu_{collection_id}",
+                    ):
+                        rename_key = f"rename_collection_value_{collection_id}"
+                        st.text_input(
+                            "Rename collection", value=collection_name, key=rename_key,
+                        )
+                        if st.button("Rename", key=f"rename_collection_button_{collection_id}", width="stretch"):
+                            try:
+                                new_name = st.session_state[rename_key].strip()
+                                if not new_name:
+                                    raise ValueError("Collection name is required.")
+                                api_put(
+                                    f"/api/v1/projects/{project_id}/collections/{collection_id}",
+                                    {"name": new_name},
+                                )
+                                _refresh_project_preserving_drafts(project_id)
+                                _queue_toast("Collection renamed.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not rename collection: {exc}")
+                        export_payload = _fetch_collection_export_cached(project_id, collection_id)
+                        st.download_button(
+                            "Export Postman collection",
+                            data=json.dumps(export_payload, ensure_ascii=False, indent=2),
+                            file_name=f"{collection_name}.postman_collection.json",
+                            mime="application/json", key=f"export_collection_{collection_id}",
+                            width="stretch",
+                        )
+                        confirm_delete = st.checkbox(
+                            "Confirm delete collection and its requests",
+                            key=f"confirm_delete_collection_{collection_id}",
+                        )
+                        if st.button(
+                            "Delete collection", key=f"delete_collection_{collection_id}",
+                            type="secondary", width="stretch", disabled=not confirm_delete,
+                        ):
+                            try:
+                                api_delete(f"/api/v1/projects/{project_id}/collections/{collection_id}")
+                                _refresh_project_preserving_drafts(project_id)
+                                _persist_generation_order(
+                                    project_id, st.session_state.get("generation_order_ids", []),
+                                )
+                                st.session_state["selected_collection_id"] = None
+                                st.session_state["workspace_expanded_collections"] = [
+                                    item for item in st.session_state.get("workspace_expanded_collections", [])
+                                    if item != collection_id
+                                ]
+                                _queue_toast("Collection deleted.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not delete collection: {exc}")
+
+            if not is_expanded:
+                continue
+            if not matching_requests:
+                if not saved_requests:
+                    st.caption("This collection is empty. Save a request here from the playground.")
+                continue
+            for saved in matching_requests:
+                request_id = saved["id"]
+                method = str(saved.get("method") or "GET").upper()
+                display_name = str(saved.get("name") or saved.get("url") or "Untitled request")
+                request_url = str(saved.get("url") or "No URL configured")
+                eligible = bool(saved.get("include_for_generation", saved.get("include", False)))
+                is_active_request = any(
+                    draft.get("id") == request_id
+                    and draft.get("tab_id") == st.session_state.get("active_request_tab_id")
+                    for draft in st.session_state["request_drafts"]
+                )
+                eligibility_key = f"request_generation_{request_id}"
+                revision = st.session_state.get("generation_eligibility_revision", 0)
+                _sync_generation_eligibility_widget(
+                    eligibility_key,
+                    f"request_generation_revision_{request_id}",
+                    eligible,
+                    revision,
+                )
+                selected_request_class = "selected-" if is_active_request else ""
+                with st.container(key=f"browser-request-row-{selected_request_class}{request_id}"):
+                    eligibility_col, method_col, name_col, menu_col = st.columns(
+                        [.42, .95, 4.1, .58], vertical_alignment="center",
+                    )
+                    with eligibility_col:
+                        selected_eligible = st.checkbox(
+                            f"Include {display_name} for generation",
+                            key=eligibility_key,
+                            label_visibility="collapsed",
+                        )
+                    if selected_eligible != eligible:
+                        try:
+                            _set_generation_eligibility(project_id, [saved], selected_eligible)
+                            st.session_state["generation_eligibility_revision"] = revision + 1
+                            _queue_toast(
+                                "Request enabled for test generation."
+                                if selected_eligible else "Request excluded from test generation."
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not update request eligibility: {exc}")
+                    method_col.markdown(_method_badge(method))
+                    with name_col:
+                        if st.button(
+                            display_name, key=f"open_saved_{request_id}",
+                            type="tertiary", width="stretch",
+                            help=f"{request_url} · Open request in playground",
+                        ):
+                            existing = next(
+                                (draft for draft in st.session_state["request_drafts"] if draft.get("id") == request_id),
+                                None,
+                            )
+                            if not existing:
+                                existing = _new_request_draft(saved)
+                                st.session_state["request_drafts"].append(existing)
+                            st.session_state["active_request_tab_id"] = existing["tab_id"]
+                            st.session_state["selected_collection_id"] = collection_id
+                            st.rerun()
+                    with menu_col:
+                        with st.popover(
+                            "Request actions", icon=":material/more_vert:",
+                            key=f"request_menu_{request_id}",
+                        ):
+                            rename_key = f"rename_request_value_{request_id}"
+                            st.text_input(
+                                "Rename request", value=display_name, key=rename_key,
+                            )
+                            if st.button("Rename", key=f"rename_request_button_{request_id}", width="stretch"):
+                                try:
+                                    new_name = st.session_state[rename_key].strip()
+                                    if not new_name:
+                                        raise ValueError("Request name is required.")
+                                    api_put(
+                                        f"/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}",
+                                        {"name": new_name},
+                                    )
+                                    for draft in st.session_state["request_drafts"]:
+                                        if draft.get("id") == request_id:
+                                            draft["name"] = new_name
+                                            st.session_state[f"name_{draft['tab_id']}"] = new_name
+                                    _refresh_project_preserving_drafts(project_id)
+                                    _queue_toast("Request renamed.")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Could not rename request: {exc}")
+                            if st.button(
+                                "Duplicate", key=f"duplicate_request_{request_id}",
+                                icon=":material/content_copy:", width="stretch",
+                            ):
+                                try:
+                                    duplicate = copy.deepcopy(saved)
+                                    duplicate.pop("id", None)
+                                    duplicate["name"] = f"{display_name} Copy"
+                                    duplicate["include_for_generation"] = False
+                                    duplicate["include"] = False
+                                    api_post(
+                                        f"/api/v1/projects/{project_id}/collections/{collection_id}/requests",
+                                        duplicate,
+                                    )
+                                    _refresh_project_preserving_drafts(project_id)
+                                    st.session_state["selected_collection_id"] = collection_id
+                                    _queue_toast("Request duplicated.")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Could not duplicate request: {exc}")
+                            confirm_delete = st.checkbox(
+                                "Confirm delete request", key=f"confirm_delete_request_{request_id}",
+                            )
+                            if st.button(
+                                "Delete request", key=f"delete_saved_{request_id}",
+                                icon=":material/delete:", type="secondary", width="stretch",
+                                disabled=not confirm_delete,
+                            ):
+                                try:
+                                    api_delete(
+                                        f"/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}"
+                                    )
+                                    _refresh_project_preserving_drafts(project_id)
+                                    _persist_generation_order(
+                                        project_id, st.session_state.get("generation_order_ids", []),
+                                    )
+                                    _queue_toast("Saved request deleted.")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Could not delete request: {exc}")
+        if search_text and not visible_collection_count:
+            _empty_state("No matches", "Try another collection, request name, or URL.")
+    return selected_id
+
+
 def _render_request_rows(rows: list[dict], kind: str, tab_id: str) -> list[dict]:
     """Render a Postman-like editable table and retain disabled key/value rows."""
     editor_rows = [
@@ -2478,6 +3868,98 @@ def _render_request_rows(rows: list[dict], kind: str, tab_id: str) -> list[dict]
             "description": description,
         })
     return stored_rows
+
+
+def _render_editable_test_request(request: dict, uid: str) -> None:
+    """Render and apply editable request method, URL, params, headers, and body."""
+    method_options = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    method = str(request.get("method", "GET")).upper()
+    if method not in method_options:
+        method_options.append(method)
+    method_key = f"tc_request_method_{uid}"
+    url_key = f"tc_request_url_{uid}"
+    st.session_state.setdefault(method_key, method)
+    st.session_state.setdefault(url_key, str(request.get("url", "")))
+
+    # Keep query values in the editable Params table instead of duplicating them in the URL.
+    source_url = st.session_state[url_key]
+    clean_url, query_rows = _normalise_request_url(
+        source_url, _request_rows(request.get("query_params", {})),
+    )
+    st.session_state[url_key] = clean_url
+
+    method_col, url_col = st.columns([1, 5], vertical_alignment="bottom")
+    request["method"] = method_col.selectbox(
+        "Request type", method_options, key=method_key,
+    )
+    request["url"] = url_col.text_input("URL", key=url_key, placeholder="https://api.example.com/resource")
+
+    params_tab, headers_tab, body_tab = st.tabs(["Params", "Headers", "Body"])
+    with params_tab:
+        request["query_params"] = _render_request_rows(query_rows, "tc_params", uid)
+    with headers_tab:
+        request["headers"] = _render_request_rows(
+            _request_rows(request.get("headers", {})), "tc_headers", uid,
+        )
+    with body_tab:
+        body_key = f"tc_request_body_{uid}"
+        body = request.get("body")
+        if isinstance(body, (dict, list)):
+            body_text = json.dumps(body, ensure_ascii=False, indent=2)
+        else:
+            body_text = str(body or "")
+        st.session_state.setdefault(body_key, body_text)
+        edited_body = st.text_area(
+            "Body / payload", key=body_key, height=180,
+            placeholder='{"key": "value"}',
+        )
+        if edited_body.strip():
+            try:
+                request["body"] = json.loads(edited_body)
+            except json.JSONDecodeError:
+                request["body"] = edited_body
+        else:
+            request["body"] = None
+
+
+def _render_variable_mappings(step: dict, uid: str) -> None:
+    """Render repeatable response-to-request mappings for one flow step."""
+    st.markdown("**Variable mappings**")
+    mappings = step.setdefault("variable_mappings", [])
+    if not mappings:
+        st.caption("No variable mappings. Sources can use `$.field` or `1:$.field` for a specific earlier step.")
+    remove_index = None
+    for index, mapping in enumerate(mappings):
+        if not isinstance(mapping, dict):
+            mappings[index] = mapping = {"from": "", "to": "", "transform": ""}
+        mapping_id = mapping.setdefault("mapping_id", str(uuid.uuid4()))
+        with st.container(border=True):
+            source_col, target_col, transform_col, remove_col = st.columns(
+                [2.2, 2.5, 2.5, 0.45], vertical_alignment="center",
+            )
+            mapping["from"] = source_col.text_input(
+                "Response source", value=str(mapping.get("from", "")),
+                key=f"tc_mapping_from_{uid}_{mapping_id}", placeholder="1:$.access_token",
+                help="JSONPath in a prior response; prefix with a 1-based step number to select one.",
+            )
+            mapping["to"] = target_col.text_input(
+                "Request destination", value=str(mapping.get("to", "")),
+                key=f"tc_mapping_to_{uid}_{mapping_id}", placeholder="headers.Authorization",
+                help="Use headers.NAME, request.query.NAME, request.path.NAME, or request.body.FIELD.",
+            )
+            mapping["transform"] = transform_col.text_input(
+                "Transform", value=str(mapping.get("transform", "")),
+                key=f"tc_mapping_transform_{uid}_{mapping_id}", placeholder="Bearer {value}",
+                help="Optional template; {value} is replaced by the extracted response value.",
+            )
+            if remove_col.button(" ", icon=":material/delete:", key=f"tc_mapping_remove_{uid}_{mapping_id}", help="Remove mapping"):
+                remove_index = index
+    if remove_index is not None:
+        mappings.pop(remove_index)
+        st.rerun()
+    if st.button("Add mapping", key=f"tc_mapping_add_{uid}", icon=":material/add:"):
+        mappings.append({"from": "", "to": "", "transform": ""})
+        st.rerun()
 
 
 def _save_request_draft(draft: dict, collection_id: str, project_id: str) -> dict:
@@ -2670,6 +4152,7 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
             "source": pending_curl["source"],
             "url": draft["url"],
         }
+        draft["url_control_sync_id"] = str(uuid.uuid4())
         draft["headers"] = _request_rows(parsed.get("headers", {}))
         draft["query_params"] = _request_rows(parsed.get("query_params", {}))
         draft["body"] = parsed.get("body") or ""
@@ -2715,7 +4198,10 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
         st.session_state.setdefault(f"method_{tab_id}", draft["method"])
         draft["method"] = st.selectbox("Method", method_options, key=f"method_{tab_id}")
     with request_url_col:
-        url_control = render_curl_aware_url(draft.get("url", ""), tab_id)
+        url_control = render_curl_aware_url(
+            draft.get("url", ""), tab_id,
+            draft.get("url_control_sync_id", ""),
+        )
         control_text = getattr(url_control, "text", draft.get("url", ""))
         draft["url"] = _resolve_curl_url_sync(draft, control_text)
         curl_ready = getattr(url_control, "curl_ready", None)
@@ -2728,6 +4214,7 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
                     "source": curl_ready,
                 }
                 st.session_state.pop(curl_error_key, None)
+                _queue_toast("cURL parsed into the request.")
                 st.rerun()
             except Exception as exc:
                 st.session_state[curl_error_key] = {"text": curl_ready, "message": str(exc)}
@@ -2779,7 +4266,7 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
                 raise ValueError("Wait for cURL parsing to finish before saving the request.")
             _save_request_draft(draft, selected_collection, project_id)
             _refresh_project_preserving_drafts(project_id)
-            st.success("Request saved to collection.")
+            _queue_toast("Request saved to collection.")
             st.rerun()
         except Exception as exc:
             st.error(f"Could not save request: {exc}")
@@ -2799,6 +4286,18 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
                     })
             else:
                 draft["response"] = api_post("/api/v1/http/send", request_payload)
+                _queue_toast(f"Response received · status {draft['response'].get('status', 'unknown')}.")
+            if run_all_assertions or single_assertion:
+                assertion_results = draft["response"].get("assertion_results", [])
+                if assertion_results:
+                    passed_count = sum(bool(item.get("passed")) for item in assertion_results)
+                    all_passed = passed_count == len(assertion_results)
+                    summary = (
+                        f"Assertions complete · {passed_count}/{len(assertion_results)} passed."
+                    )
+                    _queue_toast(summary, "success" if all_passed else "error")
+                else:
+                    _queue_toast("Response received. Review the assertion results below.")
             st.session_state[f"response_pretty_{tab_id}"] = False
         except (ValueError, json.JSONDecodeError) as exc:
             st.error(f"Request is invalid: {exc}")
@@ -2809,13 +4308,6 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
     if response:
         st.divider()
         st.subheader("Response")
-        # if "assertion_results" in response:
-        #     if response.get("assertions_passed"):
-        #         st.success("Assertions completed successfully. Review the individual results and response below.")
-        #     else:
-        #         st.warning("Assertions completed with failures. Review the results and response below.")
-        # else:
-        #     st.info("Response received. Review the response body and headers below.")
         status = response.get("status", 0)
         state = "Success" if 200 <= status < 300 else "Redirect" if 300 <= status < 400 else "Error"
         status_col, state_col, elapsed_col = st.columns([1, 1, 1])
@@ -2875,238 +4367,315 @@ def render_api_workspace() -> None:
         input[aria-label="URL"], textarea[aria-label="Body"] {
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
-        div[data-baseweb="tab-list"] { gap: 0.35rem; }
-        div[data-baseweb="tab"] { padding: 0.45rem 0.9rem; font-size: 0.92rem; }
+        div[data-baseweb="tab-list"] { gap: .35rem; }
+        div[data-baseweb="tab"] { padding: .45rem .9rem; font-size: .92rem; }
         div[data-testid="stSelectbox"] div[data-baseweb="select"] > div { font-weight: 650; }
-        div[data-testid="stDataEditor"] { border-radius: 0.5rem; }
+        div[data-testid="stDataEditor"] { border-radius: .5rem; }
+        .st-key-request-playground-sticky {
+            position: sticky; top: .5rem; align-self: flex-start; z-index: 3;
+        }
+
+        /* Keep the navigator and playground side by side until the page is narrow. */
+        .st-key-api-workspace-layout {
+            --aa-panel-bg: color-mix(in srgb, var(--st-secondary-background-color) 72%, transparent);
+            --aa-panel-border: color-mix(in srgb, var(--st-border-color) 82%, transparent);
+        }
+        .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] {
+            display: grid !important;
+            grid-template-columns: minmax(230px, 290px) minmax(0, 1fr) !important;
+            align-items: start; gap: 1rem !important;
+        }
+        .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            width: auto !important; min-width: 0 !important; flex: initial !important;
+        }
+
+        /* One shared panel surface frames the project heading, search, and tree. */
+        .st-key-collection-browser-header {
+            box-sizing: border-box; width: 100%; max-width: 100%;
+            padding: .7rem .65rem .55rem;
+            border: 1px solid var(--aa-panel-border);
+            border-radius: 12px 12px 0 0;
+            background: var(--aa-panel-bg);
+        }
+        .aa-navigator-title {
+            overflow: hidden; font-size: 1.02rem; font-weight: 720;
+            letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .aa-navigator-subtitle {
+            margin-top: .12rem; font-size: .68rem; font-weight: 600;
+            letter-spacing: .075em; text-transform: uppercase; opacity: .62;
+        }
+        .st-key-collection-browser-header [data-testid="stButton"] button {
+            min-height: 2rem; padding-inline: .3rem; border-radius: 7px !important;
+            font-size: .76rem; font-weight: 650;
+        }
+        .st-key-navigator-search-row {
+            box-sizing: border-box; width: 100%; max-width: 100%;
+            padding: .45rem .65rem;
+            border-left: 1px solid var(--aa-panel-border);
+            border-right: 1px solid var(--aa-panel-border);
+            background: var(--aa-panel-bg);
+        }
+        .st-key-navigator-search-row [data-testid="stHorizontalBlock"] {
+            align-items: center; gap: .35rem;
+        }
+        .st-key-navigator-search-row [data-testid="stColumn"] { min-width: 0; padding: 0; }
+        .st-key-navigator-search-row [data-testid="stColumn"]:first-child,
+        .st-key-navigator-search-row [data-testid="stColumn"]:last-child {
+            flex: 0 0 2.25rem !important; width: 2.25rem !important;
+        }
+        .st-key-navigator-search-row [data-testid="stTextInput"] input {
+            min-height: 2.25rem; border-radius: 8px !important; font-size: .8rem;
+        }
+
+        /* Compact tree rows keep eligibility at the left and actions at the right. */
+        .st-key-collection-browser-scroll {
+            box-sizing: border-box; width: 100%; max-width: 100%;
+            max-height: min(70vh, 760px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+            padding: .45rem .65rem .65rem;
+            border: 1px solid var(--aa-panel-border); border-top: 0;
+            border-radius: 0 0 12px 12px; background: var(--aa-panel-bg);
+            scrollbar-gutter: stable;
+        }
+        .st-key-collection-browser-header > [data-testid="stVerticalBlock"],
+        .st-key-navigator-search-row > [data-testid="stVerticalBlock"],
+        .st-key-collection-browser-scroll > [data-testid="stVerticalBlock"] {
+            box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+        }
+        .st-key-collection-browser-scroll::-webkit-scrollbar { width: 7px; }
+        .st-key-collection-browser-scroll::-webkit-scrollbar-thumb {
+            border-radius: 20px; background: rgba(128,128,128,.28);
+        }
+        div[class*="st-key-collection-tree-row-"] {
+            box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+            margin: 2px 0; padding: 2px 3px;
+            border: 1px solid transparent; border-radius: 8px;
+            transition: background .14s ease, border-color .14s ease;
+        }
+        div[class*="st-key-collection-tree-row-"]:hover,
+        div[class*="st-key-browser-request-row-"]:hover,
+        div[class*="st-key-browser-request-row-"]:focus-within {
+            background: var(--aa-surface-hover); border-color: var(--aa-border);
+        }
+        div[class*="st-key-collection-tree-row-selected-"] {
+            background: var(--aa-accent-soft); border-color: rgba(255,108,55,.22);
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stHorizontalBlock"],
+        div[class*="st-key-browser-request-row-"] [data-testid="stHorizontalBlock"] {
+            box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+            align-items: center; gap: .25rem;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"],
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"] {
+            box-sizing: border-box; min-width: 0; padding: 0;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"] > [data-testid="stVerticalBlock"],
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"] > [data-testid="stVerticalBlock"] {
+            min-width: 0; min-height: 2.2rem; justify-content: center; gap: 0;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"]:first-child {
+            flex: 0 0 1.5rem !important; width: 1.5rem !important;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"]:last-child {
+            flex: 0 0 2rem !important; width: 2rem !important;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stButton"] button {
+            min-height: 2.25rem; justify-content: flex-start !important;
+            padding-inline: .35rem; border-radius: 7px !important;
+            font-size: .82rem; font-weight: 620; text-align: left;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stButton"] button p {
+            overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap;
+        }
+        div[class*="st-key-browser-request-row-"] {
+            box-sizing: border-box; width: calc(100% - 1rem); max-width: calc(100% - 1rem); min-width: 0;
+            margin: 1px 0 1px 1rem; padding: 1px 3px 1px .4rem;
+            border-left: 1px solid var(--aa-border); border-radius: 0 8px 8px 0;
+            transition: background .14s ease, border-color .14s ease;
+        }
+        div[class*="st-key-browser-request-row-selected-"] {
+            background: var(--aa-accent-soft); border-left-color: var(--aa-accent);
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(1) {
+            flex: 0 0 1.5rem !important; width: 1.5rem !important;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(2) {
+            flex: 0 0 4.1rem !important; width: 4.1rem !important;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(3) {
+            flex: 1 1 0% !important; width: 0 !important;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:last-child {
+            flex: 0 0 2rem !important; width: 2rem !important;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stCheckbox"],
+        div[class*="st-key-browser-request-row-"] [data-testid="stCheckbox"] {
+            display: flex; justify-content: center; margin: 0;
+        }
+        div[class*="st-key-collection-tree-row-"] [data-testid="stCheckbox"] label,
+        div[class*="st-key-browser-request-row-"] [data-testid="stCheckbox"] label {
+            padding: 0; gap: 0; justify-content: center;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stButton"] button {
+            box-sizing: border-box; min-height: 2.2rem; width: 100%; justify-content: flex-start !important;
+            align-items: center !important; line-height: 1.2;
+            padding-inline: .35rem; border-radius: 6px !important; text-align: left;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stButton"] button > div {
+            width: 100%; justify-content: flex-start !important;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stButton"] button p {
+            max-width: 100%; margin: 0; overflow: hidden; text-align: left;
+            text-overflow: ellipsis; white-space: nowrap;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stMarkdown"],
+        div[class*="st-key-browser-request-row-"] [data-testid="stMarkdown"] p {
+            margin: 0; line-height: 1.2;
+        }
+        div[class*="st-key-close_contract_import_"] button,
+        div[class*="st-key-close_contract_discovery_"] button {
+            width: 2rem; min-width: 2rem; height: 2rem; min-height: 2rem;
+            padding: 0; border-radius: 7px !important;
+        }
+        div[class*="st-key-close_contract_import_"] button p,
+        div[class*="st-key-close_contract_discovery_"] button p {
+            position: absolute !important; width: 1px !important; height: 1px !important;
+            margin: -1px !important; padding: 0 !important; overflow: hidden !important;
+            clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
+        }
+        /* Use consistent icon buttons for collection and request kebab menus. */
+        .st-key-navigator-search-row [data-testid="stPopover"] > button,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button {
+            display: inline-flex; box-sizing: border-box; width: 1.75rem; min-width: 1.75rem;
+            height: 2rem; min-height: 2rem; justify-content: center; padding: 0;
+            border: 0 !important; border-radius: 0 !important; background: transparent !important;
+            box-shadow: none !important; opacity: .68;
+            transition: opacity .14s ease, color .14s ease;
+        }
+        .st-key-navigator-search-row [data-testid="stPopover"] > button p,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button p,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button p {
+            position: absolute !important; width: 1px !important; height: 1px !important;
+            margin: -1px !important; padding: 0 !important; overflow: hidden !important;
+            clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
+        }
+        .st-key-navigator-search-row [data-testid="stPopover"] > button:hover,
+        div[class*="st-key-collection-tree-row-"]:hover [data-testid="stPopover"] > button,
+        div[class*="st-key-browser-request-row-"]:hover [data-testid="stPopover"] > button,
+        .st-key-navigator-search-row [data-testid="stPopover"] > button:focus-visible,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button:focus-visible,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button:focus-visible {
+            opacity: 1; color: var(--aa-accent) !important;
+            background: transparent !important; border: 0 !important; box-shadow: none !important;
+        }
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopoverBody"] { min-width: 225px; }
+
+        .st-key-contract-import-panel [data-testid="stDataEditor"] { max-height: 185px; }
+        .st-key-contract-candidate-list {
+            max-height: 220px; overflow-y: auto; overscroll-behavior: contain;
+            padding: .35rem .55rem; border: 1px solid var(--aa-border);
+            border-radius: var(--aa-radius-sm); background: var(--aa-surface);
+        }
+        @media (max-width: 760px) {
+            .st-key-collection-browser-scroll { max-height: 46vh; }
+            .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] {
+                grid-template-columns: minmax(0, 1fr) !important;
+            }
+            .st-key-request-playground-sticky { position: static; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            div[class*="st-key-collection-tree-row-"],
+            div[class*="st-key-browser-request-row-"] { transition: none; }
+        }
         </style>""",
         unsafe_allow_html=True,
     )
-    st.header("API Workspace")
-    st.caption("Build requests, run quick checks, and save reusable requests in project collections.")
     project = st.session_state.get("current_project") or {}
+    collections = project.get("collections", [])
     project_id = project.get("id")
     if not project_id:
+        st.header("API Workspace")
         st.warning("Select or create a project to manage request collections.")
         return
 
-    collections = project.get("collections", [])
-    _render_contract_import_panel(project_id, collections)
-    left, editor = st.columns([1.15, 3.7], gap="large")
-    with left:
-        st.subheader("Collections")
-        with st.form("create_request_collection", clear_on_submit=True):
-            collection_name = st.text_input("New collection name", placeholder="e.g. Authentication")
-            create_collection_clicked = st.form_submit_button("Create collection", type="primary")
-        if create_collection_clicked:
-            if not collection_name.strip():
-                st.error("Enter a collection name.")
-            else:
-                try:
-                    created = api_post(f"/api/v1/projects/{project_id}/collections", {"name": collection_name.strip()})
-                    _refresh_project_preserving_drafts(project_id)
-                    st.session_state["selected_collection_id"] = created["id"]
+    with st.container(key="api-workspace-layout"):
+        left, editor = st.columns([1.75, 3.25], gap="large")
+        with left:
+            selected_id = _render_collection_navigator(project, project_id)
+
+        with editor:
+            active_contract_panel = st.session_state.get("workspace_contract_panel")
+            if active_contract_panel == "import":
+                st.markdown("<style>.st-key-contract-discovery-expander { display: none !important; }</style>", unsafe_allow_html=True)
+            elif active_contract_panel == "discover":
+                st.markdown("<style>.st-key-contract-import-expander { display: none !important; }</style>", unsafe_allow_html=True)
+            with st.container(key="contract-import-panel"):
+                _render_contract_import_panel(project_id, project.get("collections", []))
+
+        with editor, st.container(key="request-playground-sticky"):
+            drafts = st.session_state["request_drafts"]
+            if not drafts:
+                st.info("Start by creating a request, or open one from Saved requests.")
+                if st.button("New Request", type="primary", key="new_request_tab_empty"):
+                    draft = _new_request_draft()
+                    draft["collection_id"] = selected_id
+                    st.session_state["request_drafts"].append(draft)
+                    st.session_state["active_request_tab_id"] = draft["tab_id"]
                     st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not create collection: {exc}")
+            else:
+                active_id = st.session_state.get("active_request_tab_id")
+                if active_id not in {draft["tab_id"] for draft in drafts}:
+                    active_id = drafts[0]["tab_id"]
+                    st.session_state["active_request_tab_id"] = active_id
 
-        collection_by_id = {item["id"]: item for item in collections}
-        if collections:
-            selected_id = st.selectbox(
-                "Collection", list(collection_by_id),
-                index=list(collection_by_id).index(st.session_state["selected_collection_id"])
-                if st.session_state.get("selected_collection_id") in collection_by_id else 0,
-                format_func=lambda collection_id: collection_by_id[collection_id]["name"],
-                key=f"workspace_collection_select_{project_id}",
-            )
-            st.session_state["selected_collection_id"] = selected_id
-            selected_collection = collection_by_id[selected_id]
-            with st.expander("Collection actions", expanded=False):
-                rename_value = st.text_input("Rename collection", value=selected_collection["name"], key=f"rename_collection_{selected_id}")
-                rename_col, delete_col = st.columns(2)
-                with rename_col:
-                    if st.button("Rename", key=f"rename_collection_button_{selected_id}"):
-                        try:
-                            api_put(f"/api/v1/projects/{project_id}/collections/{selected_id}", {"name": rename_value})
-                            _refresh_project_preserving_drafts(project_id)
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not rename collection: {exc}")
-                with delete_col:
-                    if st.button("Delete", key=f"delete_collection_{selected_id}"):
-                        api_delete(f"/api/v1/projects/{project_id}/collections/{selected_id}")
-                        _refresh_project_preserving_drafts(project_id)
-                        _persist_generation_order(
-                            project_id,
-                            st.session_state.get("generation_order_ids", []),
-                        )
-                        st.session_state["selected_collection_id"] = None
-                        st.rerun()
-            export_payload = _fetch_collection_export_cached(project_id, selected_id)
-            st.download_button(
-                "Export Postman collection",
-                data=json.dumps(export_payload, ensure_ascii=False, indent=2),
-                file_name=f"{selected_collection['name']}.postman_collection.json",
-                mime="application/json",
-                key=f"export_collection_{selected_id}",
-                use_container_width=True,
-            )
-        else:
-            selected_id = None
-            st.info("Create a collection to save requests.")
-
-        st.divider()
-        st.subheader("Requests for generation")
-        st.caption("Enable requests here, then choose and order them together in Test Cases.")
-        for saved in project.get("endpoints", []):
-            request_id = saved["id"]
-            eligible = bool(saved.get("include_for_generation", saved.get("include", False)))
-            label = f"{saved.get('method', 'GET')} · {saved.get('name') or 'Untitled Request'}"
-            selected = st.checkbox(
-                f"{label}",
-                value=eligible,
-                key=f"eligible_{request_id}",
-            )
-            if selected != eligible:
-                api_put(
-                    f"/api/v1/projects/{project_id}/collections/{saved['collection_id']}/requests/{request_id}",
-                    {"include_for_generation": selected, "include": selected},
-                )
-                order = st.session_state.get("generation_order_ids", [])
-                if selected and request_id not in order:
-                    order.append(request_id)
-                if not selected:
-                    order = [item for item in order if item != request_id]
-                st.session_state["generation_order_ids"] = order
-                try:
-                    _persist_generation_order(project_id, order)
-                except Exception as exc:
-                    st.error(f"Could not save generation order: {exc}")
-                _refresh_project_preserving_drafts(project_id)
-                st.rerun()
-
-        st.divider()
-        with st.container(key="saved-request-library"):
-            st.subheader("Saved requests")
-            if not project.get("endpoints"):
-                _empty_state(
-                    "No saved requests yet",
-                    "Create a request in the workspace, then save it to a collection.",
-                )
-            for collection in collections:
-                saved_requests = collection.get("requests", [])
-                request_count = len(saved_requests)
-                request_label = "request" if request_count == 1 else "requests"
-                with st.expander(
-                    f"{collection['name']} · {request_count} {request_label}",
-                    expanded=collection["id"] == selected_id,
-                ):
-                    if not saved_requests:
-                        st.caption("This collection is empty. Save a request here from the playground.")
-                    for saved in saved_requests:
-                        method = str(saved.get("method", "GET")).upper()
-                        method_class = method.lower() if method in METHOD_COLORS else "head"
-                        request_name = html.escape(
-                            _truncate(saved.get("name") or "Untitled request", 64),
-                            quote=True,
-                        )
-                        with st.container(key=f"saved-req-{method.lower()}-{saved['id']}"):
-                            label_col, open_col, delete_col = st.columns(
-                                [5.4, 1, 1], gap="small", vertical_alignment="center"
-                            )
-                            label_col.markdown(
-                                f'<div class="aa-saved-request-label">'
-                                f'<span class="aa-saved-method aa-saved-method-{method_class}">{method}</span>'
-                                f'<span class="aa-saved-request-name" title="{request_name}">{request_name}</span>'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-                            if open_col.button(
-                                " ", icon=":material/open_in_new:", help="Open in request playground",
-                                key=f"open_saved_{saved['id']}",
-                            ):
-                                existing = next((draft for draft in st.session_state["request_drafts"] if draft.get("id") == saved["id"]), None)
-                                if not existing:
-                                    existing = _new_request_draft(saved)
-                                    st.session_state["request_drafts"].append(existing)
-                                st.session_state["active_request_tab_id"] = existing["tab_id"]
-                                st.rerun()
-                            if delete_col.button(
-                                " ", icon=":material/delete:", help="Delete saved request",
-                                key=f"delete_saved_{saved['id']}",
-                            ):
-                                api_delete(f"/api/v1/projects/{project_id}/collections/{collection['id']}/requests/{saved['id']}")
-                                _refresh_project_preserving_drafts(project_id)
-                                _persist_generation_order(
-                                    project_id,
-                                    st.session_state.get("generation_order_ids", []),
-                                )
-                                st.rerun()
-
-    with editor:
-        drafts = st.session_state["request_drafts"]
-        if not drafts:
-            st.info("Start by creating a request, or open one from Saved requests.")
-            if st.button("New Request", type="primary", key="new_request_tab_empty"):
-                draft = _new_request_draft()
-                draft["collection_id"] = selected_id
-                st.session_state["request_drafts"].append(draft)
-                st.session_state["active_request_tab_id"] = draft["tab_id"]
-                st.rerun()
-        else:
-            active_id = st.session_state.get("active_request_tab_id")
-            if active_id not in {draft["tab_id"] for draft in drafts}:
-                active_id = drafts[0]["tab_id"]
-                st.session_state["active_request_tab_id"] = active_id
-
-            with st.container(horizontal=True, key="request-tabbar", wrap=False):
-                for index, draft in enumerate(drafts):
-                    request_name = draft.get("name") or "New Request"
-                    method_label = draft.get("method", "GET").upper()
-                    full_label = f"{method_label} {request_name}"
-                    tab_label = request_name if len(request_name) <= 22 else f"{request_name[:19]}…"
-                    method_color = METHOD_COLORS.get(method_label, "gray")
-                    is_active = draft["tab_id"] == active_id
-                    with st.container(
-                        horizontal=True,
-                        key=f"request-tab-{'on' if is_active else 'off'}-{draft['tab_id']}",
-                    ):
-                        if st.button(
-                            f":{method_color}[**{method_label}**]  {tab_label}",
-                            key=f"select_request_tab_{draft['tab_id']}",
-                            type="tertiary",
-                            help=f"Switch to {full_label}",
-                            width="stretch",
+                with st.container(horizontal=True, key="request-tabbar", wrap=False):
+                    for index, draft in enumerate(drafts):
+                        request_name = draft.get("name") or "New Request"
+                        method_label = draft.get("method", "GET").upper()
+                        full_label = f"{method_label} {request_name}"
+                        tab_label = request_name if len(request_name) <= 22 else f"{request_name[:19]}…"
+                        method_color = METHOD_COLORS.get(method_label, "gray")
+                        is_active = draft["tab_id"] == active_id
+                        with st.container(
+                            horizontal=True,
+                            key=f"request-tab-{'on' if is_active else 'off'}-{draft['tab_id']}",
                         ):
+                            if st.button(
+                                f":{method_color}[**{method_label}**]  {tab_label}",
+                                key=f"select_request_tab_{draft['tab_id']}",
+                                type="tertiary",
+                                help=f"Switch to {full_label}",
+                                width="stretch",
+                            ):
+                                st.session_state["active_request_tab_id"] = draft["tab_id"]
+                                st.rerun()
+                            with st.container(key=f"request-close-{draft['tab_id']}"):
+                                if st.button(
+                                    "×", key=f"close_request_tab_{draft['tab_id']}",
+                                    type="tertiary", help="Close request",
+                                ):
+                                    st.session_state["request_drafts"] = [
+                                        item for item in drafts if item["tab_id"] != draft["tab_id"]
+                                    ]
+                                    if is_active:
+                                        remaining = st.session_state["request_drafts"]
+                                        previous_index = max(index - 1, 0)
+                                        st.session_state["active_request_tab_id"] = (
+                                            remaining[previous_index]["tab_id"] if remaining else None
+                                        )
+                                    st.rerun()
+                    with st.container(key="request-add"):
+                        if st.button("+", key="new_request_tab_plus", type="tertiary", help="Add request"):
+                            draft = _new_request_draft()
+                            draft["collection_id"] = selected_id
+                            st.session_state["request_drafts"].append(draft)
                             st.session_state["active_request_tab_id"] = draft["tab_id"]
                             st.rerun()
-                        with st.container(key=f"request-close-{draft['tab_id']}"):
-                            if st.button(
-                                "×", key=f"close_request_tab_{draft['tab_id']}",
-                                type="tertiary", help="Close request",
-                            ):
-                                st.session_state["request_drafts"] = [
-                                    item for item in drafts if item["tab_id"] != draft["tab_id"]
-                                ]
-                                if is_active:
-                                    remaining = st.session_state["request_drafts"]
-                                    previous_index = max(index - 1, 0)
-                                    st.session_state["active_request_tab_id"] = (
-                                        remaining[previous_index]["tab_id"] if remaining else None
-                                    )
-                                st.rerun()
-                with st.container(key="request-add"):
-                    if st.button("+", key="new_request_tab_plus", type="tertiary", help="Add request"):
-                        draft = _new_request_draft()
-                        draft["collection_id"] = selected_id
-                        st.session_state["request_drafts"].append(draft)
-                        st.session_state["active_request_tab_id"] = draft["tab_id"]
-                        st.rerun()
 
-            active_draft = next(draft for draft in drafts if draft["tab_id"] == active_id)
-            st.caption("Request tabs are temporary drafts. Save a request to keep it in a collection.")
-            _render_request_draft(active_draft, collections, project_id)
-
+                active_draft = next(draft for draft in drafts if draft["tab_id"] == active_id)
+                st.caption("Request tabs are temporary drafts. Save a request to keep it in a collection.")
+                _render_request_draft(active_draft, collections, project_id)
 
 def main() -> None:
     """Main Streamlit application entry point."""
@@ -3116,6 +4685,7 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     initialize_session_state()
+    _flush_toasts()
     st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
     current_project = st.session_state.get("current_project") or {}
     _hero("Api-Agent", "Compose API requests, generate test cases, and inspect execution results.")
@@ -3176,6 +4746,7 @@ def main() -> None:
                     st.session_state["current_project"] = None
                     refresh_project_list(force=True)
                     load_project(project["id"])
+                    _queue_toast("Project created.")
                     st.rerun()
                 else:
                     st.error("Project name is required")
@@ -3188,6 +4759,7 @@ def main() -> None:
                 st.session_state["executions"] = {}
                 st.session_state["persisted_project_id"] = None
                 refresh_project_list(force=True)
+                _queue_toast("Project deleted.")
                 st.rerun()
 
         current_project = st.session_state.get("current_project")
@@ -3205,7 +4777,7 @@ def main() -> None:
                 tcs = api_get(f"/api/v1/projects/{current_project['id']}/test-cases")
                 st.session_state["test_cases"] = tcs
                 st.session_state["executions"] = {}
-                st.success(f"Fetched {len(tcs)} test case(s)")
+                _queue_toast(f"Fetched {len(tcs)} test case(s).")
                 st.rerun()
 
     workspace_tab, test_tab = st.tabs(["API Workspace", "Test Cases"])
@@ -3231,6 +4803,7 @@ def main() -> None:
 
     with test_tab:
         render_test_cases_tab()
+    _flush_toasts()
 
 if __name__ == "__main__":
     main()

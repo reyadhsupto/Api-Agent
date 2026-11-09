@@ -21,6 +21,7 @@ class TestCaseGenerateRequest(BaseModel):
     business_requirements: Optional[str] = None
     project_id: Optional[str] = None
     source_endpoint_id: Optional[str] = None
+    example_test_case_ids: list[str] = Field(default_factory=list)
 
 
 class FlowGenerateRequest(BaseModel):
@@ -28,6 +29,7 @@ class FlowGenerateRequest(BaseModel):
     endpoint_ids: list[str] = Field(default_factory=list)
     business_requirements: Optional[str] = None
     project_id: Optional[str] = None
+    example_test_case_ids: list[str] = Field(default_factory=list)
     # Accepted for older clients; flow generation now lets the model determine output size.
     scenario_count: Optional[int] = None
 

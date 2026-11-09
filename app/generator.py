@@ -24,18 +24,23 @@ def _output_token_limit() -> int:
         return 6000
 
 
-def generate_test_cases(parsed_curl: dict, business_requirements: str | None = None) -> list:
+def generate_test_cases(
+    parsed_curl: dict,
+    business_requirements: str | None = None,
+    example_test_cases: list[dict] | None = None,
+) -> list:
     """
     Generate test cases using free-tier LLM providers with fallback.
 
     Args:
         parsed_curl (dict): Parsed cURL request components.
         business_requirements (str | None): Optional business logic text.
+        example_test_cases (list[dict] | None): Existing cases used as generation examples.
 
     Returns:
         list: Generated test case dictionaries.
     """
-    prompt = _build_prompt(parsed_curl, business_requirements)
+    prompt = _build_prompt(parsed_curl, business_requirements, example_test_cases)
     generated_text = _call_llm_with_fallback(prompt)
     return _parse_generated_response(generated_text)
 
@@ -76,13 +81,59 @@ def _validate_generated_cases(test_cases: list) -> list:
     return test_cases
 
 
-def _build_prompt(parsed_curl: dict, business_requirements: str | None) -> str:
+def _example_case_summaries(test_cases: list[dict] | None) -> list[dict]:
+    """Build compact request, scenario, and assertion context from chosen examples.
+
+    Args:
+        test_cases (list[dict] | None): Existing cases selected as generation examples.
+
+    Returns:
+        list[dict]: Prompt-safe summaries without execution results or auth headers.
+    """
+    summaries = []
+    for case in test_cases or []:
+        summary = {
+            "type": case.get("type"),
+            "name": case.get("name"),
+            "description": case.get("description"),
+            "assertions": case.get("assertions", {}),
+        }
+        if case.get("is_flow") or isinstance(case.get("steps"), list):
+            summary["is_flow"] = True
+            summary["steps"] = []
+            for step in case.get("steps", []):
+                endpoint = step.get("endpoint", {}) if isinstance(step, dict) else {}
+                summary["steps"].append({
+                    "method": endpoint.get("method"),
+                    "url": endpoint.get("url"),
+                    "description": step.get("description"),
+                    "assertions": step.get("assertions", {}),
+                    "variable_mappings": step.get("variable_mappings", []),
+                })
+        else:
+            request = case.get("request", {}) or {}
+            summary["request"] = {
+                "method": request.get("method"),
+                "url": request.get("url"),
+                "query_params": request.get("query_params", {}),
+                "body": request.get("body"),
+            }
+        summaries.append(summary)
+    return summaries
+
+
+def _build_prompt(
+    parsed_curl: dict,
+    business_requirements: str | None,
+    example_test_cases: list[dict] | None = None,
+) -> str:
     """
     Build the LLM prompt for test case generation.
 
     Args:
         parsed_curl (dict): Parsed cURL request components.
         business_requirements (str | None): Optional business logic text.
+        example_test_cases (list[dict] | None): Existing cases used as examples.
 
     Returns:
         str: The prompt string.
@@ -96,6 +147,14 @@ def _build_prompt(parsed_curl: dict, business_requirements: str | None) -> str:
     if business_requirements:
         req_text += f"\nBusiness Requirements: {business_requirements}\n"
 
+    examples = _example_case_summaries(example_test_cases)
+    examples_text = (
+        "\nExisting test cases to use as examples of scenario style and coverage. "
+        "Generate additional cases for the target request; do not copy or return these examples:\n"
+        f"{json.dumps(examples, ensure_ascii=False, separators=(',', ':'))}\n"
+        if examples else ""
+    )
+
     return (
         "You are a Senior software test engineer(SQA). Generate COMPREHENSIVE test cases "
         "covering positive, negative, edge, and race scenarios for the following API "
@@ -108,7 +167,7 @@ def _build_prompt(parsed_curl: dict, business_requirements: str | None) -> str:
         "5. Edge case: maximum/minimum values, special characters\n"
         "6. Race condition: concurrent requests, consistency checks\n"
         "7. Any additional scenarios relevant to this API endpoint\n"
-        f"\n{req_text}\n"
+        f"\n{req_text}{examples_text}\n"
         "Return ONLY a valid JSON array (no markdown, no explanation) where each item has:\n"
         "- id: unique string like \"tc_1\"\n"
         "- type: one of \"positive\", \"negative\", \"edge\", \"race\"\n"
@@ -288,6 +347,7 @@ def generate_flow_test_cases(
     endpoints: list,
     business_requirements: str | None = None,
     scenario_count: int | None = None,
+    example_test_cases: list[dict] | None = None,
 ) -> list:
     """
     Generate flow test cases for a sequence of endpoints.
@@ -299,11 +359,14 @@ def generate_flow_test_cases(
         endpoints (list): Ordered list of endpoint dicts.
         business_requirements (str | None): Optional business logic text.
         scenario_count (int | None): Deprecated compatibility argument; ignored.
+        example_test_cases (list[dict] | None): Existing cases used as generation examples.
 
     Returns:
         list: Generated flow test case dictionaries.
     """
-    prompt = _build_flow_prompt(endpoints, business_requirements)
+    prompt = _build_flow_prompt(
+        endpoints, business_requirements, example_test_cases=example_test_cases,
+    )
     generated_text = _call_llm_with_fallback(prompt)
     test_cases = _parse_generated_response(generated_text, validate=False)
     _attach_flow_endpoints(test_cases, endpoints)
@@ -548,6 +611,7 @@ def _build_flow_prompt(
     endpoints: list,
     business_requirements: str | None,
     scenario_count: int | None = None,
+    example_test_cases: list[dict] | None = None,
 ) -> str:
     """
     Build the LLM prompt for flow test case generation.
@@ -556,6 +620,7 @@ def _build_flow_prompt(
         endpoints (list): Ordered list of endpoint dicts.
         business_requirements (str | None): Optional business logic text.
         scenario_count (int | None): Deprecated compatibility argument; ignored.
+        example_test_cases (list[dict] | None): Existing cases used as generation examples.
 
     Returns:
         str: The prompt string.
@@ -565,12 +630,19 @@ def _build_flow_prompt(
         for index, endpoint in enumerate(endpoints, start=1)
     ]
     requirements_text = f"\nBusiness Requirements:\n{business_requirements}\n" if business_requirements else ""
+    examples = _example_case_summaries(example_test_cases)
+    examples_text = (
+        "\nExisting test cases to use as examples of scenario style, assertions, and mappings. "
+        "Generate additional flows for the selected ordered endpoints; do not copy or return these examples:\n"
+        f"{json.dumps(examples, ensure_ascii=False, separators=(',', ':'))}\n"
+        if examples else ""
+    )
     return (
         "You are an API test engineer. Propose a small set of distinct, useful executable flow "
         "scenarios for the ordered requests. Prefer complete valid JSON over many scenarios; cover "
         "positive, negative, and edge behavior when supported by the request context.\n"
         f"\nOrdered endpoint summaries:\n{json.dumps(endpoint_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
-        f"{requirements_text}"
+        f"{requirements_text}{examples_text}"
         "Return ONLY a valid compact JSON array. Each item has id, type (positive/negative/edge/race), "
         "name, description, is_flow:true, and steps. Each step contains step_order, endpoint_id copied "
         "exactly from a summary, concise description, assertions, and variable_mappings. Use only "

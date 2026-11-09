@@ -91,6 +91,18 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_test_cases_project_order
                     ON test_cases(project_id, ordinal);
+                CREATE TABLE IF NOT EXISTS test_runs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    case_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_test_runs_project_name
+                    ON test_runs(project_id, LOWER(name));
+                CREATE INDEX IF NOT EXISTS idx_test_runs_project_updated
+                    ON test_runs(project_id, updated_at);
                 CREATE TABLE IF NOT EXISTS executions (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -513,6 +525,14 @@ class Database:
                     (project_id,),
                 )
             ]
+            result["test_runs"] = [
+                self._decode_test_run(row)
+                for row in _execute(
+                    connection,
+                    "SELECT * FROM test_runs WHERE project_id=? ORDER BY updated_at DESC,id",
+                    (project_id,),
+                )
+            ]
             result["executions"] = [
                 self._decode(row["payload_json"])
                 for row in _execute(connection,
@@ -521,6 +541,131 @@ class Database:
                 )
             ]
             return result
+
+    @staticmethod
+    def _decode_test_run(row: dict) -> dict:
+        """Decode a database row into the named-run API response shape.
+
+        Args:
+            row (dict): Stored run fields, including encoded case IDs.
+
+        Returns:
+            dict: Run metadata with ``case_ids`` decoded as a list.
+        """
+        run = dict(row)
+        try:
+            run["case_ids"] = json.loads(run.pop("case_ids_json", "[]") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            run["case_ids"] = []
+            run.pop("case_ids_json", None)
+        return run
+
+    def list_test_runs(self, project_id: str) -> list[dict] | None:
+        """List saved named runs for one project.
+
+        Args:
+            project_id (str): Project whose reusable runs are requested.
+
+        Returns:
+            list[dict] | None: Decoded run records, or ``None`` if absent.
+        """
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(
+                connection,
+                "SELECT * FROM test_runs WHERE project_id=? ORDER BY updated_at DESC,id",
+                (project_id,),
+            ).fetchall()
+            return [self._decode_test_run(row) for row in rows]
+
+    def save_test_run(
+        self, project_id: str, name: str, case_ids: list[str], run_id: str | None = None,
+    ) -> dict | None:
+        """Create or update a unique named run after validating case ownership.
+
+        Args:
+            project_id (str): Project that owns the reusable run.
+            name (str): Non-empty run name, unique within the project.
+            case_ids (list[str]): Ordered, unique case IDs to include.
+            run_id (str | None): Existing run ID to update, if provided.
+
+        Returns:
+            dict | None: Saved run, or ``None`` if the project is absent.
+
+        Raises:
+            ValueError: The name or case membership is invalid.
+            LookupError: The requested run is not owned by the project.
+            FileExistsError: Another run already uses the requested name.
+        """
+        clean_name = name.strip()
+        ordered_ids = list(dict.fromkeys(case_ids))
+        if not clean_name:
+            raise ValueError("Test run name is required.")
+        if len(ordered_ids) != len(case_ids):
+            raise ValueError("A test case can appear only once in a run.")
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            owned_cases = {
+                row["id"] for row in _execute(
+                    connection, "SELECT id FROM test_cases WHERE project_id=?", (project_id,),
+                ).fetchall()
+            }
+            if any(case_id not in owned_cases for case_id in ordered_ids):
+                raise ValueError("Every test case in a run must belong to the selected project.")
+            if run_id:
+                existing = _execute(
+                    connection, "SELECT id FROM test_runs WHERE id=? AND project_id=?",
+                    (run_id, project_id),
+                ).fetchone()
+                if not existing:
+                    raise LookupError("Test run not found.")
+            duplicate = _execute(
+                connection,
+                "SELECT id FROM test_runs WHERE project_id=? AND LOWER(name)=LOWER(?) AND id<>?",
+                (project_id, clean_name, run_id or ""),
+            ).fetchone()
+            if duplicate:
+                raise FileExistsError("A test run with this name already exists in the project.")
+            now = _now()
+            saved_id = run_id or str(uuid.uuid4())
+            if run_id:
+                _execute(
+                    connection,
+                    "UPDATE test_runs SET name=?,case_ids_json=?,updated_at=? WHERE id=? AND project_id=?",
+                    (clean_name, self._encode(ordered_ids), now, saved_id, project_id),
+                )
+            else:
+                _execute(
+                    connection,
+                    "INSERT INTO test_runs(id,project_id,name,case_ids_json,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                    (saved_id, project_id, clean_name, self._encode(ordered_ids), now, now),
+                )
+            row = _execute(
+                connection, "SELECT * FROM test_runs WHERE id=?", (saved_id,),
+            ).fetchone()
+            _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
+            return self._decode_test_run(row)
+
+    def delete_test_run(self, project_id: str, run_id: str) -> bool:
+        """Delete a project-scoped run without changing its referenced cases.
+
+        Args:
+            project_id (str): Project that owns the reusable run.
+            run_id (str): Stable ID of the run to delete.
+
+        Returns:
+            bool: Whether a matching run was deleted.
+        """
+        with self.session() as connection:
+            deleted = _execute(
+                connection, "DELETE FROM test_runs WHERE id=? AND project_id=?",
+                (run_id, project_id),
+            ).rowcount
+            if deleted:
+                _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
+            return bool(deleted)
 
     def set_generation_order(self, project_id: str, request_ids: list[str]) -> list[str] | None:
         """Persist the project's ordered saved-request IDs.
@@ -764,6 +909,15 @@ class Database:
             _execute(connection, "DELETE FROM test_cases WHERE project_id=?", (project_id,))
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
             return True
+
+    def clear_test_case_executions(self, project_id: str, test_case_id: str) -> None:
+        """Remove execution results for one case after its request configuration changes."""
+        with self.session() as connection:
+            _execute(
+                connection,
+                "DELETE FROM executions WHERE project_id=? AND test_case_id=?",
+                (project_id, test_case_id),
+            )
 
     def update_test_case(self, project_id: str, test_case_id: str, updates: dict) -> dict | None:
         """Merge updates into a saved test case and return the persisted object."""
