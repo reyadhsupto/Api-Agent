@@ -26,28 +26,32 @@ Mode: Act
 - Legacy flow generation asks for compact endpoint references and step assertions/mappings; backend restores canonical request data, avoiding repeated headers and reducing output truncation
 - Frontend flow rendering: editable ordered step cards with assertions, mappings, and per-step execution results
 - Test Cases workspace: guided Single/Flow generation, result counts and filters, per-case and batch execution with progress, compact status cards, and separated assertion/request/response views
-- Backend features: assertions via execute endpoint, JSONPath checker, 5-min timeout, PostgreSQL persistence
+- Backend features: assertions via execute endpoint, JSONPath checker, 5-min timeout, PostgreSQL persistence; generation prompts require strict JSON literals, and the response parser safely normalizes bounded string `.repeat(N)` boundary examples; provider fallback handles request failures, while malformed JSON returns an error without another provider call
 - Docker Compose services for PostgreSQL, backend, and frontend; Make targets for local and Docker runs
 - Docker quick start uses `make docker-up` with existing images; `make docker-up-build` rebuilds images, and Docker BuildKit caches pip downloads between dependency rebuilds
 - Documentation updated (README, technical docs, agent context)
 - Home header and request library use shared branded styling, compact collection/request rows, and contextual empty states
 - Sidebar remains collapsed by default and groups project selection, actions, counts, and saved-test-case fetch
 - Per-project generation order is persisted in PostgreSQL via `PUT /api/v1/projects/{project_id}/generation-order`; it is independent of collection request order
+- Generation actions persist project-scoped activity records in PostgreSQL with requirements, endpoint summaries, exact LLM prompt and raw response, status, error, and generated case IDs; the Generation Activity tab shows time, type, state, project, and a View details action that opens the full record in a dialog
 - Project summaries and collection exports use a short-lived cache that is invalidated after relevant writes
-- API Workspace uses a searchable, collapsible Postman-style collection tree beside the playground, headed by the active project name; collection and request eligibility checkboxes sit at the left edge, collection/request menus stay at the right, and request names open in the playground
+- API Workspace uses a searchable, collapsible Postman-style collection tree beside the playground, headed by the active project name and a visible Collections label above the tree; collection and request eligibility checkboxes sit at the left edge, collection/request menus stay at the right, and request names open in the playground
 - API Workspace desktop navigator uses a balanced responsive 270–320 px width and stacks above the playground below 760 px; request menu columns reserve enough width to keep their three-dot triggers on the same line, while request names truncate and URLs remain available on hover or keyboard focus. The search row contains collection creation and search
 - Request menus use plain, unboxed three-dot triggers and support rename, duplicate, and confirmed delete; collection menus use the same trigger and support rename, Postman export, and confirmed delete; icon-only triggers keep accessible labels and omit hover help to prevent lingering tooltips; duplicates receive a new ID and remain excluded from generation by default
 - Row-level request checkboxes control generation eligibility; a collection checkbox controls all requests in that collection. Collection creation is the plus action beside search
 - Contract import and flow discovery are visible actions in the collection navigator; discovery is disabled until a contract has been imported, and the active tool panel is shown in the playground column
 - Expanded contract import and flow discovery panels place an accessible × close action in the title row; closing clears the active panel
 - Test Cases generation combines per-run request selection and flow ordering in one list; all eligible request order persists through the project generation-order API
+- Single generation sends all selected endpoints in one `/api/v1/test-cases/generate` request; the LLM prompt returns independent cases tagged with their source endpoint ID
+- Each generated case stores the submitted business requirements in its JSON payload; the case editor lets users revise them, and selected generation examples pass those requirements into later prompts
+- Test-case generation ignores rapid duplicate submissions per project to prevent queued Streamlit button clicks from issuing a second LLM request
 - Request Playground has a repeatable Assertions tab for status, body text, JSONPath field values, and JSON Schema; saved requests persist assertion settings, Run All checks enabled assertions with one request, and individual Run checks one assertion with a fresh request
 - Generated test and flow-step assertion editors use the same expandable assertion type groups, bordered rows, enable toggles, and add/remove styling as the Request Playground
 - Generated single tests and flow steps expose editable JSON Schema response assertions, disabled with an empty schema by default; execution uses the shared Draft 2020-12 validator
 - Generated single tests and flow steps expose editable method, URL, params, headers, and body fields; flows can add saved-request steps and reorder or remove steps
 - Flow variable mappings are editable repeated source/destination/transform rows and execute into headers, query params, path placeholders, or body fields; query mappings are passed as request params
 - The first flow step has no previous response, so its mappings are cleared and the editor hides mapping controls there; empty mapping placeholders on later steps are ignored by API validation
-- Test-case edits stage in session until per-case Save changes upserts by stable ID; Run uses the current editor payload without saving, and changed request/step data clears previous stored execution results
+- Test-case edits stage in session until per-case Save changes upserts by stable ID; execution results persist when the executed HTTP request inputs match the saved case despite frontend assertion normalization, while unsaved request or flow mapping changes remain session-only; saving request/step changes clears stale execution results
 - Contract import previews every endpoint from OpenAPI 3.x, Swagger 2.0, Postman Collection 2.1, and LLM-assisted prose docs; confirmed requests are saved to a selected project collection and remain generation-ineligible by default
 - Contract endpoint review supports editing method, headers, query parameters, and payload; GET and DELETE imports omit payloads and body-field dependency targets
 - Public documentation URL imports are anonymous, restricted to public HTTP(S) hosts, and limited to 5 MB; relative or unresolved endpoint bases are supplied in review
@@ -90,7 +94,7 @@ Mode: Act
 - HTTP Client: python requests
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
-- Frontend: Streamlit (API Workspace and Test Cases tabs)
+- Frontend: Streamlit (API Workspace, Test Cases, and Generation Activity tabs)
 - LLM: Multiple free-tier APIs with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
 - Export/import: Postman Collection v2.1 export and request import; environment, script, and authentication import remain out of scope
 - Contract discovery: maximal acyclic dependency paths are ranked by dependency-edge count descending, then endpoint method and path ascending
@@ -115,6 +119,7 @@ Mode: Act
 - Flow request order is stored per project, restored on project load, and filtered by relative order when a generation run selects a subset
 - Named test runs are project-scoped ordered case-ID selections with case-insensitive unique names; they do not store case snapshots or execution results
 - Generation examples are project-scoped saved case IDs, resolved server-side; examples guide style and coverage while the selected Single/Flow mode and requests define new output
+- Generation activity is append-only and project-scoped; its table loads in the dedicated tab and each row opens a modal containing the full record, including prompt and model response
 - Case-list run, collection, and endpoint filters combine across categories and use alternative matching among multiple selected values; a flow step must satisfy active endpoint and collection facets together
 - Running a loaded named test run fetches the latest persisted case payloads before execution, while ordinary Run selected uses current in-session case content
 - Postman Collection v2.1 export is available for saved collections; legacy endpoint routes use Imported Endpoints

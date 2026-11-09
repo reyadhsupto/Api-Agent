@@ -20,6 +20,7 @@ import uuid
 import os
 import html
 import re
+import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 if __package__:
@@ -1772,6 +1773,22 @@ def render_test_case_card(tc: dict, index: int) -> dict:
 
         if tc.get("description"):
             st.caption(tc["description"])
+        if is_open:
+            requirements_key = f"tc_business_requirements_{tc_id}"
+            st.session_state.setdefault(
+                requirements_key, str(tc.get("business_requirements") or ""),
+            )
+            with st.expander(
+                "Generation requirements",
+                expanded=bool(st.session_state[requirements_key]),
+            ):
+                tc["business_requirements"] = st.text_area(
+                    "Requirements used for this generation",
+                    key=requirements_key,
+                    height=110,
+                    help="Review, update, or extend these requirements. Save changes to keep your edits.",
+                    placeholder="No requirements were recorded. Add context for future reference.",
+                )
         if run_clicked:
             with st.spinner("Executing scenario sequentially..." if is_flow else "Executing request..."):
                 try:
@@ -1904,7 +1921,7 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                     except Exception as exc:
                         st.error(f"Could not save test case changes: {exc}")
             with save_hint_col:
-                st.caption("Request, step, mapping, and assertion edits stay in this session until you save changes.")
+                st.caption("Requirements, request, step, mapping, and assertion edits stay in this session until you save changes.")
     return tc
 
 
@@ -2235,17 +2252,13 @@ def _generate_selected_cases(
         )
         return api_post(route, payload)
 
-    generated = []
-    for endpoint in selected:
-        payload = {
-            "parsed_curl": endpoint,
-            "business_requirements": business_req or None,
-            "project_id": project.get("id"),
-            "source_endpoint_id": endpoint.get("id"),
-            "example_test_case_ids": example_test_case_ids or [],
-        }
-        generated.extend(api_post("/api/v1/test-cases/generate", payload) or [])
-    return generated
+    payload = {
+        "endpoints": selected,
+        "business_requirements": business_req or None,
+        "project_id": project.get("id"),
+        "example_test_case_ids": example_test_case_ids or [],
+    }
+    return api_post("/api/v1/test-cases/generate", payload)
 
 
 def render_generation_panel() -> None:
@@ -2388,6 +2401,8 @@ def render_generation_panel() -> None:
         selected = ordered_selected
 
     existing_count = len(st.session_state.get("test_cases", []))
+    generation_submit_key = f"generation_last_submit_at_{project_id or 'default'}"
+    generation_cooldown = 3.0
     generate_col, clear_col, hint_col = st.columns([1.8, 1.8, 4], vertical_alignment="center")
     with generate_col:
         generate_clicked = st.button(
@@ -2420,6 +2435,11 @@ def render_generation_panel() -> None:
             st.caption(f"{len(selected)} request(s) selected · {mode.lower()} generation")
 
     if generate_clicked and selected:
+        now = time.time()
+        if now - st.session_state.get(generation_submit_key, 0.0) < generation_cooldown:
+            st.info("Generation was just submitted. Please wait before trying again.")
+            return
+        st.session_state[generation_submit_key] = now
         with st.spinner("Generating with the configured LLM providers..."):
             try:
                 result = _generate_selected_cases(mode, selected, business_req, example_ids)
@@ -2434,6 +2454,8 @@ def render_generation_panel() -> None:
                     st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
             except Exception as exc:
                 st.error(f"Failed to generate test cases: {exc}")
+            finally:
+                st.session_state[generation_submit_key] = time.time()
 
 
 
@@ -2705,6 +2727,97 @@ def render_test_cases_tab() -> None:
         else:
             st.warning("Save a request in API Workspace and enable it for generation first.")
         render_test_case_list(loaded_run_id)
+
+
+def render_generation_activity_tab() -> None:
+    """Render project generation history, including exact prompts and responses."""
+    st.header("Generation activity")
+    st.caption("Review generation runs by time, type, outcome, and project. Open a row for its full record.")
+    project = st.session_state.get("current_project") or {}
+    project_id = project.get("id")
+    if not project_id:
+        st.info("Select a project to view its generation history.")
+        return
+    cache_key = f"generation_activity_{project_id}"
+    refresh_key = f"refresh_generation_activity_{project_id}"
+    refresh_clicked = st.button("Refresh logs", key=refresh_key, icon=":material/refresh:")
+    if cache_key not in st.session_state or refresh_clicked:
+        try:
+            st.session_state[cache_key] = _raw_get(
+                f"/api/v1/projects/{project_id}/generation-activity?limit=100"
+            )
+        except requests.RequestException as exc:
+            st.error(f"Could not load generation history: {exc}")
+    records = st.session_state.get(cache_key)
+    if not records:
+        st.info("No generation activity is recorded for this project yet.")
+        return
+
+    project_name = project.get("name") or "Unnamed project"
+    with st.container(key=f"generation-activity-table-{project_id}"):
+        header = st.columns([2.2, 1.2, 1.0, 1.7, 1.0], vertical_alignment="center")
+        for column, title in zip(header, ("Execution time", "Generation type", "State", "Project", "Action")):
+            with column:
+                st.markdown(f"**{title}**")
+        for record in records:
+            with st.container(border=True):
+                columns = st.columns([2.2, 1.2, 1.0, 1.7, 1.0], vertical_alignment="center")
+                with columns[0]:
+                    raw_time = str(record.get("created_at") or "Unknown")
+                    st.write(raw_time.replace("T", " ")[:19])
+                with columns[1]:
+                    st.write(record.get("mode") or "Generation")
+                with columns[2]:
+                    state = str(record.get("status") or "unknown").capitalize()
+                    state_color = "#16834a" if state == "Succeeded" else "#c0393b" if state == "Failed" else "#777"
+                    st.markdown(
+                        f"<span style='color:{state_color};font-weight:650'>{html.escape(state)}</span>",
+                        unsafe_allow_html=True,
+                    )
+                with columns[3]:
+                    st.write(project_name)
+                    st.caption(str(record.get("project_id") or project_id))
+                with columns[4]:
+                    if st.button(
+                        "View details", key=f"view_generation_activity_{record['id']}",
+                        width="stretch",
+                    ):
+                        _show_generation_activity_details(record)
+
+
+@st.dialog("Generation activity details", width="large")
+def _show_generation_activity_details(record: dict) -> None:
+    """Show the complete selected generation record in a modal dialog."""
+    st.caption(f"{record.get('created_at', 'Unknown time')} · {record.get('mode', 'Generation')} · {record.get('status', 'unknown')}")
+    st.caption(f"Activity ID: {record.get('id', 'Unknown')}")
+    st.markdown("**Project**")
+    st.write(record.get("project_id", "Unknown project"))
+    st.markdown("**Business requirements**")
+    st.write(record.get("business_requirements") or "None provided")
+    st.markdown("**Included endpoints**")
+    endpoints = record.get("endpoints", [])
+    if endpoints:
+        st.dataframe(
+            [{
+                "Name": item.get("name") or "Unnamed endpoint",
+                "Method": item.get("method", "GET"),
+                "URL": item.get("url", ""),
+                "Endpoint ID": item.get("id") or "",
+            } for item in endpoints],
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.caption("No endpoint details recorded.")
+    if record.get("generated_case_ids"):
+        st.markdown("**Generated test case IDs**")
+        st.write(", ".join(record["generated_case_ids"]))
+    if record.get("error"):
+        st.error(record["error"])
+    with st.expander("Prompt sent to the LLM", expanded=False):
+        st.code(record.get("prompt") or "No prompt was captured.", language="text")
+    with st.expander("Raw LLM response", expanded=False):
+        st.code(record.get("llm_response") or "No response was captured.", language="text")
 
 
 def _request_rows(values) -> list[dict]:
@@ -3452,10 +3565,6 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
     expanded_ids = [item for item in expanded_ids if item in collection_ids]
     st.session_state["workspace_expanded_collections"] = expanded_ids
 
-    # Ensure request selection state exists
-    if "collection_request_selections" not in st.session_state:
-        st.session_state["collection_request_selections"] = {}
-
     with st.container(key="collection-browser-header"):
         project_name = html.escape(str(project.get("name") or "Workspace"), quote=True)
         st.markdown(
@@ -3519,6 +3628,7 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
             ).strip().casefold()
     # Render collections as a Postman-style tree
     with st.container(key="collection-browser-scroll"):
+        st.markdown("#### Collections")
         if not collections:
             _empty_state("No collections yet", "Create a collection here or import an API contract.")
             return selected_id
@@ -3678,20 +3788,15 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
 
                     # Individual request checkbox
                     with col_check:
-                        is_selected = st.session_state.get("collection_request_selections", {}).get(request_id, False)
+                        is_selected = eligible
                         new_selected = st.checkbox(
                             f"Include {display_name} in generation",
-                            value=is_selected,
-                            key=f"req_check_{request_id}",
+                            key=eligibility_key,
                             label_visibility="collapsed",
                         )
                         if new_selected != is_selected:
-                            sel = set(st.session_state.get("collection_request_selections", {}))
-                            if new_selected:
-                                sel.add(request_id)
-                            else:
-                                sel.discard(request_id)
-                            st.session_state["collection_request_selections"] = sel
+                            _set_generation_eligibility(project_id, [saved], new_selected)
+                            st.session_state["generation_eligibility_revision"] = revision + 1
                             st.rerun()
 
                     with col_method:
@@ -4762,7 +4867,9 @@ def main() -> None:
                 _queue_toast(f"Fetched {len(tcs)} test case(s).")
                 st.rerun()
 
-    workspace_tab, test_tab = st.tabs(["API Workspace", "Test Cases"])
+    workspace_tab, test_tab, activity_tab = st.tabs(
+        ["API Workspace", "Test Cases", "Generation Activity"],
+    )
 
     with workspace_tab:
         render_api_workspace()
@@ -4785,6 +4892,8 @@ def main() -> None:
 
     with test_tab:
         render_test_cases_tab()
+    with activity_tab:
+        render_generation_activity_tab()
     _flush_toasts()
 
 if __name__ == "__main__":
