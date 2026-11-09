@@ -487,3 +487,56 @@ def render_request_order_list(rows: list[dict], key: str):
         on_rows_change=lambda: None,
         width="stretch",
     )
+
+
+_COLLECTION_TREE_CSS = """
+.aa-tree-root { font: inherit; color: var(--st-text-color, inherit); container-type: inline-size; }
+.aa-tree-list { display: grid; gap: 2px; }
+.aa-tree-collection-row {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr) 56px;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 6px 10px;
+    border: 1px solid var(--st-border-color, rgba(128,128,128,.24));
+    border-radius: 8px;
+    background: var(--st-secondary-background-color, rgba(128,128,128,.055));
+    transition: border-color 150ms ease, background-color 150ms ease;
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--st-text-color, inherit);
+}
+.aa-tree-collection-row:hover { border-color: rgba(255,108,55,.55); }
+.aa-tree-collection-row .aa-col-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aa-tree-collection-row .aa-col-count { color: var(--st-secondary-text-color, #777); font-size: 0.75rem; text-align: right; }
+.aa-tree-collection-row .aa-col-menu { text-align: right; }
+.aa-tree-request-row {
+    display: grid;
+    grid-template-columns: 26px 34px minmax(0, 1fr) 56px;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+.aa-tree-request-row:hover { background: var(--st-secondary-background-color, rgba(128,128,128,.055)); border-color: rgba(128,128,128,.24); }
+.aa-tree-request-row .aa-req-check { width: 17px; height: 17px; accent-color: #ff6c37; cursor: pointer; }
+.aa-tree-request-row .aa-method-pill { justify-self: start; min-width: 46px; padding: 3px 7px; border-radius: 6px; font: 700 .7rem/1.15 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.aa-method-get { color: #16834a; background: rgba(46,158,91,.13); }
+.aa-method-post { color: #c64c21; background: rgba(255,108,55,.16); }
+.aa-method-put, .aa-method-patch { color: #3269a8; background: rgba(57,126,202,.14); }
+.aa-method-delete { color: #c0393b; background: rgba(229,72,77,.13); }
+.aa-method-other { color: var(--st-secondary-text-color, #777); background: rgba(128,128,128,.12); }
+.aa-tree-request-row .aa-req-meta { display: flex; align-items: baseline; gap: .65rem; min-width: 0; overflow: hidden; }
+.aa-tree-request-row .aa-req-name { min-width: 0; overflow: hidden; font-size: 0.88rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.aa-tree-request-row .aa-req-url { min-width: 0; overflow: hidden; color: var(--st-secondary-text-color, #777); font: 0.74rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.aa-tree-request-row .aa-req-menu { text-align: right; }
+.aa-tree-btn-menu { width: 24px; height: 24px; border: 0; border-radius: 6px; color: var(--st-secondary-text-color, #777); background: transparent; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; }
+.aa-tree-btn-menu:hover { color: #ff6c37; background: rgba(255,108,55,.10); }
+.aa-empty-tree { border: 1px dashed var(--aa-border); border-radius: var(--aa-radius); padding: 1.4rem 1rem; text-align: center; color: rgba(128,128,128,.95); font-size: 0.88rem; }
+</style>
+"""
