@@ -80,11 +80,11 @@ Open [http://localhost:8501](http://localhost:8501). FastAPI's interactive API d
 ### Run the full stack in Docker
 
 ```bash
-make docker-up
+make docker-up-build
 make docker-logs
 ```
 
-Open [http://localhost:8501](http://localhost:8501). Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume. `docker compose down -v` removes the volume and its data.
+Use `make docker-up` for subsequent starts with the built images; it skips image builds. Run `make docker-up-build` after changing application code or dependencies. Docker caches pip downloads across dependency rebuilds, and application source is copied after dependency installation so source-only edits reuse the installed dependency layers. Open [http://localhost:8501](http://localhost:8501). Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume. `docker compose down -v` removes the volume and its data.
 
 If a host port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONTEND_PORT` in `.env`. For local app processes, keep the port in `DATABASE_URL` aligned with `POSTGRES_PORT`.
 
@@ -92,7 +92,7 @@ If a host port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONT
 
 ### Projects, collections, and requests
 
-Select or create a project in the sidebar. In API Workspace, the compact collection navigator is headed by the active project name and stays beside the playground on desktop. **New** opens a blank request, **Import** and **Discover** open contract tools, and the plus beside search creates a collection. Use the × in an open contract panel’s title row to dismiss it. Search filters collection names, request names, and URLs. Expand a collection to browse its indented requests. The checkbox at the left of a collection controls generation eligibility for every request in it; request checkboxes control individual eligibility. Request names are truncated to fit, show the URL on hover or keyboard focus, and open the request in the playground when clicked. The request three-dot menu includes rename, duplicate, and delete. The collection menu includes rename, Postman export, and delete. A saved request belongs to a project collection; an open request tab is a temporary draft until saved.
+Select or create a project in the sidebar. In API Workspace, the compact collection navigator is headed by the active project name, stays beside the playground on desktop, and stacks above it on narrow screens. **Import** and **Discover** open contract tools, and the plus beside search creates a collection. Use the × in an open contract panel’s title row to dismiss it. Search filters collection names, request names, and URLs. Expand a collection to browse its indented requests, which are linked visually to their parent by a subtle tree guide. The checkbox at the left of a collection controls generation eligibility for every request in it; request checkboxes control individual eligibility. Request names are truncated to fit, show the URL on hover or keyboard focus, and open the request in the playground when clicked. Plain, unboxed three-dot menus provide request rename, duplicate, and delete actions, and collection rename, Postman export, and delete actions. A saved request belongs to a project collection; an open request tab is a temporary draft until saved.
 
 The playground supports manual request editing or cURL import. Paste or type a one-line or multiline command beginning with `curl` into the URL field and pause for three seconds; the frontend parses recognized commands automatically. Regular URLs are not parsed as cURL. Review the method, URL, query parameters, headers, and body before sending or saving. Contract imports omit payloads from GET and DELETE requests.
 
@@ -115,7 +115,7 @@ Anonymous URL imports are limited to public HTTP(S) hosts and documents up to 5 
 
 ### Generate and organize test cases
 
-Use the request or collection checkboxes in API Workspace to set persistent generation eligibility. The navigator's **Generation options** menu provides project-wide Select all and Deselect all actions. Then, in Test Cases, use the integrated draggable request list to choose requests for the current run and set their order. All eligible requests can be reordered; checked requests are used in the current generation run. The project order persists across reloads.
+Use the request or collection checkboxes in API Workspace to set persistent generation eligibility. In Test Cases, use the integrated draggable request list to choose requests for the current run and set their order. All eligible requests can be reordered; checked requests are used in the current generation run. The project order persists across reloads.
 
 - **Single** generates independent cases for each selected endpoint. Cases are grouped by endpoint; each generated scenario retains its own title.
 - **Flow** asks the LLM to create sequential scenarios using the selected order. Flows execute one step at a time and can pass values from earlier responses to later requests.
@@ -185,7 +185,8 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 | `make run-local-backend` | Run FastAPI locally on port 8000 |
 | `make run-local-frontend` | Run Streamlit locally on port 8501 |
 | `make docker-db-up` | Start PostgreSQL for local app processes |
-| `make docker-up` | Build and start the full Compose stack |
+| `make docker-up` | Start the full Compose stack without rebuilding images |
+| `make docker-up-build` | Build images and start the full Compose stack |
 | `make docker-down` | Stop services while preserving PostgreSQL data |
 | `make docker-logs` | Follow Compose logs |
 | `make test` | Run the pytest suite; start PostgreSQL first with `make docker-db-up` |

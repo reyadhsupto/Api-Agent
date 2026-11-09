@@ -3429,7 +3429,7 @@ def _sync_generation_eligibility_widget(
 
 
 def _render_collection_navigator(project: dict, project_id: str) -> str | None:
-    """Render the searchable Postman-style project collection tree.
+    """Render Postman-style collection navigator with request tree.
 
     Args:
         project (dict): Current project and its collections and requests.
@@ -3452,6 +3452,10 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
     expanded_ids = [item for item in expanded_ids if item in collection_ids]
     st.session_state["workspace_expanded_collections"] = expanded_ids
 
+    # Ensure request selection state exists
+    if "collection_request_selections" not in st.session_state:
+        st.session_state["collection_request_selections"] = {}
+
     with st.container(key="collection-browser-header"):
         project_name = html.escape(str(project.get("name") or "Workspace"), quote=True)
         st.markdown(
@@ -3459,23 +3463,12 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
             "<div class='aa-navigator-subtitle'>API Workspace</div>",
             unsafe_allow_html=True,
         )
-        new_col, import_col, discover_col = st.columns(
-            [1, 1, 1], vertical_alignment="center",
+        import_col, discover_col = st.columns(
+            [1, 1], vertical_alignment="center",
         )
-        if new_col.button(
-            "New", key=f"navigator_new_request_{project_id}",
-            icon=":material/add:",
-            type="secondary", width="stretch",
-        ):
-            draft = _new_request_draft()
-            draft["collection_id"] = selected_id
-            st.session_state["request_drafts"].append(draft)
-            st.session_state["active_request_tab_id"] = draft["tab_id"]
-            st.rerun()
         if import_col.button(
             "Import", key=f"navigator_import_contract_{project_id}",
-            icon=":material/file_upload:",
-            type="primary", width="stretch",
+            icon=":material/file_upload:", type="primary", width="stretch",
         ):
             st.session_state["workspace_contract_panel"] = "import"
             st.rerun()
@@ -3486,14 +3479,13 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
         }
         if discover_col.button(
             "Discover", key=f"navigator_discover_flows_{project_id}",
-            icon=":material/account_tree:",
-            disabled=not contract_sources, width="stretch",
+            icon=":material/account_tree:", disabled=not contract_sources, width="stretch",
         ):
             st.session_state["workspace_contract_panel"] = "discover"
             st.rerun()
 
     with st.container(key="navigator-search-row"):
-        create_col, search_col, actions_col = st.columns([.48, 4.3, .55], vertical_alignment="center")
+        create_col, search_col = st.columns([.48, 4.3], vertical_alignment="center")
         with create_col:
             with st.popover(
                 "Create collection", icon=":material/add:",
@@ -3514,8 +3506,6 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                                 {"name": collection_name.strip()},
                             )
                             _refresh_project_preserving_drafts(project_id)
-                            st.session_state["selected_collection_id"] = created["id"]
-                            st.session_state["workspace_expanded_collections"] = [created["id"]]
                             _queue_toast("Collection created.")
                             st.rerun()
                         except Exception as exc:
@@ -3523,45 +3513,11 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
         with search_col:
             search_text = st.text_input(
                 "Search collections and requests",
-                key=f"workspace_nav_search_{project_id}",
+                key=f"navigator_search_{project_id}",
                 placeholder="Search collections and requests",
                 label_visibility="collapsed",
             ).strip().casefold()
-        with actions_col:
-            with st.popover(
-                "Generation options", icon=":material/more_horiz:",
-                key=f"navigator_generation_options_{project_id}",
-            ):
-                enabled_count = sum(
-                    bool(item.get("include_for_generation", item.get("include", False)))
-                    for item in all_requests
-                )
-                st.caption(f"{enabled_count} of {len(all_requests)} requests enabled")
-                if st.button(
-                    "Select all for generation", key=f"eligible_select_all_{project_id}",
-                    icon=":material/select_all:", width="stretch", disabled=not all_requests,
-                ):
-                    try:
-                        _set_generation_eligibility(project_id, all_requests, True)
-                        st.session_state["generation_eligibility_revision"] = (
-                            st.session_state.get("generation_eligibility_revision", 0) + 1
-                        )
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not enable all requests for generation: {exc}")
-                if st.button(
-                    "Deselect all", key=f"eligible_deselect_all_{project_id}",
-                    icon=":material/deselect:", width="stretch", disabled=not all_requests,
-                ):
-                    try:
-                        _set_generation_eligibility(project_id, all_requests, False)
-                        st.session_state["generation_eligibility_revision"] = (
-                            st.session_state.get("generation_eligibility_revision", 0) + 1
-                        )
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not disable all requests for generation: {exc}")
-
+    # Render collections as a Postman-style tree
     with st.container(key="collection-browser-scroll"):
         if not collections:
             _empty_state("No collections yet", "Create a collection here or import an API contract.")
@@ -3596,41 +3552,47 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                 collection_eligible,
                 revision,
             )
+
+            # Collection header row
             selected_collection_class = "selected-" if collection_id == selected_id else ""
-            with st.container(key=f"collection-tree-row-{selected_collection_class}{collection_id}"):
-                eligibility_col, title_col, menu_col = st.columns(
-                    [.45, 5.2, .65], vertical_alignment="center",
+            expanded_collection_class = "expanded-" if is_expanded else "collapsed-"
+            with st.container(
+                key=f"collection-tree-row-{selected_collection_class}{expanded_collection_class}{collection_id}"
+            ):
+                col_check, col_title, col_menu = st.columns(
+                    [0.45, 5, 0.9], vertical_alignment="center",
                 )
-                with eligibility_col:
-                    selected_collection_eligible = st.checkbox(
+                with col_check:
+                    is_collection_selected = st.checkbox(
                         f"Include all {collection_name} requests for generation",
                         key=collection_eligibility_key,
                         label_visibility="collapsed",
                         disabled=not saved_requests,
                     )
-                if title_col.button(
-                    f"{'▾' if is_expanded else '▸'}  {collection_name}  ·  {len(saved_requests)}",
-                    key=f"toggle_collection_{collection_id}",
-                    type="tertiary", width="stretch",
-                ):
-                    _toggle_collection_expanded(collection_id)
-                    st.session_state["selected_collection_id"] = collection_id
-                    st.rerun()
-                if selected_collection_eligible != collection_eligible:
-                    try:
-                        _set_generation_eligibility(
-                            project_id, saved_requests, selected_collection_eligible,
-                        )
-                        st.session_state["generation_eligibility_revision"] = revision + 1
-                        _queue_toast(
-                            f"All requests in {collection_name} enabled for generation."
-                            if selected_collection_eligible
-                            else f"All requests in {collection_name} excluded from generation."
-                        )
+                    if is_collection_selected != collection_eligible:
+                        try:
+                            _set_generation_eligibility(
+                                project_id, saved_requests, is_collection_selected,
+                            )
+                            st.session_state["generation_eligibility_revision"] = revision + 1
+                            _queue_toast(
+                                f"All requests in {collection_name} enabled for generation."
+                                if is_collection_selected
+                                else f"All requests in {collection_name} excluded from generation."
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not update collection eligibility: {exc}")
+                with col_title:
+                    expand_label = f"{'▾' if is_expanded else '▸'}  {collection_name}  ·  {len(saved_requests)}"
+                    if st.button(
+                        expand_label, key=f"toggle_collection_{collection_id}",
+                        type="tertiary", width="stretch",
+                    ):
+                        _toggle_collection_expanded(collection_id)
+                        st.session_state["selected_collection_id"] = collection_id
                         st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not update collection eligibility: {exc}")
-                with menu_col:
+                with col_menu:
                     with st.popover(
                         "Collection actions", icon=":material/more_vert:",
                         key=f"collection_menu_{collection_id}",
@@ -3665,21 +3627,16 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                             "Confirm delete collection and its requests",
                             key=f"confirm_delete_collection_{collection_id}",
                         )
-                        if st.button(
-                            "Delete collection", key=f"delete_collection_{collection_id}",
-                            type="secondary", width="stretch", disabled=not confirm_delete,
-                        ):
+                        if st.button("Delete collection", key=f"delete_collection_{collection_id}", type="secondary", width="stretch", disabled=not confirm_delete):
                             try:
                                 api_delete(f"/api/v1/projects/{project_id}/collections/{collection_id}")
                                 _refresh_project_preserving_drafts(project_id)
-                                _persist_generation_order(
-                                    project_id, st.session_state.get("generation_order_ids", []),
+                                st.session_state["selected_collection_id"] = [
+                                    cid for cid in st.session_state.get("selected_collection_id", [])
+                                    if cid != collection_id
+                                ] if isinstance(st.session_state.get("selected_collection_id"), list) else (
+                                    None if st.session_state.get("selected_collection_id") == collection_id else st.session_state.get("selected_collection_id")
                                 )
-                                st.session_state["selected_collection_id"] = None
-                                st.session_state["workspace_expanded_collections"] = [
-                                    item for item in st.session_state.get("workspace_expanded_collections", [])
-                                    if item != collection_id
-                                ]
                                 _queue_toast("Collection deleted.")
                                 st.rerun()
                             except Exception as exc:
@@ -3691,6 +3648,8 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                 if not saved_requests:
                     st.caption("This collection is empty. Save a request here from the playground.")
                 continue
+
+            # Render individual request rows under the collection
             for saved in matching_requests:
                 request_id = saved["id"]
                 method = str(saved.get("method") or "GET").upper()
@@ -3711,36 +3670,41 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                     revision,
                 )
                 selected_request_class = "selected-" if is_active_request else ""
+
                 with st.container(key=f"browser-request-row-{selected_request_class}{request_id}"):
-                    eligibility_col, method_col, name_col, menu_col = st.columns(
-                        [.42, .95, 4.1, .58], vertical_alignment="center",
+                    col_check, col_method, col_name, col_menu = st.columns(
+                        [0.45, 0.9, 3.2, 0.85], vertical_alignment="center",
                     )
-                    with eligibility_col:
-                        selected_eligible = st.checkbox(
-                            f"Include {display_name} for generation",
-                            key=eligibility_key,
+
+                    # Individual request checkbox
+                    with col_check:
+                        is_selected = st.session_state.get("collection_request_selections", {}).get(request_id, False)
+                        new_selected = st.checkbox(
+                            f"Include {display_name} in generation",
+                            value=is_selected,
+                            key=f"req_check_{request_id}",
                             label_visibility="collapsed",
                         )
-                    if selected_eligible != eligible:
-                        try:
-                            _set_generation_eligibility(project_id, [saved], selected_eligible)
-                            st.session_state["generation_eligibility_revision"] = revision + 1
-                            _queue_toast(
-                                "Request enabled for test generation."
-                                if selected_eligible else "Request excluded from test generation."
-                            )
+                        if new_selected != is_selected:
+                            sel = set(st.session_state.get("collection_request_selections", {}))
+                            if new_selected:
+                                sel.add(request_id)
+                            else:
+                                sel.discard(request_id)
+                            st.session_state["collection_request_selections"] = sel
                             st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not update request eligibility: {exc}")
-                    method_col.markdown(_method_badge(method))
-                    with name_col:
+
+                    with col_method:
+                        st.markdown(_method_badge(method))
+
+                    with col_name:
                         if st.button(
                             display_name, key=f"open_saved_{request_id}",
                             type="tertiary", width="stretch",
                             help=f"{request_url} · Open request in playground",
                         ):
                             existing = next(
-                                (draft for draft in st.session_state["request_drafts"] if draft.get("id") == request_id),
+                                (d for drafts in [st.session_state["request_drafts"]] for d in drafts if d.get("id") == request_id),
                                 None,
                             )
                             if not existing:
@@ -3749,11 +3713,9 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                             st.session_state["active_request_tab_id"] = existing["tab_id"]
                             st.session_state["selected_collection_id"] = collection_id
                             st.rerun()
-                    with menu_col:
-                        with st.popover(
-                            "Request actions", icon=":material/more_vert:",
-                            key=f"request_menu_{request_id}",
-                        ):
+
+                    with col_menu:
+                        with st.popover("Request actions", icon=":material/more_vert:", key=f"request_menu_{request_id}"):
                             rename_key = f"rename_request_value_{request_id}"
                             st.text_input(
                                 "Rename request", value=display_name, key=rename_key,
@@ -3767,19 +3729,16 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                                         f"/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}",
                                         {"name": new_name},
                                     )
-                                    for draft in st.session_state["request_drafts"]:
-                                        if draft.get("id") == request_id:
-                                            draft["name"] = new_name
-                                            st.session_state[f"name_{draft['tab_id']}"] = new_name
+                                    for d in st.session_state["request_drafts"]:
+                                        if d.get("id") == request_id:
+                                            d["name"] = new_name
+                                            st.session_state[f"name_{d['tab_id']}"] = new_name
                                     _refresh_project_preserving_drafts(project_id)
                                     _queue_toast("Request renamed.")
                                     st.rerun()
                                 except Exception as exc:
                                     st.error(f"Could not rename request: {exc}")
-                            if st.button(
-                                "Duplicate", key=f"duplicate_request_{request_id}",
-                                icon=":material/content_copy:", width="stretch",
-                            ):
+                            if st.button("Duplicate", key=f"duplicate_request_{request_id}", icon=":material/content_copy:", width="stretch"):
                                 try:
                                     duplicate = copy.deepcopy(saved)
                                     duplicate.pop("id", None)
@@ -3799,15 +3758,9 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                             confirm_delete = st.checkbox(
                                 "Confirm delete request", key=f"confirm_delete_request_{request_id}",
                             )
-                            if st.button(
-                                "Delete request", key=f"delete_saved_{request_id}",
-                                icon=":material/delete:", type="secondary", width="stretch",
-                                disabled=not confirm_delete,
-                            ):
+                            if st.button("Delete request", key=f"delete_request_{request_id}", icon=":material/delete:", type="secondary", width="stretch", disabled=not confirm_delete):
                                 try:
-                                    api_delete(
-                                        f"/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}"
-                                    )
+                                    api_delete(f"/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}")
                                     _refresh_project_preserving_drafts(project_id)
                                     _persist_generation_order(
                                         project_id, st.session_state.get("generation_order_ids", []),
@@ -3816,9 +3769,9 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
                                     st.rerun()
                                 except Exception as exc:
                                     st.error(f"Could not delete request: {exc}")
-        if search_text and not visible_collection_count:
-            _empty_state("No matches", "Try another collection, request name, or URL.")
+
     return selected_id
+
 
 
 def _render_request_rows(rows: list[dict], kind: str, tab_id: str) -> list[dict]:
@@ -4380,12 +4333,16 @@ def render_api_workspace() -> None:
             --aa-panel-bg: color-mix(in srgb, var(--st-secondary-background-color) 72%, transparent);
             --aa-panel-border: color-mix(in srgb, var(--st-border-color) 82%, transparent);
         }
+        .st-key-api-workspace-layout [data-testid="stHorizontalBlock"]:has(.st-key-collection-browser-header),
+        .st-key-api-workspace-layout > [data-testid="stHorizontalBlock"],
         .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] {
             display: grid !important;
-            grid-template-columns: minmax(230px, 290px) minmax(0, 1fr) !important;
+            grid-template-columns: clamp(270px, 17vw, 320px) minmax(0, 1fr) !important;
             align-items: start; gap: 1rem !important;
         }
-        .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+        .st-key-api-workspace-layout [data-testid="stHorizontalBlock"]:has(.st-key-collection-browser-header) > :is([data-testid="column"], [data-testid="stColumn"]),
+        .st-key-api-workspace-layout > [data-testid="stHorizontalBlock"] > :is([data-testid="column"], [data-testid="stColumn"]),
+        .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] > :is([data-testid="column"], [data-testid="stColumn"]) {
             width: auto !important; min-width: 0 !important; flex: initial !important;
         }
 
@@ -4419,9 +4376,8 @@ def render_api_workspace() -> None:
         .st-key-navigator-search-row [data-testid="stHorizontalBlock"] {
             align-items: center; gap: .35rem;
         }
-        .st-key-navigator-search-row [data-testid="stColumn"] { min-width: 0; padding: 0; }
-        .st-key-navigator-search-row [data-testid="stColumn"]:first-child,
-        .st-key-navigator-search-row [data-testid="stColumn"]:last-child {
+        .st-key-navigator-search-row :is([data-testid="column"], [data-testid="stColumn"]) { min-width: 0; padding: 0; }
+        .st-key-navigator-search-row :is([data-testid="column"], [data-testid="stColumn"]):first-child {
             flex: 0 0 2.25rem !important; width: 2.25rem !important;
         }
         .st-key-navigator-search-row [data-testid="stTextInput"] input {
@@ -4442,6 +4398,7 @@ def render_api_workspace() -> None:
         .st-key-collection-browser-scroll > [data-testid="stVerticalBlock"] {
             box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
         }
+        .st-key-collection-browser-scroll > [data-testid="stVerticalBlock"] { gap: .1rem; }
         .st-key-collection-browser-scroll::-webkit-scrollbar { width: 7px; }
         .st-key-collection-browser-scroll::-webkit-scrollbar-thumb {
             border-radius: 20px; background: rgba(128,128,128,.28);
@@ -4451,6 +4408,12 @@ def render_api_workspace() -> None:
             margin: 2px 0; padding: 2px 3px;
             border: 1px solid transparent; border-radius: 8px;
             transition: background .14s ease, border-color .14s ease;
+        }
+        div[class*="st-key-collection-tree-row-expanded-"] { position: relative; }
+        div[class*="st-key-collection-tree-row-expanded-"]::after {
+            content: ""; position: absolute; z-index: 0; left: 1.25rem;
+            bottom: -.55rem; height: .55rem; border-left: 1px solid var(--aa-border);
+            pointer-events: none;
         }
         div[class*="st-key-collection-tree-row-"]:hover,
         div[class*="st-key-browser-request-row-"]:hover,
@@ -4465,18 +4428,18 @@ def render_api_workspace() -> None:
             box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
             align-items: center; gap: .25rem;
         }
-        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"],
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"] {
+        div[class*="st-key-collection-tree-row-"] :is([data-testid="column"], [data-testid="stColumn"]),
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]) {
             box-sizing: border-box; min-width: 0; padding: 0;
         }
-        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"] > [data-testid="stVerticalBlock"],
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"] > [data-testid="stVerticalBlock"] {
+        div[class*="st-key-collection-tree-row-"] :is([data-testid="column"], [data-testid="stColumn"]) > [data-testid="stVerticalBlock"],
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]) > [data-testid="stVerticalBlock"] {
             min-width: 0; min-height: 2.2rem; justify-content: center; gap: 0;
         }
-        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"]:first-child {
-            flex: 0 0 1.5rem !important; width: 1.5rem !important;
+        div[class*="st-key-collection-tree-row-"] :is([data-testid="column"], [data-testid="stColumn"]):first-child {
+            flex: 0 0 1.3rem !important; width: 1.3rem !important;
         }
-        div[class*="st-key-collection-tree-row-"] [data-testid="stColumn"]:last-child {
+        div[class*="st-key-collection-tree-row-"] :is([data-testid="column"], [data-testid="stColumn"]):last-child {
             flex: 0 0 2rem !important; width: 2rem !important;
         }
         div[class*="st-key-collection-tree-row-"] [data-testid="stButton"] button {
@@ -4488,24 +4451,35 @@ def render_api_workspace() -> None:
             overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap;
         }
         div[class*="st-key-browser-request-row-"] {
-            box-sizing: border-box; width: calc(100% - 1rem); max-width: calc(100% - 1rem); min-width: 0;
-            margin: 1px 0 1px 1rem; padding: 1px 3px 1px .4rem;
-            border-left: 1px solid var(--aa-border); border-radius: 0 8px 8px 0;
+            box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
+            margin: 2px 0; padding: 2px 3px;
+            border: 1px solid transparent; border-radius: 8px;
+            position: relative;
             transition: background .14s ease, border-color .14s ease;
         }
+        div[class*="st-key-browser-request-row-"]::before {
+            content: ""; position: absolute; z-index: 0; left: 1.55rem;
+            top: -.2rem; bottom: -.2rem; border-left: 1px solid var(--aa-border);
+            pointer-events: none;
+        }
+        div[class*="st-key-browser-request-row-"]::after {
+            content: ""; position: absolute; z-index: 0; left: 1.55rem;
+            top: 50%; width: .45rem; border-top: 1px solid var(--aa-border);
+            pointer-events: none;
+        }
         div[class*="st-key-browser-request-row-selected-"] {
-            background: var(--aa-accent-soft); border-left-color: var(--aa-accent);
+            background: var(--aa-accent-soft); border-color: rgba(255,108,55,.22);
         }
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(1) {
-            flex: 0 0 1.5rem !important; width: 1.5rem !important;
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]):nth-child(1) {
+            flex: 0 0 1.3rem !important; width: 1.3rem !important;
         }
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(2) {
-            flex: 0 0 4.1rem !important; width: 4.1rem !important;
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]):nth-child(2) {
+            flex: 0 0 3.8rem !important; width: 3.8rem !important;
         }
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:nth-child(3) {
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]):nth-child(3) {
             flex: 1 1 0% !important; width: 0 !important;
         }
-        div[class*="st-key-browser-request-row-"] [data-testid="stColumn"]:last-child {
+        div[class*="st-key-browser-request-row-"] :is([data-testid="column"], [data-testid="stColumn"]):last-child {
             flex: 0 0 2rem !important; width: 2rem !important;
         }
         div[class*="st-key-collection-tree-row-"] [data-testid="stCheckbox"],
@@ -4543,31 +4517,37 @@ def render_api_workspace() -> None:
             margin: -1px !important; padding: 0 !important; overflow: hidden !important;
             clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
         }
-        /* Use consistent icon buttons for collection and request kebab menus. */
-        .st-key-navigator-search-row [data-testid="stPopover"] > button,
-        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button,
-        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button {
+        /* Keep the navigator kebab triggers as plain, unboxed three-dot icons. */
+        .st-key-navigator-search-row [data-testid="stPopover"] button,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] button,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] button {
             display: inline-flex; box-sizing: border-box; width: 1.75rem; min-width: 1.75rem;
-            height: 2rem; min-height: 2rem; justify-content: center; padding: 0;
-            border: 0 !important; border-radius: 0 !important; background: transparent !important;
-            box-shadow: none !important; opacity: .68;
+            height: 2rem; min-height: 2rem; align-items: center; justify-content: center;
+            padding: 0 !important; border: 0 !important; border-radius: 0 !important;
+            background: transparent !important; box-shadow: none !important;
+            color: inherit; opacity: .68; appearance: none;
             transition: opacity .14s ease, color .14s ease;
         }
-        .st-key-navigator-search-row [data-testid="stPopover"] > button p,
-        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button p,
-        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button p {
+        .st-key-navigator-search-row [data-testid="stPopover"] button p,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] button p,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] button p {
             position: absolute !important; width: 1px !important; height: 1px !important;
             margin: -1px !important; padding: 0 !important; overflow: hidden !important;
             clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
         }
-        .st-key-navigator-search-row [data-testid="stPopover"] > button:hover,
-        div[class*="st-key-collection-tree-row-"]:hover [data-testid="stPopover"] > button,
-        div[class*="st-key-browser-request-row-"]:hover [data-testid="stPopover"] > button,
-        .st-key-navigator-search-row [data-testid="stPopover"] > button:focus-visible,
-        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] > button:focus-visible,
-        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] > button:focus-visible {
+        .st-key-navigator-search-row [data-testid="stPopover"] button:hover,
+        div[class*="st-key-collection-tree-row-"]:hover [data-testid="stPopover"] button,
+        div[class*="st-key-browser-request-row-"]:hover [data-testid="stPopover"] button,
+        .st-key-navigator-search-row [data-testid="stPopover"] button:focus-visible,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] button:focus-visible,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] button:focus-visible {
             opacity: 1; color: var(--aa-accent) !important;
             background: transparent !important; border: 0 !important; box-shadow: none !important;
+        }
+        .st-key-navigator-search-row [data-testid="stPopover"] button:focus-visible,
+        div[class*="st-key-collection-tree-row-"] [data-testid="stPopover"] button:focus-visible,
+        div[class*="st-key-browser-request-row-"] [data-testid="stPopover"] button:focus-visible {
+            outline: 2px solid var(--aa-accent); outline-offset: 1px;
         }
         div[class*="st-key-browser-request-row-"] [data-testid="stPopoverBody"] { min-width: 225px; }
 
@@ -4579,6 +4559,8 @@ def render_api_workspace() -> None:
         }
         @media (max-width: 760px) {
             .st-key-collection-browser-scroll { max-height: 46vh; }
+            .st-key-api-workspace-layout [data-testid="stHorizontalBlock"]:has(.st-key-collection-browser-header),
+            .st-key-api-workspace-layout > [data-testid="stHorizontalBlock"],
             .st-key-api-workspace-layout > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] {
                 grid-template-columns: minmax(0, 1fr) !important;
             }
@@ -4600,7 +4582,7 @@ def render_api_workspace() -> None:
         return
 
     with st.container(key="api-workspace-layout"):
-        left, editor = st.columns([1.75, 3.25], gap="large")
+        left, editor = st.columns([1, 5], gap="small")
         with left:
             selected_id = _render_collection_navigator(project, project_id)
 
