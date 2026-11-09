@@ -9,6 +9,7 @@ Returns:
 """
 
 import json
+import copy
 import time
 import uuid
 import requests
@@ -51,6 +52,37 @@ def _generate_or_raise(generator, **kwargs) -> list:
             status_code=502,
             detail=f"LLM returned invalid test-case data: {exc}",
         ) from exc
+
+
+def _load_generation_examples(
+    project_id: str, example_ids: list[str], project: dict | None = None,
+) -> list[dict]:
+    """Load selected generation examples and ensure every ID belongs to the project.
+
+    Args:
+        project_id (str): Project that owns the requested examples.
+        example_ids (list[str]): Stable test-case IDs selected by the user.
+        project (dict | None): Already loaded project aggregate, if available.
+
+    Returns:
+        list[dict]: Selected saved case payloads in the requested order.
+
+    Raises:
+        HTTPException: If the project or any selected case does not exist in it.
+    """
+    if not example_ids:
+        return []
+    project = project or database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    cases_by_id = {str(case.get("id")): case for case in project.get("test_cases", [])}
+    missing_ids = [case_id for case_id in dict.fromkeys(example_ids) if case_id not in cases_by_id]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Generation example test case(s) not found in project: {', '.join(missing_ids)}",
+        )
+    return [cases_by_id[case_id] for case_id in dict.fromkeys(example_ids)]
 
 
 def _get_current_project() -> dict:
@@ -321,6 +353,105 @@ def update_project_generation_order(project_id: str, request: dict) -> dict:
     if saved_order is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"generation_order_ids": saved_order}
+
+
+@app.get("/api/v1/projects/{project_id}/test-runs")
+def list_project_test_runs(project_id: str) -> list:
+    """List reusable test runs scoped to one project.
+
+    Args:
+        project_id (str): Project whose saved runs should be returned.
+
+    Returns:
+        list: Saved run records with ordered case IDs.
+
+    Raises:
+        HTTPException: If the project does not exist.
+    """
+    runs = database.list_test_runs(project_id)
+    if runs is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return runs
+
+
+def _save_project_test_run(project_id: str, request: dict, run_id: str | None = None) -> dict:
+    """Validate and persist one named run with ordered case membership.
+
+    Args:
+        project_id (str): Project that owns the run.
+        request (dict): Request body containing name and case_ids.
+        run_id (str | None): Existing run ID to update, if provided.
+
+    Returns:
+        dict: Saved run record.
+
+    Raises:
+        HTTPException: For invalid input, duplicate names, or missing records.
+    """
+    name = request.get("name")
+    case_ids = request.get("case_ids")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=422, detail="Test run name is required.")
+    if not isinstance(case_ids, list) or not all(isinstance(case_id, str) for case_id in case_ids):
+        raise HTTPException(status_code=422, detail="case_ids must be a list of test-case ID strings.")
+    try:
+        saved = database.save_test_run(project_id, name, case_ids, run_id)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return saved
+
+
+@app.post("/api/v1/projects/{project_id}/test-runs")
+def create_project_test_run(project_id: str, request: dict) -> dict:
+    """Create a named reusable selection of project test cases.
+
+    Args:
+        project_id (str): Project that owns the new run.
+        request (dict): Name and ordered list of case IDs.
+
+    Returns:
+        dict: Saved run record.
+    """
+    return _save_project_test_run(project_id, request)
+
+
+@app.put("/api/v1/projects/{project_id}/test-runs/{run_id}")
+def update_project_test_run(project_id: str, run_id: str, request: dict) -> dict:
+    """Update a named run's name or ordered case membership.
+
+    Args:
+        project_id (str): Project that owns the run.
+        run_id (str): Stable run ID to update.
+        request (dict): Replacement name and ordered list of case IDs.
+
+    Returns:
+        dict: Updated run record.
+    """
+    return _save_project_test_run(project_id, request, run_id)
+
+
+@app.delete("/api/v1/projects/{project_id}/test-runs/{run_id}")
+def delete_project_test_run(project_id: str, run_id: str) -> dict:
+    """Delete a reusable run without deleting its referenced test cases.
+
+    Args:
+        project_id (str): Project that owns the run.
+        run_id (str): Stable run ID to delete.
+
+    Returns:
+        dict: Deletion confirmation.
+    """
+    if database.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not database.delete_test_run(project_id, run_id):
+        raise HTTPException(status_code=404, detail="Test run not found")
+    return {"message": "Test run deleted"}
 
 
 @app.delete("/api/v1/projects/{project_id}")
@@ -848,8 +979,10 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
     """
     project_id = request.project_id or database.current_project_id()
     source_endpoint = None
-    if request.source_endpoint_id:
+    project = None
+    if request.source_endpoint_id or request.example_test_case_ids:
         project = database.get_project(project_id) if project_id else None
+    if request.source_endpoint_id:
         source_endpoint = next(
             (endpoint for endpoint in (project or {}).get("endpoints", [])
              if endpoint.get("id") == request.source_endpoint_id),
@@ -857,11 +990,13 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
         )
         if source_endpoint is None:
             raise HTTPException(status_code=404, detail="Source endpoint not found in project")
+    examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
 
     test_cases = _generate_or_raise(
         generate_test_cases,
         parsed_curl=_effective_request(request.parsed_curl),
         business_requirements=request.business_requirements,
+        example_test_cases=examples,
     )
     for tc in test_cases:
         if not tc.get("id"):
@@ -901,11 +1036,13 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
 
     if not endpoints:
         raise HTTPException(status_code=400, detail="No endpoints provided")
+    examples = _load_generation_examples(project_id, request.example_test_case_ids)
 
     test_cases = _generate_or_raise(
         generate_flow_test_cases,
         endpoints=endpoints,
         business_requirements=business_requirements,
+        example_test_cases=examples,
     )
     for tc in test_cases:
         if not tc.get("id"):
@@ -942,6 +1079,7 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
     endpoint_ids = request.endpoint_ids
     endpoints_data = [_effective_request(item) for item in request.endpoints]
     business_requirements = request.business_requirements
@@ -964,6 +1102,7 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
         generate_flow_test_cases,
         endpoints=ordered,
         business_requirements=business_requirements,
+        example_test_cases=examples,
     )
     for tc in test_cases:
         if not tc.get("id"):
@@ -1077,10 +1216,91 @@ def update_test_case(project_id: str, test_case_id: str, request: dict) -> dict:
     """
     if database.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    tc = database.update_test_case(project_id, test_case_id, request)
-    if not tc:
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=422, detail="Test case payload must be a JSON object.")
+    if request.get("id") not in (None, test_case_id):
+        raise HTTPException(status_code=422, detail="Test case ID cannot be changed during an update.")
+    existing = database.find_test_case(test_case_id, project_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Test case not found")
+    merged = copy.deepcopy(existing[1])
+    merged.update(request)
+    merged["id"] = test_case_id
+    _validate_editable_test_case(merged)
+    request_data_changed = (
+        existing[1].get("request") != merged.get("request")
+        or existing[1].get("steps") != merged.get("steps")
+    )
+    tc = database.update_test_case(project_id, test_case_id, merged)
+    if request_data_changed:
+        database.clear_test_case_executions(project_id, test_case_id)
     return tc
+
+
+def _validate_editable_test_case(test_case: dict) -> None:
+    """Validate editable request and flow-step data before persistence or execution."""
+    if test_case.get("is_flow"):
+        steps = test_case.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise HTTPException(status_code=422, detail="A flow must contain at least one request step.")
+        for index, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                raise HTTPException(status_code=422, detail=f"Flow step {index} must be a JSON object.")
+            endpoint = step.get("endpoint")
+            if not isinstance(endpoint, dict) or not isinstance(endpoint.get("url"), str) or not endpoint["url"].strip():
+                raise HTTPException(status_code=422, detail=f"Flow step {index} needs a request URL.")
+            method = endpoint.get("method", "GET")
+            if not isinstance(method, str) or not method.strip() or not method.replace("-", "").isalnum():
+                raise HTTPException(status_code=422, detail=f"Flow step {index} has an invalid request method.")
+            step["step_order"] = index
+            mappings = step.get("variable_mappings", [])
+            if not isinstance(mappings, list):
+                raise HTTPException(status_code=422, detail=f"Flow step {index} mappings must be a list.")
+            # A first step has no earlier response. Drop any stale or LLM-added
+            # mappings there so generated legacy flows remain executable.
+            if index == 1:
+                step["variable_mappings"] = []
+                continue
+            normalized_mappings = []
+            for mapping in mappings:
+                if not isinstance(mapping, dict):
+                    raise HTTPException(status_code=422, detail=f"Flow step {index} mappings must contain JSON objects.")
+                source = mapping.get("from")
+                target = mapping.get("to")
+                if not str(source or "").strip() and not str(target or "").strip():
+                    continue
+                mapping_index = len(normalized_mappings) + 1
+                if not isinstance(source, str) or not isinstance(target, str) or not source.strip() or not target.strip():
+                    raise HTTPException(status_code=422, detail=f"Flow step {index} mapping {mapping_index} needs a source and destination.")
+                json_path = source.split(":", 1)[1] if ":" in source and source.split(":", 1)[0].isdigit() else source
+                if not json_path.startswith("$"):
+                    raise HTTPException(status_code=422, detail=f"Flow step {index} mapping {mapping_index} source must be a JSONPath, optionally prefixed with a step number.")
+                if ":" in source and source.split(":", 1)[0].isdigit():
+                    source_step = int(source.split(":", 1)[0])
+                    if source_step < 1 or source_step >= index:
+                        raise HTTPException(status_code=422, detail=f"Flow step {index} mapping {mapping_index} must reference an earlier step.")
+                target_supported = (
+                    target.startswith("headers.") and len(target) > len("headers.")
+                    or target.startswith("request.query.") and len(target) > len("request.query.")
+                    or target.startswith("request.path.") and len(target) > len("request.path.")
+                    or target == "request.body"
+                    or target.startswith("request.body.")
+                )
+                if not target_supported:
+                    raise HTTPException(status_code=422, detail=f"Flow step {index} mapping {mapping_index} has an unsupported destination.")
+                if mapping.get("transform") is not None and not isinstance(mapping.get("transform"), str):
+                    raise HTTPException(status_code=422, detail=f"Flow step {index} mapping {mapping_index} transform must be text.")
+                normalized_mappings.append(mapping)
+            step["variable_mappings"] = normalized_mappings
+    else:
+        request = test_case.get("request")
+        if not isinstance(request, dict):
+            raise HTTPException(status_code=422, detail="A single test case needs a request object.")
+        if not isinstance(request.get("url"), str) or not request["url"].strip():
+            raise HTTPException(status_code=422, detail="Request URL is required.")
+        method = request.get("method", "GET")
+        if not isinstance(method, str) or not method.strip() or not method.replace("-", "").isalnum():
+            raise HTTPException(status_code=422, detail="Request method is invalid.")
 
 
 # --- Test Case Execution ---
@@ -1110,13 +1330,27 @@ def execute_test_case_endpoint(request: dict) -> dict:
     if not found:
         raise HTTPException(status_code=404, detail="Test case not found")
     owning_project_id, test_case = found
+    persist_execution = True
+    supplied_case = request.get("test_case")
+    if supplied_case is not None:
+        if not isinstance(supplied_case, dict) or supplied_case.get("id") != test_case_id:
+            raise HTTPException(status_code=422, detail="Execution test case must match the saved test-case ID.")
+        test_case = copy.deepcopy(supplied_case)
+        _validate_editable_test_case(test_case)
+        saved_case_for_compare = copy.deepcopy(found[1])
+        edited_case_for_compare = copy.deepcopy(test_case)
+        for case in (saved_case_for_compare, edited_case_for_compare):
+            for step in case.get("steps", []) if case.get("is_flow") else []:
+                step.pop("step_id", None)
+        persist_execution = saved_case_for_compare == edited_case_for_compare
 
     # Detect flow test cases and execute sequentially with variable substitution
     if test_case.get("is_flow"):
         result = execute_flow_test_case(test_case, assertions=assertions)
     else:
         result = execute_test_case(test_case, assertions=assertions)
-    database.append_execution(owning_project_id, test_case_id, result)
+    if persist_execution:
+        database.append_execution(owning_project_id, test_case_id, result)
     return result
 
 

@@ -17,6 +17,19 @@ from urllib.parse import quote
 from jsonschema import Draft202012Validator
 
 
+def _enabled_request_values(values) -> dict:
+    """Normalize request headers or query rows to enabled key/value pairs."""
+    if isinstance(values, dict):
+        return dict(values)
+    if isinstance(values, list):
+        return {
+            str(row.get("key")): row.get("value", "")
+            for row in values
+            if isinstance(row, dict) and row.get("key") and row.get("enabled", True)
+        }
+    return {}
+
+
 def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | None = None) -> dict:
     """
     Execute an API test case and capture full metadata.
@@ -36,7 +49,8 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
     if base_url and url.startswith("/"):
         url = base_url.rstrip("/") + url
 
-    headers = request.get("headers", {}) or {}
+    headers = _enabled_request_values(request.get("headers", {}))
+    query_params = _enabled_request_values(request.get("query_params", {}))
     body = request.get("body")
 
     test_case_id = test_case.get("id", "unknown")
@@ -56,6 +70,7 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
             method=method,
             url=url,
             headers=headers,
+            params=query_params,
             json=body if isinstance(body, (dict, list)) else None,
             data=body if isinstance(body, str) else None,
             timeout=30,
@@ -80,6 +95,7 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
             "request_url": url,
             "request_method": method,
             "request_headers": headers,
+            "request_query_params": query_params,
             "request_body": body,
             "response_status": response.status_code,
             "response_headers": dict(response.headers),
@@ -95,6 +111,7 @@ def execute_test_case(test_case: dict, base_url: str = "", assertions: dict | No
             "request_url": url,
             "request_method": method,
             "request_headers": headers,
+            "request_query_params": query_params,
             "request_body": body,
             "response_status": None,
             "response_headers": {},
@@ -323,7 +340,8 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
         if base_url and url.startswith("/"):
             url = base_url.rstrip("/") + url
 
-        headers = endpoint.get("headers", {}) or {}
+        headers = _enabled_request_values(endpoint.get("headers", {}))
+        query_params = _enabled_request_values(endpoint.get("query_params", {}))
         body = endpoint.get("body")
 
         step_start = time.perf_counter()
@@ -332,6 +350,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
                 method=method,
                 url=url,
                 headers=headers,
+                params=query_params,
                 json=body if isinstance(body, (dict, list)) else None,
                 data=body if isinstance(body, str) else None,
                 timeout=30,
@@ -359,6 +378,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
                 "method": method,
                 "url": url,
                 "request_headers": headers,
+                "request_query_params": query_params,
                 "request_body": body,
                 "response_status": response.status_code,
                 "response_headers": dict(response.headers),
@@ -381,6 +401,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
                 "method": method,
                 "url": url,
                 "request_headers": headers,
+                "request_query_params": query_params,
                 "request_body": body,
                 "response_status": None,
                 "response_headers": {},
@@ -488,6 +509,8 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
         return step
 
     headers = endpoint.get("headers", {}) or {}
+    headers = _enabled_request_values(headers)
+    query_params = _enabled_request_values(endpoint.get("query_params", {}))
     body = endpoint.get("body")
     url = str(endpoint.get("url", ""))
 
@@ -536,6 +559,13 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
                 mapped_value if isinstance(mapped_value, str)
                 else json.dumps(mapped_value, ensure_ascii=False, separators=(",", ":"))
             )
+        elif to_path.startswith("request.query."):
+            parameter_name = to_path[len("request.query."):]
+            if parameter_name:
+                query_params[parameter_name] = (
+                    mapped_value if isinstance(mapped_value, str)
+                    else json.dumps(mapped_value, ensure_ascii=False, separators=(",", ":"))
+                )
         elif to_path.startswith("request.body"):
             if body is None:
                 body = {}
@@ -556,18 +586,21 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
                 # If body is a string, try to inject as JSON
                 try:
                     import json as _json
-                    body_dict = _json.loads(body)
                     field_path = to_path[len("request.body"):].strip(".")
+                    if not field_path:
+                        body = mapped_value
+                        continue
+                    body_dict = _json.loads(body)
                     parts = field_path.split(".")
                     target = body_dict
                     for p in parts[:-1]:
                         if p not in target:
                             target[p] = {}
                         target = target[p]
-                    target[parts[-1]] = extracted_value
+                    target[parts[-1]] = mapped_value
                     body = _json.dumps(body_dict)
                 except _json.JSONDecodeError:
-                    body = extracted_value
+                    body = mapped_value
         elif to_path.startswith("request.path."):
             parameter_name = to_path[len("request.path."):]
             value_text = mapped_value if isinstance(mapped_value, str) else json.dumps(
@@ -579,6 +612,7 @@ def _apply_variable_mappings(response_texts: list, step: dict) -> dict:
         **endpoint,
         "url": url,
         "headers": headers,
+        "query_params": query_params,
         "body": body,
     }
     return step

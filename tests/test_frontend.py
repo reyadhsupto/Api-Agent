@@ -15,8 +15,15 @@ if "streamlit" not in sys.modules:
 from frontend.app import (
     _generation_requests_in_order,
     _group_test_cases_by_endpoint,
+    _filter_test_cases_by_scope,
+    _flow_provenance_label,
+    _deduplicate_test_cases,
+    _merge_generated_test_cases,
     _normalise_flow_steps,
     _new_request_draft,
+    _new_flow_step,
+    _new_manual_test_case,
+    _format_latency,
     _normalize_assertions,
     _request_query_rows,
     _resolve_curl_url_sync,
@@ -137,6 +144,132 @@ def test_endpoint_groups_use_metadata_url_fallback_and_separate_flows():
         ("https://api.test/carts/{cart_id}", ["legacy"]),
         ("Flow scenarios", ["flow"]),
     ]
+
+
+def test_scope_filters_include_flow_once_when_a_step_matches_any_selected_collection():
+    """A cross-collection flow remains one case when one of its steps matches."""
+    endpoints = [
+        {"id": "login", "method": "POST", "url": "/login", "name": "Login", "collection_id": "auth"},
+        {"id": "orders", "method": "GET", "url": "/orders", "name": "Orders", "collection_id": "commerce"},
+    ]
+    collections = [{"id": "auth", "name": "Auth"}, {"id": "commerce", "name": "Commerce"}]
+    case = {
+        "id": "flow-1", "is_flow": True, "steps": [
+            {"endpoint_id": "login", "endpoint": {"method": "POST", "url": "/login"}},
+            {"endpoint_id": "orders", "endpoint": {"method": "GET", "url": "/orders"}},
+        ],
+    }
+
+    result = _filter_test_cases_by_scope(
+        [case], endpoints, [], [], ["commerce"], [],
+    )
+
+    assert result == [case]
+    assert "Collections: Auth, Commerce" in _flow_provenance_label(case, endpoints, collections)
+
+
+def test_scope_filters_require_one_flow_step_to_match_endpoint_and_collection():
+    """Endpoint and collection facets must match the same flow step."""
+    endpoints = [
+        {"id": "login", "url": "/login", "method": "POST", "collection_id": "auth"},
+        {"id": "orders", "url": "/orders", "method": "GET", "collection_id": "commerce"},
+    ]
+    case = {"id": "flow-1", "is_flow": True, "steps": [
+        {"endpoint_id": "login", "endpoint": {"url": "/login", "method": "POST"}},
+        {"endpoint_id": "orders", "endpoint": {"url": "/orders", "method": "GET"}},
+    ]}
+
+    assert _filter_test_cases_by_scope([case], endpoints, [], [], ["commerce"], ["login"]) == []
+
+
+def test_scope_filters_support_run_union_and_legacy_url_provenance():
+    """Run membership combines with scope filters and older flows resolve by URL."""
+    endpoints = [{
+        "id": "items", "method": "GET", "url": "https://api.test/items/{item_id}",
+        "collection_id": "catalog",
+    }]
+    case = {"id": "legacy-flow", "is_flow": True, "steps": [
+        {"endpoint": {"method": "GET", "url": "https://api.test/items/42"}},
+    ]}
+    runs = [{"id": "run-a", "case_ids": ["legacy-flow"]}, {"id": "run-b", "case_ids": []}]
+
+    assert _filter_test_cases_by_scope(
+        [case], endpoints, ["run-a", "run-b"], runs, ["catalog"], ["items"],
+    ) == [case]
+
+
+def test_manual_cases_copy_saved_request_fields_and_create_ordered_steps():
+    """Manual single and flow cases retain request fields and editable defaults."""
+    saved = [
+        {
+            "id": "saved-1", "name": "Login", "method": "POST", "url": "/login",
+            "headers": {"Content-Type": "application/json"},
+            "query_params": {"region": "west"}, "body": {"email": "a@example.test"},
+        },
+        {"id": "saved-2", "name": "Profile", "method": "GET", "url": "/profile"},
+    ]
+
+    single = _new_manual_test_case(saved[:1], "", False)
+    flow = _new_manual_test_case(saved, "Login then profile", True)
+
+    assert single["name"] == "Login"
+    assert single["request"]["headers"] == saved[0]["headers"]
+    assert single["request"]["query_params"] == saved[0]["query_params"]
+    assert single["request"]["body"] == saved[0]["body"]
+    assert [step["endpoint_id"] for step in flow["steps"]] == ["saved-1", "saved-2"]
+    assert [step["step_order"] for step in flow["steps"]] == [1, 2]
+
+
+def test_latency_switches_to_seconds_only_above_one_second():
+    """Latency remains in milliseconds at 1000 ms and switches above it."""
+    assert _format_latency(1000) == "1000 ms"
+    assert _format_latency(1250) == "1.25 s"
+
+
+def test_duplicate_test_case_ids_keep_the_latest_case_payload_once():
+    """Duplicate stable IDs cannot produce duplicate cards or batch targets."""
+    cases = [
+        {"id": "tc-1", "name": "Old payload"},
+        {"id": "tc-2", "name": "Other case"},
+        {"id": "tc-1", "name": "Latest payload"},
+    ]
+
+    unique = _deduplicate_test_cases(cases)
+
+    assert [case["id"] for case in unique] == ["tc-1", "tc-2"]
+    assert unique[0]["name"] == "Latest payload"
+
+
+def test_generated_cases_append_without_replacing_existing_cases():
+    """New generation preserves existing IDs and adds unique generated IDs."""
+    existing = [{"id": "saved-1", "name": "Existing"}]
+    generated = [{"id": "generated-1", "name": "Additional"}]
+
+    merged = _merge_generated_test_cases(existing, generated)
+
+    assert [(case["id"], case["name"]) for case in merged] == [
+        ("saved-1", "Existing"),
+        ("generated-1", "Additional"),
+    ]
+
+
+def test_new_flow_step_copies_saved_request_fields_without_editor_state():
+    """Added flow steps start with saved request data and clean editable rows."""
+    step = _new_flow_step({
+        "id": "saved-1", "name": "List items", "method": "GET",
+        "url": "https://api.test/items", "headers": {"X-Client": "web"},
+        "query_params": {"page": "1"}, "body": {"unused": True},
+        "include_body": False,
+    }, 2)
+
+    assert step["step_order"] == 2
+    assert step["endpoint_id"] == "saved-1"
+    assert step["endpoint"]["method"] == "GET"
+    assert step["endpoint"]["headers"][0]["key"] == "X-Client"
+    assert "_ui_id" not in step["endpoint"]["headers"][0]
+    assert step["endpoint"]["query_params"][0]["value"] == "1"
+    assert step["endpoint"]["body"] is None
+    assert step["variable_mappings"] == []
 
 
 def test_request_assertion_selection_excludes_disabled_checks_from_run_all():

@@ -163,6 +163,63 @@ def test_generation_order_api_validates_project_owned_unique_ids(database, monke
     assert missing_project_error.value.status_code == 404
 
 
+def test_named_test_runs_upsert_unique_names_and_validate_project_cases(database):
+    """Named runs preserve ordered IDs, update by ID, and stay project-scoped."""
+    project_id = database.create_project("Named runs") ["id"]
+    other_project_id = database.create_project("Other named runs") ["id"]
+    database.save_test_cases(project_id, [
+        {"id": "run-case-a", "name": "A"},
+        {"id": "run-case-b", "name": "B"},
+    ])
+    database.save_test_cases(other_project_id, [{"id": "foreign-case", "name": "Foreign"}])
+
+    created = database.save_test_run(project_id, "Smoke", ["run-case-b", "run-case-a"])
+    updated = database.save_test_run(
+        project_id, "Smoke updated", ["run-case-a"], created["id"],
+    )
+
+    assert updated["id"] == created["id"]
+    assert updated["case_ids"] == ["run-case-a"]
+    assert database.get_project(project_id)["test_runs"][0]["name"] == "Smoke updated"
+    cleared = database.save_test_run(project_id, "Smoke updated", [], created["id"])
+    assert cleared["case_ids"] == []
+    with pytest.raises(FileExistsError):
+        database.save_test_run(project_id, "SMOKE UPDATED", ["run-case-b"])
+    with pytest.raises(ValueError, match="belong to the selected project"):
+        database.save_test_run(project_id, "Foreign", ["foreign-case"])
+    assert database.list_test_runs(other_project_id) == []
+    assert database.delete_test_run(project_id, created["id"])
+    assert database.list_test_runs(project_id) == []
+
+
+def test_named_test_run_routes_return_project_scoped_crud(database, monkeypatch):
+    """Run routes create, update, list, reject duplicate names, and delete."""
+    monkeypatch.setattr(main, "database", database)
+    project_id = database.create_project("Named run routes") ["id"]
+    database.save_test_cases(project_id, [{"id": "route-run-case", "name": "Case"}])
+
+    created = main.create_project_test_run(project_id, {
+        "name": "Quick check", "case_ids": ["route-run-case"],
+    })
+    updated = main.update_project_test_run(project_id, created["id"], {
+        "name": "Quick check v2", "case_ids": ["route-run-case"],
+    })
+
+    assert main.list_project_test_runs(project_id)[0]["id"] == created["id"]
+    assert updated["name"] == "Quick check v2"
+    with pytest.raises(HTTPException) as duplicate_error:
+        main.create_project_test_run(project_id, {
+            "name": "quick CHECK V2", "case_ids": ["route-run-case"],
+        })
+    assert duplicate_error.value.status_code == 409
+    with pytest.raises(HTTPException) as invalid_case_error:
+        main.create_project_test_run(project_id, {
+            "name": "Invalid", "case_ids": ["missing-case"],
+        })
+    assert invalid_case_error.value.status_code == 422
+    assert main.delete_project_test_run(project_id, created["id"]) == {"message": "Test run deleted"}
+
+
 def test_generated_cases_are_persisted_to_selected_project(database, monkeypatch):
     """The existing generation API stores results and avoids generated ID collisions."""
     project = database.create_project("Generated")
@@ -250,3 +307,99 @@ def test_project_and_execution_routes_read_and_write_postgres(database, monkeypa
     assert main.get_test_cases(project_id) == []
     assert database.get_project(project_id)["endpoints"] == []
     assert main.list_projects()[0]["name"] == "Default Project"
+
+
+def test_editing_saved_flow_upserts_steps_and_clears_old_execution(database, monkeypatch):
+    """Flow edits update the same case row and discard results for old request data."""
+    monkeypatch.setattr(main, "database", database)
+    project_id = database.create_project("Editable flow") ["id"]
+    original = {
+        "id": "editable-flow", "is_flow": True, "name": "Before",
+        "steps": [{
+            "step_order": 1,
+            "endpoint": {"method": "GET", "url": "https://example.test/old"},
+            "variable_mappings": [],
+        }],
+    }
+    database.save_test_cases(project_id, [original])
+    database.append_execution(project_id, "editable-flow", {"status": "passed"})
+    updated = {
+        **original,
+        "name": "After",
+        "steps": [
+            original["steps"][0],
+            {
+                "step_order": 2,
+                "endpoint_id": "saved-request",
+                "endpoint": {"method": "POST", "url": "https://example.test/new"},
+                "variable_mappings": [{
+                    "from": "1:$.token", "to": "headers.Authorization",
+                    "transform": "Bearer {value}",
+                }],
+            },
+        ],
+    }
+
+    response = main.update_test_case(project_id, "editable-flow", updated)
+    project = database.get_project(project_id)
+
+    assert response["id"] == "editable-flow"
+    assert len(project["test_cases"]) == 1
+    assert len(project["test_cases"][0]["steps"]) == 2
+    assert project["test_cases"][0]["steps"][1]["variable_mappings"][0]["to"] == "headers.Authorization"
+    assert project["executions"] == []
+
+
+def test_execution_uses_unsaved_test_case_without_persisting_it(database, monkeypatch):
+    """The Run action can try edits before Save without changing the stored case."""
+    monkeypatch.setattr(main, "database", database)
+    project_id = database.create_project("Unsaved execution") ["id"]
+    database.save_test_cases(project_id, [{
+        "id": "unsaved-edit", "request": {"method": "GET", "url": "https://example.test/old"},
+    }])
+    captured = {}
+
+    def fake_execute(test_case, assertions=None):
+        captured.update(test_case)
+        return {"test_case_id": test_case["id"], "status": "passed"}
+
+    monkeypatch.setattr(main, "execute_test_case", fake_execute)
+    main.execute_test_case_endpoint({
+        "test_case_id": "unsaved-edit",
+        "project_id": project_id,
+        "test_case": {
+            "id": "unsaved-edit",
+            "request": {"method": "POST", "url": "https://example.test/edited", "query_params": {"q": "yes"}},
+        },
+    })
+
+    project = database.get_project(project_id)
+    assert captured["request"]["method"] == "POST"
+    assert project["test_cases"][0]["request"]["url"] == "https://example.test/old"
+    assert project["executions"] == []
+
+
+def test_test_case_update_rejects_invalid_mapping_target(database, monkeypatch):
+    """Unsupported mapping destinations return an actionable API validation error."""
+    monkeypatch.setattr(main, "database", database)
+    project_id = database.create_project("Invalid mapping") ["id"]
+    testcase = {
+        "id": "invalid-map", "is_flow": True,
+        "steps": [
+            {
+                "step_order": 1,
+                "endpoint": {"method": "POST", "url": "https://example.test/login"},
+                "variable_mappings": [],
+            },
+            {
+                "step_order": 2,
+                "endpoint": {"method": "GET", "url": "https://example.test/profile"},
+                "variable_mappings": [{"from": "$.token", "to": "unknown.target"}],
+            },
+        ],
+    }
+    database.save_test_cases(project_id, [testcase])
+
+    with pytest.raises(HTTPException) as error:
+        main.update_test_case(project_id, "invalid-map", testcase)
+    assert "unsupported destination" in error.value.detail
