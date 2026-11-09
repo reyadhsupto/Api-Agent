@@ -28,6 +28,7 @@ Mode: Act
 - Test Cases workspace: guided Single/Flow generation, result counts and filters, per-case and batch execution with progress, compact status cards, and separated assertion/request/response views
 - Backend features: assertions via execute endpoint, JSONPath checker, 5-min timeout, PostgreSQL persistence
 - Docker Compose services for PostgreSQL, backend, and frontend; Make targets for local and Docker runs
+- Docker quick start uses `make docker-up` with existing images; `make docker-up-build` rebuilds images, and Docker BuildKit caches pip downloads between dependency rebuilds
 - Documentation updated (README, technical docs, agent context)
 - Home header and request library use shared branded styling, compact collection/request rows, and contextual empty states
 - Sidebar remains collapsed by default and groups project selection, actions, counts, and saved-test-case fetch

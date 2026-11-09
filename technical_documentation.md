@@ -176,6 +176,8 @@ Projects, collections, saved requests, test cases, named test runs, execution hi
 
 Set `DATABASE_URL` in `.env` for local app processes. Docker Compose connects the backend to the `postgres` service and persists data in the named `api_agent_pgdata` volume. A default project is created automatically and receives standalone generated tests. The selected project is persisted and restored after restart. Collection/request changes and assertion edits are saved explicitly; generated cases and execution results are saved automatically. Existing SQLite files are not migrated automatically.
 
+For the Docker stack, `make docker-up-build` builds images and starts all services; use `make docker-up` on later starts to skip builds and reuse existing images. Dependency installation is in a separate image layer, after requirements are copied and before application source, so source-only edits do not reinstall packages. BuildKit caches pip downloads for dependency rebuilds.
+
 ## 7. Flow Test Cases
 Generate test cases for a sequence of endpoints. LLM creates flow test cases covering:
 - Full flow (all steps succeed)

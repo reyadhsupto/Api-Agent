@@ -80,11 +80,11 @@ Open [http://localhost:8501](http://localhost:8501). FastAPI's interactive API d
 ### Run the full stack in Docker
 
 ```bash
-make docker-up
+make docker-up-build
 make docker-logs
 ```
 
-Open [http://localhost:8501](http://localhost:8501). Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume. `docker compose down -v` removes the volume and its data.
+Use `make docker-up` for subsequent starts with the built images; it skips image builds. Run `make docker-up-build` after changing application code or dependencies. Docker caches pip downloads across dependency rebuilds, and application source is copied after dependency installation so source-only edits reuse the installed dependency layers. Open [http://localhost:8501](http://localhost:8501). Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume. `docker compose down -v` removes the volume and its data.
 
 If a host port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONTEND_PORT` in `.env`. For local app processes, keep the port in `DATABASE_URL` aligned with `POSTGRES_PORT`.
 
@@ -185,7 +185,8 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 | `make run-local-backend` | Run FastAPI locally on port 8000 |
 | `make run-local-frontend` | Run Streamlit locally on port 8501 |
 | `make docker-db-up` | Start PostgreSQL for local app processes |
-| `make docker-up` | Build and start the full Compose stack |
+| `make docker-up` | Start the full Compose stack without rebuilding images |
+| `make docker-up-build` | Build images and start the full Compose stack |
 | `make docker-down` | Stop services while preserving PostgreSQL data |
 | `make docker-logs` | Follow Compose logs |
 | `make test` | Run the pytest suite; start PostgreSQL first with `make docker-db-up` |
