@@ -47,7 +47,7 @@ Mode: Act
 - Generated single tests and flow steps expose editable method, URL, params, headers, and body fields; flows can add saved-request steps and reorder or remove steps
 - Flow variable mappings are editable repeated source/destination/transform rows and execute into headers, query params, path placeholders, or body fields; query mappings are passed as request params
 - The first flow step has no previous response, so its mappings are cleared and the editor hides mapping controls there; empty mapping placeholders on later steps are ignored by API validation
-- Test-case edits stage in session until per-case Save changes upserts by stable ID; Run uses the current editor payload without saving, and changed request/step data clears previous stored execution results
+- Test-case edits stage in session until per-case Save changes upserts by stable ID; execution results persist when the executed HTTP request inputs match the saved case despite frontend assertion normalization, while unsaved request or flow mapping changes remain session-only; saving request/step changes clears stale execution results
 - Contract import previews every endpoint from OpenAPI 3.x, Swagger 2.0, Postman Collection 2.1, and LLM-assisted prose docs; confirmed requests are saved to a selected project collection and remain generation-ineligible by default
 - Contract endpoint review supports editing method, headers, query parameters, and payload; GET and DELETE imports omit payloads and body-field dependency targets
 - Public documentation URL imports are anonymous, restricted to public HTTP(S) hosts, and limited to 5 MB; relative or unresolved endpoint bases are supplied in review

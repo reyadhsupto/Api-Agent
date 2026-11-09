@@ -3452,10 +3452,6 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
     expanded_ids = [item for item in expanded_ids if item in collection_ids]
     st.session_state["workspace_expanded_collections"] = expanded_ids
 
-    # Ensure request selection state exists
-    if "collection_request_selections" not in st.session_state:
-        st.session_state["collection_request_selections"] = {}
-
     with st.container(key="collection-browser-header"):
         project_name = html.escape(str(project.get("name") or "Workspace"), quote=True)
         st.markdown(
@@ -3678,20 +3674,15 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
 
                     # Individual request checkbox
                     with col_check:
-                        is_selected = st.session_state.get("collection_request_selections", {}).get(request_id, False)
+                        is_selected = eligible
                         new_selected = st.checkbox(
                             f"Include {display_name} in generation",
-                            value=is_selected,
-                            key=f"req_check_{request_id}",
+                            key=eligibility_key,
                             label_visibility="collapsed",
                         )
                         if new_selected != is_selected:
-                            sel = set(st.session_state.get("collection_request_selections", {}))
-                            if new_selected:
-                                sel.add(request_id)
-                            else:
-                                sel.discard(request_id)
-                            st.session_state["collection_request_selections"] = sel
+                            _set_generation_eligibility(project_id, [saved], new_selected)
+                            st.session_state["generation_eligibility_revision"] = revision + 1
                             st.rerun()
 
                     with col_method:

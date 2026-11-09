@@ -1330,19 +1330,15 @@ def execute_test_case_endpoint(request: dict) -> dict:
     if not found:
         raise HTTPException(status_code=404, detail="Test case not found")
     owning_project_id, test_case = found
-    persist_execution = True
     supplied_case = request.get("test_case")
     if supplied_case is not None:
         if not isinstance(supplied_case, dict) or supplied_case.get("id") != test_case_id:
             raise HTTPException(status_code=422, detail="Execution test case must match the saved test-case ID.")
         test_case = copy.deepcopy(supplied_case)
         _validate_editable_test_case(test_case)
-        saved_case_for_compare = copy.deepcopy(found[1])
-        edited_case_for_compare = copy.deepcopy(test_case)
-        for case in (saved_case_for_compare, edited_case_for_compare):
-            for step in case.get("steps", []) if case.get("is_flow") else []:
-                step.pop("step_id", None)
-        persist_execution = saved_case_for_compare == edited_case_for_compare
+        persist_execution = _execution_inputs_match(found[1], test_case)
+    else:
+        persist_execution = True
 
     # Detect flow test cases and execute sequentially with variable substitution
     if test_case.get("is_flow"):
@@ -1352,6 +1348,72 @@ def execute_test_case_endpoint(request: dict) -> dict:
     if persist_execution:
         database.append_execution(owning_project_id, test_case_id, result)
     return result
+
+
+def _execution_inputs_match(saved_case: dict, executed_case: dict) -> bool:
+    """Check whether executed request inputs match the saved case inputs.
+
+    The frontend normalizes assertion defaults and flow editor metadata in memory.
+    These presentation changes should not prevent recording a result for an
+    otherwise unchanged saved request. Unsaved endpoint or flow mapping edits
+    still remain session-only and do not create misleading saved-case history.
+    """
+    def request_inputs(request_data: dict) -> dict:
+        """Normalize request editor rows to the values actually sent over HTTP."""
+        def enabled_values(values) -> dict:
+            if isinstance(values, dict):
+                return dict(values)
+            if isinstance(values, list):
+                return {
+                    str(row.get("key")): row.get("value", "")
+                    for row in values
+                    if isinstance(row, dict) and row.get("key") and row.get("enabled", True)
+                }
+            return {}
+
+        return {
+            "method": str(request_data.get("method", "GET")).upper(),
+            "url": request_data.get("url", ""),
+            "headers": enabled_values(request_data.get("headers", {})),
+            "query_params": enabled_values(request_data.get("query_params", {})),
+            "body": request_data.get("body"),
+        }
+
+    is_flow = bool(saved_case.get("is_flow") or executed_case.get("is_flow"))
+    if not is_flow:
+        return request_inputs(saved_case.get("request") or {}) == request_inputs(
+            executed_case.get("request") or {}
+        )
+
+    def flow_inputs(test_case: dict) -> list[dict]:
+        inputs = []
+        ordered_steps = sorted(
+            test_case.get("steps", []),
+            key=lambda step: step.get("step_order", 0) if isinstance(step, dict) else 0,
+        )
+        for index, step in enumerate(ordered_steps, start=1):
+            if not isinstance(step, dict):
+                return []
+            mappings = step.get("variable_mappings", [])
+            normalized_mappings = [
+                {
+                    "from": mapping.get("from", ""),
+                    "to": mapping.get("to", ""),
+                    "transform": mapping.get("transform") or None,
+                }
+                for mapping in mappings
+                if isinstance(mapping, dict)
+                and (mapping.get("from") or mapping.get("to"))
+            ] if isinstance(mappings, list) else []
+            inputs.append({
+                "request": request_inputs(step.get("endpoint") or {}),
+                "variable_mappings": [] if index == 1 else normalized_mappings,
+            })
+        return inputs
+
+    saved_inputs = flow_inputs(saved_case)
+    executed_inputs = flow_inputs(executed_case)
+    return bool(saved_inputs) and saved_inputs == executed_inputs
 
 
 @app.get("/api/v1/memory/state")
