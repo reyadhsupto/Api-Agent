@@ -112,6 +112,14 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_executions_project
                     ON executions(project_id, created_at);
+                CREATE TABLE IF NOT EXISTS generation_activity (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_generation_activity_project_time
+                    ON generation_activity(project_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS app_state (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -950,3 +958,31 @@ class Database:
                 (str(uuid.uuid4()), project_id, test_case_id, _now(), self._encode(result)),
             )
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
+
+    def record_generation_activity(self, project_id: str, activity: dict) -> dict | None:
+        """Append one generation action and return its persisted activity record."""
+        activity_id = str(uuid.uuid4())
+        created_at = _now()
+        payload = {**activity, "id": activity_id, "project_id": project_id, "created_at": created_at}
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            _execute(
+                connection,
+                "INSERT INTO generation_activity(id,project_id,created_at,payload_json) VALUES(?,?,?,?)",
+                (activity_id, project_id, created_at, self._encode(payload)),
+            )
+        return payload
+
+    def list_generation_activity(self, project_id: str, limit: int = 100) -> list[dict] | None:
+        """Return the newest generation records for one project."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(
+                connection,
+                "SELECT payload_json FROM generation_activity WHERE project_id=? "
+                "ORDER BY created_at DESC,id DESC LIMIT ?",
+                (project_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [self._decode(row["payload_json"]) for row in rows]

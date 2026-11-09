@@ -12,7 +12,8 @@ Api-Agent is a local workspace for building API requests, generating tests with 
 - **Edit and execute tests:** Update generated requests, flow steps, mappings, and assertions. Run one case or a selected batch, inspect request and response details, and save changes to the project.
 - **Create manual tests:** Start a single test from any saved request or assemble a flow from an ordered set of saved requests, then edit the case in the Test Cases workspace.
 - **Save reusable test runs:** Name and save a selection of cases, reload it later, adjust membership, update it, or execute it using the latest saved case versions.
-- **Keep project data:** Projects, collections, saved requests, test cases, named runs, and execution history are stored in PostgreSQL. Temporary playground tabs and unsaved edits remain in the Streamlit session.
+- **Review generation activity:** Use the dedicated Generation Activity tab to revisit requirements, included endpoints, the prompt, and raw LLM response for recent project generation actions.
+- **Keep project data:** Projects, collections, saved requests, test cases, named runs, execution history, and generation activity are stored in PostgreSQL. Temporary playground tabs and unsaved edits remain in the Streamlit session.
 
 The frontend is built with Streamlit, the API with FastAPI, and request execution uses Python `requests`. LLM providers can be configured from Groq, OpenRouter, Cohere, and Hugging Face.
 
@@ -117,10 +118,12 @@ Anonymous URL imports are limited to public HTTP(S) hosts and documents up to 5 
 
 Use the request or collection checkboxes in API Workspace to set persistent generation eligibility. In Test Cases, use the integrated draggable request list to choose requests for the current run and set their order. All eligible requests can be reordered; checked requests are used in the current generation run. The project order persists across reloads.
 
-- **Single** generates independent cases for each selected endpoint. Cases are grouped by endpoint; each generated scenario retains its own title.
+- **Single** sends all selected endpoints in one generation request and creates independent cases for each endpoint. Cases are grouped by endpoint; each generated scenario retains its own title.
 - **Flow** asks the LLM to create sequential scenarios using the selected order. Flows execute one step at a time and can pass values from earlier responses to later requests.
 
-Business requirements are optional. They can describe expected behavior, edge cases, authentication rules, or important assertions. Generated tests and each flow step include editable assertion groups for status, body text, JSONPath field value, and response schema.
+Business requirements are optional. They can describe expected behavior, edge cases, authentication rules, or important assertions. The submitted requirements are saved on each generated case and can be reviewed, updated, or extended in its **Generation requirements** section; save the case to persist edits. When saved cases are selected as examples for a later generation, their requirement text is included as context. Generated tests and each flow step include editable assertion groups for status, body text, JSONPath field value, and response schema.
+
+Open the **Generation Activity** tab to browse a table of execution time, generation type, state, and project. Choose **View details** on a row to open its requirements, included endpoints, exact prompt, raw LLM response, outcome, and generated case IDs in a modal. Records are retained in PostgreSQL for the lifetime of the project.
 
 To extend an existing set, choose **Use existing cases as examples** and select cases whose scenario style or coverage you want repeated. The picker is independent of **Run selected**. Keep the current Single or Flow mode, choose the target endpoints, and add business requirements; the generator uses the selected cases as context and creates additional cases for those endpoints. Existing cases stay unchanged, and new cases are added to the workspace. Example IDs are resolved from the active project before being sent to the configured LLM provider.
 
@@ -156,7 +159,7 @@ Variable mappings are scoped to one flow scenario. They pass a value from a prev
 
 - New requests and imported requests are excluded from test generation by default.
 - Query and header row **Send** toggles control outgoing request fields; these are separate from generation eligibility.
-- Projects, collections, saved requests, test cases, and generation order persist in PostgreSQL. Execution history is retained for runs matching the saved case configuration.
+- Projects, collections, saved requests, test cases, generation activity, and generation order persist in PostgreSQL. Execution history is retained for runs matching the saved case configuration.
 - Playground drafts and their unsaved responses remain in Streamlit session state.
 - Saved request assertions are stored with the request. Generated case and flow-step assertions are stored with their test cases.
 - Existing endpoint records are migrated at startup into each project's **Imported Endpoints** collection. Existing SQLite data is not automatically migrated.
@@ -172,7 +175,7 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 | Projects | `GET, POST /api/v1/projects`; `GET /api/v1/projects/current`; `GET, PUT, DELETE /api/v1/projects/{project_id}`; `PUT /api/v1/projects/{project_id}/generation-order` |
 | Collections and requests | `GET, POST /api/v1/projects/{project_id}/collections`; `PUT, DELETE /api/v1/projects/{project_id}/collections/{collection_id}`; `POST /api/v1/projects/{project_id}/collections/{collection_id}/requests`; `PUT, DELETE /api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}`; `GET /api/v1/projects/{project_id}/collections/{collection_id}/export` |
 | Contract import and discovery | `POST /api/v1/contracts/preview`; `POST /api/v1/projects/{project_id}/contracts/import`; `POST /api/v1/projects/{project_id}/contracts/flow-candidates`; `POST /api/v1/projects/{project_id}/contracts/generate-flows` |
-| Test cases and runs | `POST /api/v1/test-cases/generate`; `POST /api/v1/test-cases/generate-flow`; `POST /api/v1/projects/{project_id}/test-cases/generate-flow`; `POST /api/v1/projects/{project_id}/test-cases/save`; `GET, DELETE /api/v1/projects/{project_id}/test-cases`; `PUT, DELETE /api/v1/projects/{project_id}/test-cases/{test_case_id}`; `POST /api/v1/test-cases/execute`; `GET, POST /api/v1/projects/{project_id}/test-runs`; `PUT, DELETE /api/v1/projects/{project_id}/test-runs/{run_id}` |
+| Test cases and runs | `POST /api/v1/test-cases/generate`; `POST /api/v1/test-cases/generate-flow`; `POST /api/v1/projects/{project_id}/test-cases/generate-flow`; `POST /api/v1/projects/{project_id}/contracts/generate-flows`; `GET /api/v1/projects/{project_id}/generation-activity`; `POST /api/v1/projects/{project_id}/test-cases/save`; `GET, DELETE /api/v1/projects/{project_id}/test-cases`; `PUT, DELETE /api/v1/projects/{project_id}/test-cases/{test_case_id}`; `POST /api/v1/test-cases/execute`; `GET, POST /api/v1/projects/{project_id}/test-runs`; `PUT, DELETE /api/v1/projects/{project_id}/test-runs/{run_id}` |
 | Compatibility and app state | Legacy project endpoint routes under `/api/v1/projects/{project_id}/endpoints`; `GET /api/v1/memory/state` |
 
 ## Development

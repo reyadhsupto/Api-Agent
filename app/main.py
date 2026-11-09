@@ -54,6 +54,32 @@ def _generate_or_raise(generator, **kwargs) -> list:
         ) from exc
 
 
+def _record_generation_activity(
+    project_id: str,
+    mode: str,
+    endpoints: list[dict],
+    business_requirements: str | None,
+    trace: dict,
+    status: str,
+    test_cases: list[dict] | None = None,
+    error: str | None = None,
+) -> None:
+    """Persist the input and outcome of a generation action for later review."""
+    database.record_generation_activity(project_id, {
+        "mode": mode,
+        "business_requirements": business_requirements or "",
+        "endpoints": [{
+            "id": item.get("id"), "name": item.get("name", ""),
+            "method": item.get("method", "GET"), "url": item.get("url", ""),
+        } for item in endpoints],
+        "prompt": trace.get("prompt", ""),
+        "llm_response": trace.get("llm_response", ""),
+        "status": status,
+        "error": error or "",
+        "generated_case_ids": [str(item.get("id")) for item in (test_cases or []) if item.get("id")],
+    })
+
+
 def _load_generation_examples(
     project_id: str, example_ids: list[str], project: dict | None = None,
 ) -> list[dict]:
@@ -235,6 +261,15 @@ def _ensure_response_schema_defaults(test_cases: list[dict]) -> None:
             )
 
 
+def _attach_generation_requirements(
+    test_cases: list[dict], business_requirements: str | None,
+) -> None:
+    """Store the generation action's requirement text on every resulting case."""
+    requirements = business_requirements or ""
+    for test_case in test_cases:
+        test_case["business_requirements"] = requirements
+
+
 app = FastAPI(title="Api-Agent", version="0.1.0")
 
 app.add_middleware(
@@ -255,6 +290,15 @@ def health() -> dict:
         dict: {"status": "ok"}
     """
     return {"status": "ok"}
+
+
+@app.get("/api/v1/projects/{project_id}/generation-activity")
+def get_generation_activity(project_id: str, limit: int = 100) -> list[dict]:
+    """List recent generation actions for a project."""
+    records = database.list_generation_activity(project_id, limit)
+    if records is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return records
 
 
 # --- Project Management ---
@@ -746,16 +790,23 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
     if not selected_ids or any(candidate_id not in candidates_by_id for candidate_id in selected_ids):
         raise HTTPException(status_code=422, detail="Choose one or more valid dependency flow candidates.")
     candidates = [candidates_by_id[item] for item in selected_ids]
+    trace = {}
     try:
         test_cases = generate_discovered_flow_test_cases(
             endpoints=endpoints,
             candidates=candidates,
             business_requirements=request.business_requirements,
+            trace=trace,
         )
     except (ValueError, RuntimeError) as exc:
+        _record_generation_activity(
+            project_id, "Discovered Flow", endpoints, request.business_requirements,
+            trace, "failed", error=str(exc),
+        )
         raise HTTPException(status_code=502, detail=f"LLM returned invalid flow data: {exc}") from exc
     if not isinstance(test_cases, list) or not test_cases:
         raise HTTPException(status_code=502, detail="LLM returned no usable flow scenarios.")
+    _attach_generation_requirements(test_cases, request.business_requirements)
     candidates_by_id = {item["id"]: item for item in candidates}
     endpoints_by_id = {item["id"]: _effective_request(item) for item in endpoints}
     for test_case in test_cases:
@@ -794,6 +845,10 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
+    _record_generation_activity(
+        project_id, "Discovered Flow", endpoints, request.business_requirements,
+        trace, "succeeded", test_cases=test_cases,
+    )
     return test_cases
 
 
@@ -969,36 +1024,97 @@ def delete_endpoint(project_id: str, endpoint_id: str) -> dict:
 @app.post("/api/v1/test-cases/generate")
 def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
     """
-    Generate AI-powered test cases from a parsed cURL.
+    Generate test cases for one or more request definitions in one LLM action.
 
     Args:
-        request (TestCaseGenerateRequest): Parsed cURL and optional requirements.
+        request (TestCaseGenerateRequest): One legacy request or a request batch.
 
     Returns:
         list: Generated test cases.
     """
     project_id = request.project_id or database.current_project_id()
-    source_endpoint = None
-    project = None
-    if request.source_endpoint_id or request.example_test_case_ids:
-        project = database.get_project(project_id) if project_id else None
-    if request.source_endpoint_id:
-        source_endpoint = next(
-            (endpoint for endpoint in (project or {}).get("endpoints", [])
-             if endpoint.get("id") == request.source_endpoint_id),
-            None,
-        )
-        if source_endpoint is None:
-            raise HTTPException(status_code=404, detail="Source endpoint not found in project")
-    examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
-
-    test_cases = _generate_or_raise(
-        generate_test_cases,
-        parsed_curl=_effective_request(request.parsed_curl),
-        business_requirements=request.business_requirements,
-        example_test_cases=examples,
+    supplied_endpoints = request.endpoints or (
+        [request.parsed_curl] if request.parsed_curl is not None else []
     )
+    if not supplied_endpoints:
+        raise HTTPException(status_code=400, detail="Provide at least one endpoint to generate tests.")
+    if request.endpoints and len(supplied_endpoints) > 1 and any(not item.get("id") for item in supplied_endpoints):
+        raise HTTPException(status_code=422, detail="Each endpoint in a batch must include its saved endpoint ID.")
+
+    should_load_project = bool(
+        request.project_id or request.source_endpoint_id or request.example_test_case_ids
+        or any(item.get("id") for item in supplied_endpoints)
+    )
+    project = database.get_project(project_id) if project_id and should_load_project else None
+    if request.project_id and project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    saved_endpoints_by_id = {
+        str(item.get("id")): item
+        for item in (project or {}).get("endpoints", []) if item.get("id") is not None
+    }
+    endpoints = []
+    for item in supplied_endpoints:
+        source_id = item.get("id") or request.source_endpoint_id
+        source_endpoint = saved_endpoints_by_id.get(str(source_id)) if source_id else None
+        if source_id and project and source_endpoint is None:
+            raise HTTPException(status_code=404, detail=f"Source endpoint {source_id} not found in project")
+        endpoint = _effective_request(source_endpoint or item)
+        if source_id:
+            endpoint["id"] = str(source_id)
+        endpoints.append(endpoint)
+
+    examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
+    generation_args = {
+        "business_requirements": request.business_requirements,
+        "example_test_cases": examples,
+    }
+    trace = {}
+    generation_args["trace"] = trace
+    if request.endpoints:
+        generation_args["endpoints"] = endpoints
+    else:
+        generation_args["parsed_curl"] = endpoints[0]
+    try:
+        test_cases = _generate_or_raise(generate_test_cases, **generation_args)
+    except HTTPException as exc:
+        _record_generation_activity(
+            project_id, "Single", endpoints, request.business_requirements,
+            trace, "failed", error=str(exc.detail),
+        )
+        raise
+    _attach_generation_requirements(test_cases, request.business_requirements)
+
+    endpoints_by_id = {
+        str(item["id"]): item for item in endpoints if item.get("id") is not None
+    }
+    assigned_endpoint_ids = set()
     for tc in test_cases:
+        source_id = str(tc.get("source_endpoint_id") or "")
+        source_endpoint = endpoints_by_id.get(source_id)
+        if source_endpoint is None and len(endpoints) == 1:
+            source_endpoint = endpoints[0]
+        if source_endpoint is None:
+            request_data = tc.get("request") or {}
+            matches = [
+                item for item in endpoints
+                if str(item.get("method", "GET")).upper() == str(request_data.get("method", "GET")).upper()
+                and item.get("url") == request_data.get("url")
+            ]
+            if len(matches) == 1:
+                source_endpoint = matches[0]
+        if source_endpoint is None:
+            raise HTTPException(
+                status_code=502,
+                detail="LLM cases must identify a selected source_endpoint_id for every endpoint.",
+            )
+        if source_endpoint.get("id") is not None:
+            source_id = str(source_endpoint["id"])
+            tc["source_endpoint_id"] = source_id
+            tc["source_endpoint_name"] = (
+                source_endpoint.get("name") or source_endpoint.get("url") or "Unnamed endpoint"
+            )
+            assigned_endpoint_ids.add(source_id)
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
         if "assertions" not in tc:
@@ -1008,14 +1124,20 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
                 "jsonpath": {"enabled": False, "path": "", "expected_value": ""},
             }
     _ensure_response_schema_defaults(test_cases)
-    if source_endpoint:
-        display_name = source_endpoint.get("name") or source_endpoint.get("url") or "Unnamed endpoint"
-        for tc in test_cases:
-            tc["source_endpoint_id"] = source_endpoint["id"]
-            tc["source_endpoint_name"] = display_name
+    expected_endpoint_ids = set(endpoints_by_id)
+    if len(expected_endpoint_ids) > 1 and assigned_endpoint_ids != expected_endpoint_ids:
+        missing_ids = sorted(expected_endpoint_ids - assigned_endpoint_ids)
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM did not generate cases for every selected endpoint: {', '.join(missing_ids)}",
+        )
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
+    _record_generation_activity(
+        project_id, "Single", endpoints, request.business_requirements,
+        trace, "succeeded", test_cases=test_cases,
+    )
     return test_cases
 
 
@@ -1038,12 +1160,22 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
         raise HTTPException(status_code=400, detail="No endpoints provided")
     examples = _load_generation_examples(project_id, request.example_test_case_ids)
 
-    test_cases = _generate_or_raise(
-        generate_flow_test_cases,
-        endpoints=endpoints,
-        business_requirements=business_requirements,
-        example_test_cases=examples,
-    )
+    trace = {}
+    try:
+        test_cases = _generate_or_raise(
+            generate_flow_test_cases,
+            endpoints=endpoints,
+            business_requirements=business_requirements,
+            example_test_cases=examples,
+            trace=trace,
+        )
+    except HTTPException as exc:
+        _record_generation_activity(
+            project_id, "Flow", endpoints, business_requirements, trace,
+            "failed", error=str(exc.detail),
+        )
+        raise
+    _attach_generation_requirements(test_cases, business_requirements)
     for tc in test_cases:
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
@@ -1058,6 +1190,10 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
+    _record_generation_activity(
+        project_id, "Flow", endpoints, business_requirements, trace,
+        "succeeded", test_cases=test_cases,
+    )
     return test_cases
 
 
@@ -1098,12 +1234,22 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     if not ordered:
         raise HTTPException(status_code=400, detail="No valid endpoints found. Please add and save endpoints to the project first, or select at least one endpoint.")
 
-    test_cases = _generate_or_raise(
-        generate_flow_test_cases,
-        endpoints=ordered,
-        business_requirements=business_requirements,
-        example_test_cases=examples,
-    )
+    trace = {}
+    try:
+        test_cases = _generate_or_raise(
+            generate_flow_test_cases,
+            endpoints=ordered,
+            business_requirements=business_requirements,
+            example_test_cases=examples,
+            trace=trace,
+        )
+    except HTTPException as exc:
+        _record_generation_activity(
+            project_id, "Flow", ordered, business_requirements, trace,
+            "failed", error=str(exc.detail),
+        )
+        raise
+    _attach_generation_requirements(test_cases, business_requirements)
     for tc in test_cases:
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
@@ -1118,6 +1264,10 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
+    _record_generation_activity(
+        project_id, "Flow", ordered, business_requirements, trace,
+        "succeeded", test_cases=test_cases,
+    )
     return test_cases
 
 

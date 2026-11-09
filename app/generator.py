@@ -9,11 +9,20 @@ Returns:
     list[dict]: Test cases with type, name, description, request, expected values.
 """
 
+import ast
 import os
 import re
 import json
 import requests
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+
+_STRICT_JSON_INSTRUCTION = (
+    "Output strict JSON using only JSON values. Never use JavaScript or other executable syntax, "
+    "including .repeat(), string concatenation with +, template literals, comments, undefined, or NaN. "
+    "Represent boundary inputs as ordinary quoted JSON strings or numbers; keep example values concise. "
+    "For example, do not write `\"a\".repeat(255) + \"@example.com\"`; use a short literal such as `\"aaa@example.com\"`."
+)
 
 
 def _output_token_limit() -> int:
@@ -25,23 +34,33 @@ def _output_token_limit() -> int:
 
 
 def generate_test_cases(
-    parsed_curl: dict,
+    parsed_curl: dict | None = None,
     business_requirements: str | None = None,
     example_test_cases: list[dict] | None = None,
+    endpoints: list[dict] | None = None,
+    trace: dict | None = None,
 ) -> list:
     """
     Generate test cases using free-tier LLM providers with fallback.
 
     Args:
-        parsed_curl (dict): Parsed cURL request components.
+        parsed_curl (dict | None): One request, retained for older clients.
         business_requirements (str | None): Optional business logic text.
         example_test_cases (list[dict] | None): Existing cases used as generation examples.
+        endpoints (list[dict] | None): Requests to cover in one generation action.
 
     Returns:
         list: Generated test case dictionaries.
     """
-    prompt = _build_prompt(parsed_curl, business_requirements, example_test_cases)
+    prompt = _build_prompt(
+        endpoints if endpoints is not None else (parsed_curl or {}),
+        business_requirements,
+        example_test_cases,
+    )
     generated_text = _call_llm_with_fallback(prompt)
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": generated_text})
+    print("llm response:", generated_text)
     return _parse_generated_response(generated_text)
 
 
@@ -98,6 +117,8 @@ def _example_case_summaries(test_cases: list[dict] | None) -> list[dict]:
             "description": case.get("description"),
             "assertions": case.get("assertions", {}),
         }
+        if case.get("business_requirements"):
+            summary["business_requirements"] = case["business_requirements"]
         if case.get("is_flow") or isinstance(case.get("steps"), list):
             summary["is_flow"] = True
             summary["steps"] = []
@@ -123,7 +144,7 @@ def _example_case_summaries(test_cases: list[dict] | None) -> list[dict]:
 
 
 def _build_prompt(
-    parsed_curl: dict,
+    parsed_curl: dict | list[dict],
     business_requirements: str | None,
     example_test_cases: list[dict] | None = None,
 ) -> str:
@@ -131,21 +152,27 @@ def _build_prompt(
     Build the LLM prompt for test case generation.
 
     Args:
-        parsed_curl (dict): Parsed cURL request components.
+        parsed_curl (dict | list[dict]): One request or a list of requests.
         business_requirements (str | None): Optional business logic text.
         example_test_cases (list[dict] | None): Existing cases used as examples.
 
     Returns:
         str: The prompt string.
     """
-    req_text = (
-        f"Method: {parsed_curl.get('method')}\n"
-        f"URL: {parsed_curl.get('url')}\n"
-        f"Headers: {parsed_curl.get('headers')}\n"
-        f"Body: {parsed_curl.get('body')}\n"
-    )
-    if business_requirements:
-        req_text += f"\nBusiness Requirements: {business_requirements}\n"
+    endpoint_context = []
+    for endpoint in parsed_curl if isinstance(parsed_curl, list) else [parsed_curl]:
+        summary = {
+            "method": endpoint.get("method", "GET"),
+            "url": endpoint.get("url", ""),
+            "headers": endpoint.get("headers", {}),
+            "query_params": endpoint.get("query_params", {}),
+            "body": endpoint.get("body"),
+        }
+        if endpoint.get("id") is not None:
+            summary["source_endpoint_id"] = str(endpoint["id"])
+        if endpoint.get("name"):
+            summary["name"] = endpoint["name"]
+        endpoint_context.append(summary)
 
     examples = _example_case_summaries(example_test_cases)
     examples_text = (
@@ -156,20 +183,26 @@ def _build_prompt(
     )
 
     return (
-        "You are a Senior software test engineer(SQA). Generate COMPREHENSIVE test cases "
-        "covering positive, negative, edge, and race scenarios for the following API "
-        "request.\n"
-        "Generate AT LEAST 6 test cases covering different scenarios:\n"
+        "You are a senior software test engineer specializing in backend application testing. Generate independent single-request test cases "
+        "for every endpoint in the supplied list. Cover positive, negative, edge, and race scenarios "
+        "for each endpoint.\n"
+        f"{_STRICT_JSON_INSTRUCTION}\n"
+        "Generate at least 6 concise cases per endpoint, and do not omit any endpoint. When an "
+        "endpoint has source_endpoint_id, copy that exact ID into every case for it. Keep the "
+        "request method and URL aligned with the endpoint; vary request data only as needed by the scenario.\n"
         "1. Positive test: valid request, expect success (2xx)\n"
         "2. Negative test: invalid data, expect error (4xx)\n"
         "3. Negative test: missing required fields, expect error (4xx)\n"
         "4. Edge case: boundary values, empty strings, null values\n"
         "5. Edge case: maximum/minimum values, special characters\n"
         "6. Race condition: concurrent requests, consistency checks\n"
-        "7. Any additional scenarios relevant to this API endpoint\n"
-        f"\n{req_text}{examples_text}\n"
+        "7. Any additional scenarios relevant to the endpoint\n"
+        f"\nEndpoints:\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"Business Requirements: {business_requirements or 'None provided'}\n"
+        f"{examples_text}\n"
         "Return ONLY a valid JSON array (no markdown, no explanation) where each item has:\n"
         "- id: unique string like \"tc_1\"\n"
+        "- source_endpoint_id: exact endpoint ID when one is supplied\n"
         "- type: one of \"positive\", \"negative\", \"edge\", \"race\"\n"
         "- name: descriptive test name\n"
         "- description: what this test validates\n"
@@ -187,7 +220,7 @@ def _call_llm_with_fallback(prompt: str) -> str:
         prompt (str): The prompt to send.
 
     Returns:
-        str: Generated text from the first successful provider.
+        str: Generated text from the first provider whose request succeeds.
 
     Raises:
         RuntimeError: If all providers fail, with the first provider's error.
@@ -205,13 +238,16 @@ def _call_llm_with_fallback(prompt: str) -> str:
             continue
         try:
             if name == "groq":
-                return _groq_call(prompt, api_key, url)
+                generated_text = _groq_call(prompt, api_key, url)
             elif name == "openrouter":
-                return _openrouter_call(prompt, api_key, url)
+                generated_text = _openrouter_call(prompt, api_key, url)
             elif name == "cohere":
-                return _cohere_call(prompt, api_key, url)
+                generated_text = _cohere_call(prompt, api_key, url)
             elif name == "huggingface":
-                return _huggingface_call(prompt, api_key, url)
+                generated_text = _huggingface_call(prompt, api_key, url)
+            else:
+                continue
+            return generated_text
         except Exception as exc:
             if first_error is None:
                 first_error = f"{name}: {exc!s}"
@@ -293,13 +329,14 @@ def _openrouter_call(prompt: str, api_key: str, url: str) -> str:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    # print("output token limit:", _output_token_limit())
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": _output_token_limit(),
     }
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response = requests.post(url, headers=headers, json=payload, timeout=600)
     response.raise_for_status()
     print(response.json()["choices"][0]["message"]["content"])
     return response.json()["choices"][0]["message"]["content"]
@@ -348,6 +385,7 @@ def generate_flow_test_cases(
     business_requirements: str | None = None,
     scenario_count: int | None = None,
     example_test_cases: list[dict] | None = None,
+    trace: dict | None = None,
 ) -> list:
     """
     Generate flow test cases for a sequence of endpoints.
@@ -368,9 +406,9 @@ def generate_flow_test_cases(
         endpoints, business_requirements, example_test_cases=example_test_cases,
     )
     generated_text = _call_llm_with_fallback(prompt)
-    test_cases = _parse_generated_response(generated_text, validate=False)
-    _attach_flow_endpoints(test_cases, endpoints)
-    return _validate_generated_cases(test_cases)
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": generated_text})
+    return _validate_flow_response(generated_text, endpoints)
 
 
 def _attach_flow_endpoints(test_cases: list[dict], endpoints: list[dict]) -> None:
@@ -428,6 +466,13 @@ def _attach_flow_endpoints(test_cases: list[dict], endpoints: list[dict]) -> Non
             step.setdefault("description", "")
             step.setdefault("assertions", {})
             step.setdefault("variable_mappings", [])
+
+
+def _validate_flow_response(text: str, endpoints: list[dict]) -> list[dict]:
+    """Parse and validate flow output, attaching canonical endpoint data."""
+    cases = _parse_generated_response(text, validate=False)
+    _attach_flow_endpoints(cases, endpoints)
+    return _validate_generated_cases(cases)
 
 
 def _flow_endpoint_summary(endpoint: dict, fallback_id: int) -> dict:
@@ -516,7 +561,9 @@ def extract_endpoints_from_document(document_text: str) -> list[dict]:
         prompt = (
             "Extract every API endpoint explicitly described in this documentation section. "
             "Do not invent paths or methods. Return only a JSON array; return [] if this section "
-            "contains no endpoint. Each item must contain method, path, name, description, "
+            "contains no endpoint. "
+            f"{_STRICT_JSON_INSTRUCTION} "
+            "Each item must contain method, path, name, description, "
             "source_excerpt, confidence (0 to 1), headers, query_params, and body. Use null for a "
             "body when none is explicitly documented. For query_params return an object of parameter "
             "names to documented example/default values. Preserve path placeholders as {name}. "
@@ -555,6 +602,7 @@ def generate_discovered_flow_test_cases(
     endpoints: list[dict],
     candidates: list[dict],
     business_requirements: str | None = None,
+    trace: dict | None = None,
 ) -> list[dict]:
     """Generate named flow scenarios for selected dependency paths.
 
@@ -586,6 +634,7 @@ def generate_discovered_flow_test_cases(
     prompt = (
         "Create executable API flow test scenarios for the selected dependency paths. "
         "Use only the endpoint IDs and order supplied in each candidate. Return JSON only as an array. "
+        f"{_STRICT_JSON_INSTRUCTION} "
         "Each result must include id, type (positive, negative, edge, or race), name, description, "
         "is_flow true, candidate_id, and steps. Each step must include step_order (1-based), "
         "endpoint_id copied exactly, description, assertions, and variable_mappings. Include one or "
@@ -604,7 +653,10 @@ def generate_discovered_flow_test_cases(
         "\"assertions\":{\"status\":[{\"enabled\":true,\"expected_status\":200}]},"
         "\"variable_mappings\":[{\"from\":\"$.cart_id\",\"to\":\"request.path.cart_id\"}]}"
     )
-    return _parse_generated_response(_call_llm_with_fallback(prompt), validate=False)
+    generated_text = _call_llm_with_fallback(prompt)
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": generated_text})
+    return _parse_generated_response(generated_text, validate=False)
 
 
 def _build_flow_prompt(
@@ -638,9 +690,10 @@ def _build_flow_prompt(
         if examples else ""
     )
     return (
-        "You are an API test engineer. Propose a small set of distinct, useful executable flow "
+        "You are a Senior SQA Engineer specializing in Backend application testing. Propose a set of distinct, useful executable flow "
         "scenarios for the ordered requests. Prefer complete valid JSON over many scenarios; cover "
-        "positive, negative, and edge behavior when supported by the request context.\n"
+        "positive, negative, race and edge behavior when supported by the request context.\n"
+        f"{_STRICT_JSON_INSTRUCTION}\n"
         f"\nOrdered endpoint summaries:\n{json.dumps(endpoint_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
         f"{requirements_text}{examples_text}"
         "Return ONLY a valid compact JSON array. Each item has id, type (positive/negative/edge/race), "
@@ -671,6 +724,9 @@ def _parse_generated_response(text: str, validate: bool = True) -> list:
         list: Parsed dictionaries, optionally validated as test cases.
     """
     
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("LLM response was empty or did not contain text.")
+
     # Remove markdown code fences if present
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -682,15 +738,31 @@ def _parse_generated_response(text: str, validate: bool = True) -> list:
     if match:
         text = match.group(0)
 
-    # Preprocess: replace JavaScript .repeat(N) patterns with actual strings
-    # e.g. "a".repeat(300) -> "aaa...a" (300 a's)
-    def _replace_repeat(match):
-        char = match.group(1).strip('"').strip("'")
-        count = int(match.group(2))
-        return '"' + char * min(count, 10000) + '"'
+    # Normalize the limited JS string.repeat(N) expression sometimes emitted
+    # for boundary examples, optionally followed by a literal string concat.
+    string_literal = r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
+    repeat_expression = re.compile(
+        rf'(?P<base>{string_literal})\.repeat\((?P<count>\d+)\)'
+        rf'(?:\s*\+\s*(?P<suffix>{string_literal}))?'
+    )
 
-    text = re.sub(r'"([^"]+)"\.repeat\((\d+)\)', _replace_repeat, text)
-    text = re.sub(r"'([^']+)'\.repeat\((\d+)\)", _replace_repeat, text)
+    def _decode_string_literal(literal):
+        """Decode one quoted JSON or Python-style string literal safely."""
+        return json.loads(literal) if literal.startswith('"') else ast.literal_eval(literal)
+
+    def _replace_repeat(match):
+        try:
+            base = _decode_string_literal(match.group("base"))
+            suffix_literal = match.group("suffix")
+            suffix = _decode_string_literal(suffix_literal) if suffix_literal else ""
+        except (ValueError, SyntaxError) as exc:
+            raise ValueError("LLM response contains an unsupported JavaScript string expression.") from exc
+        if not isinstance(base, str) or not isinstance(suffix, str):
+            raise ValueError("LLM response contains a non-string .repeat() expression.")
+        repeated = base * min(int(match.group("count")), 10000)
+        return json.dumps(repeated + suffix, ensure_ascii=False)
+
+    text = repeat_expression.sub(_replace_repeat, text)
 
     # Try direct JSON parse
     try:

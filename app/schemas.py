@@ -17,7 +17,8 @@ class CurlParseRequest(BaseModel):
 
 
 class TestCaseGenerateRequest(BaseModel):
-    parsed_curl: dict
+    parsed_curl: Optional[dict] = None
+    endpoints: list[dict] = Field(default_factory=list)
     business_requirements: Optional[str] = None
     project_id: Optional[str] = None
     source_endpoint_id: Optional[str] = None
