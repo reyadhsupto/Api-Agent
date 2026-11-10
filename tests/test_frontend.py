@@ -7,6 +7,7 @@ import types
 if "streamlit" not in sys.modules:
     streamlit_stub = types.ModuleType("streamlit")
     streamlit_stub.cache_data = lambda **kwargs: (lambda function: function)
+    streamlit_stub.dialog = lambda *args, **kwargs: (lambda function: function)
     streamlit_stub.components = types.SimpleNamespace(
         v2=types.SimpleNamespace(component=lambda *args, **kwargs: lambda **call_kwargs: None)
     )
@@ -29,6 +30,7 @@ from frontend.app import (
     _resolve_curl_url_sync,
     _save_request_draft,
     _selected_request_assertions,
+    _normalise_generation_activity_records,
 )
 
 
@@ -69,6 +71,16 @@ def test_flow_step_normalization_keeps_order_and_edits_multiple_assertions():
     assert steps[0]["assertions"]["response_schema"] == [
         {"enabled": False, "schema": "{}"}
     ]
+
+
+def test_generation_activity_records_accept_paginated_and_legacy_responses():
+    """Activity table safely reads wrapped records and ignores malformed entries."""
+    records = [{"id": "activity-1", "created_at": "2026-11-10T10:00:00"}]
+
+    assert _normalise_generation_activity_records({"activities": records, "total": 1}) == records
+    assert _normalise_generation_activity_records(records) == records
+    assert _normalise_generation_activity_records({"activities": ["activity-1", *records]}) == records
+    assert _normalise_generation_activity_records("unexpected") == []
 
 
 def test_single_case_assertions_normalize_legacy_dicts():

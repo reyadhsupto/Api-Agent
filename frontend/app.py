@@ -444,6 +444,26 @@ def _raw_get(path: str) -> dict | list:
     return response.json()
 
 
+def _fetch_test_case_csv(project_id: str, selected_case_ids: list[str]) -> bytes:
+    """Fetch selected saved cases as CSV when the download is requested."""
+    response = requests.get(
+        f"{BACKEND_URL}/api/v1/projects/{project_id}/test-cases/export",
+        params={"limit": 10000, "selected_case_ids": selected_case_ids},
+        timeout=300,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def _normalise_generation_activity_records(payload) -> list[dict]:
+    """Normalize legacy list and paginated activity API responses to records."""
+    if isinstance(payload, dict):
+        payload = payload.get("activities", payload.get("records", []))
+    if not isinstance(payload, list):
+        return []
+    return [record for record in payload if isinstance(record, dict)]
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def _fetch_projects_cached() -> list:
     """Cache project summaries for a short interval.
@@ -2567,6 +2587,11 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
             st.session_state.get(f"tc_selected_{case.get('id')}", True)
             for case in test_cases
         )
+        selected_case_ids = [
+            str(case["id"])
+            for case in test_cases
+            if case.get("id") and st.session_state.get(f"tc_selected_{case['id']}", True)
+        ]
         with selection_col:
             st.button(
                 "Deselect all" if all_selected else "Select all",
@@ -2574,11 +2599,53 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
                 on_click=_select_all_test_cases, args=(test_cases, not all_selected),
             )
         with expand_col:
-            st.button("Expand all", key="tc_expand_all", icon=":material/unfold_more:", width="stretch",
-                      on_click=_set_all_test_cases_open, args=(test_cases, True))
+            # Improved state management for expand/collapse all
+            tc_ids_with_state = [tc for tc in test_cases if tc.get('id')]
+            if tc_ids_with_state:
+                open_count = sum(1 for tc in tc_ids_with_state
+                                 if st.session_state.get(f"tc_open_{tc['id']}", False))
+                total_count = len(tc_ids_with_state)
+                all_expanded = open_count == total_count
+                at_least_one_expanded = open_count > 0
+            else:
+                all_expanded = False
+                at_least_one_expanded = False
+                total_count = 0
+
+            # Determine button label and icon based on state
+            if all_expanded:
+                # All sections are expanded → show Collapse all
+                label = "Collapse all"
+                icon = ":material/unfold_less:"
+            elif at_least_one_expanded:
+                # Mixed state (some expanded, some collapsed) → show Collapse all
+                label = "Collapse all"
+                icon = ":material/unfold_less:"
+            else:
+                # Nothing expanded → show Expand all
+                label = "Expand all"
+                icon = ":material/unfold_more:"
+
+            if st.button(label, key="tc_toggle_all", icon=icon, width="stretch"):
+                # Toggle all sections to opposite state
+                if all_expanded:
+                    _set_all_test_cases_open(test_cases, False)
+                else:
+                    _set_all_test_cases_open(test_cases, True)
+                st.rerun()
         with collapse_col:
-            st.button("Collapse all", key="tc_collapse_all", icon=":material/unfold_less:", width="stretch",
-                      on_click=_set_all_test_cases_open, args=(test_cases, False))
+            st.download_button(
+                "Export CSV",
+                data=lambda: _fetch_test_case_csv(project_id, selected_case_ids),
+                file_name=f"test_cases_{project_id}.csv",
+                mime="text/csv",
+                key=f"export_test_cases_{project_id}",
+                icon=":material/download:",
+                width="stretch",
+                on_click="ignore",
+                disabled=not selected_case_ids,
+                help=f"Export {len(selected_case_ids)} selected test case(s)",
+            )
         with run_col:
             run_selected = st.button(
                 "Run selected", key="tc_run_selected", icon=":material/play_arrow:",
@@ -2748,7 +2815,7 @@ def render_generation_activity_tab() -> None:
             )
         except requests.RequestException as exc:
             st.error(f"Could not load generation history: {exc}")
-    records = st.session_state.get(cache_key)
+    records = _normalise_generation_activity_records(st.session_state.get(cache_key))
     if not records:
         st.info("No generation activity is recorded for this project yet.")
         return

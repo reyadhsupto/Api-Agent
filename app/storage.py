@@ -974,15 +974,24 @@ class Database:
             )
         return payload
 
-    def list_generation_activity(self, project_id: str, limit: int = 100) -> list[dict] | None:
-        """Return the newest generation records for one project."""
+    def list_generation_activity(self, project_id: str, limit: int = 100, offset: int = 0) -> list[dict] | None:
+        """Return the newest generation records for one project.
+
+        Args:
+            project_id: The project ID.
+            limit: Maximum number of records to return.
+            offset: Number of records to skip.
+
+        Returns:
+            List of generation activity records, or None if project not found.
+        """
         with self.session() as connection:
             if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
                 return None
             rows = _execute(
                 connection,
                 "SELECT payload_json FROM generation_activity WHERE project_id=? "
-                "ORDER BY created_at DESC,id DESC LIMIT ?",
-                (project_id, max(1, min(int(limit), 500))),
+                "ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+                (project_id, max(1, min(int(limit), 500)), max(0, int(offset))),
             ).fetchall()
         return [self._decode(row["payload_json"]) for row in rows]

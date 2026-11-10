@@ -9,13 +9,16 @@ Returns:
 """
 
 import json
+import csv
 import copy
+import io
 import time
 import uuid
 import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas import (
@@ -293,12 +296,27 @@ def health() -> dict:
 
 
 @app.get("/api/v1/projects/{project_id}/generation-activity")
-def get_generation_activity(project_id: str, limit: int = 100) -> list[dict]:
-    """List recent generation actions for a project."""
-    records = database.list_generation_activity(project_id, limit)
-    if records is None:
+def get_generation_activity(project_id: str, limit: int = 100, offset: int = 0) -> dict:
+    """List recent generation actions for a project with pagination.
+
+    Args:
+        project_id (str): The project ID.
+        limit (int): Maximum number of records to return (default 100).
+        offset (int): Number of records to skip (default 0).
+
+    Returns:
+        dict: {"activities": list, "total": int, "limit": int, "offset": int}
+    """
+    all_records = database.list_generation_activity(project_id, limit, offset)
+    if all_records is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return records
+    total_records = len(all_records)
+    return {
+        "activities": all_records,
+        "total": total_records,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # --- Project Management ---
@@ -1300,15 +1318,17 @@ def save_test_cases(project_id: str, request: dict) -> dict:
 
 
 @app.get("/api/v1/projects/{project_id}/test-cases")
-def get_test_cases(project_id: str) -> list:
+def get_test_cases(project_id: str, limit: int = 50, offset: int = 0) -> dict:
     """
-    Get all test cases for a project.
+    Get paginated test cases for a project.
 
     Args:
         project_id (str): The project ID.
+        limit (int): Maximum number of test cases to return (default 50).
+        offset (int): Number of test cases to skip (default 0).
 
     Returns:
-        list: List of test cases.
+        dict: {"test_cases": list, "total": int, "limit": int, "offset": int}
 
     Raises:
         HTTPException: If project not found.
@@ -1316,7 +1336,93 @@ def get_test_cases(project_id: str) -> list:
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project["test_cases"]
+    all_cases = project.get("test_cases", [])
+    total = len(all_cases)
+    paginated = all_cases[offset:offset + limit]
+    return {
+        "test_cases": paginated,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+@app.get("/api/v1/projects/{project_id}/test-cases/export")
+def export_test_cases(
+    project_id: str,
+    limit: int = 1000,
+    offset: int = 0,
+    selected_case_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    """
+    Export test cases as CSV for a project.
+
+    Args:
+        project_id (str): The project ID.
+        limit (int): Maximum number of test cases to export (default 1000).
+        offset (int): Number of test cases to skip (default 0).
+        selected_case_ids (list[str] | None): Optional case IDs to export.
+
+    Returns:
+        StreamingResponse: CSV containing test case definitions; flow steps are JSON in one cell.
+
+    Raises:
+        HTTPException: If project not found.
+    """
+    project = database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    all_cases = project.get("test_cases", [])
+    if selected_case_ids is not None:
+        selected_ids = set(selected_case_ids)
+        all_cases = [case for case in all_cases if str(case.get("id", "")) in selected_ids]
+    paginated = all_cases[offset:offset + limit]
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "test_case_id", "name", "type", "description", "business_requirements",
+        "is_flow", "source_endpoint_id", "source_endpoint_name",
+        "request_method", "request_url", "request_headers_json",
+        "request_query_params_json", "request_body_json", "assertions_json", "steps_json",
+    ])
+
+    def json_cell(value) -> str:
+        """Serialize structured CSV cells without losing nested request data."""
+        if value is None:
+            return ""
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    for tc in paginated:
+        is_flow = bool(tc.get("is_flow") or isinstance(tc.get("steps"), list))
+        request = (tc.get("request") or {}) if not is_flow else {}
+        writer.writerow([
+            tc.get("id", ""),
+            tc.get("name", ""),
+            tc.get("type", ""),
+            tc.get("description", ""),
+            tc.get("business_requirements", ""),
+            is_flow,
+            tc.get("source_endpoint_id", ""),
+            tc.get("source_endpoint_name", ""),
+            request.get("method", "GET") if request else "",
+            request.get("url", ""),
+            json_cell(request.get("headers")),
+            json_cell(request.get("query_params")),
+            json_cell(request.get("body")),
+            json_cell(tc.get("assertions")),
+            json_cell(tc.get("steps")) if is_flow else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="test_cases_{project_id}.csv"'},
+    )
+
+
 
 
 @app.delete("/api/v1/projects/{project_id}/test-cases")
