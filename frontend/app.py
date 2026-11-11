@@ -464,6 +464,177 @@ def _normalise_generation_activity_records(payload) -> list[dict]:
     return [record for record in payload if isinstance(record, dict)]
 
 
+def _revision_case_signature(test_case: dict) -> str:
+    """Serialize editable case content consistently for saved-versus-session checks."""
+    case = copy.deepcopy(test_case)
+
+    def normalize_request(request: dict) -> dict:
+        """Normalize query strings and editor rows to avoid UI-only differences."""
+        normalized = copy.deepcopy(request or {})
+        source_url = str(normalized.get("url") or "")
+        clean_url, query_rows = _normalise_request_url(
+            source_url, _request_rows(normalized.get("query_params", {})),
+        )
+        normalized["url"] = clean_url
+        normalized["method"] = str(normalized.get("method") or "GET").upper()
+
+        def normalize_rows(values):
+            rows = []
+            for row in values:
+                key = str(row.get("key") or "").strip()
+                value = "" if row.get("value") is None else str(row.get("value", ""))
+                description = str(row.get("description") or "")
+                if key or value or description:
+                    rows.append({
+                        "key": key, "value": value, "description": description,
+                        "enabled": bool(row.get("enabled", True)),
+                    })
+            return rows
+
+        normalized["query_params"] = normalize_rows(query_rows)
+        normalized["headers"] = normalize_rows(_request_rows(normalized.get("headers", {})))
+        return normalized
+
+    fields = (
+        "name", "type", "description", "business_requirements", "release_notes",
+        "is_flow", "source_endpoint_id", "source_endpoint_name", "expected_status",
+        "expected_body_contains", "request", "assertions", "steps",
+    )
+    payload = {key: case[key] for key in fields if key in case}
+    if isinstance(payload.get("request"), dict):
+        payload["request"] = normalize_request(payload["request"])
+    if not case.get("is_flow"):
+        payload["assertions"] = _normalize_assertions({
+            "assertions": payload.get("assertions", {}),
+            "expected_status": case.get("expected_status", 200),
+            "expected_body_contains": case.get("expected_body_contains"),
+        })
+    steps = payload.get("steps", []) or []
+    if isinstance(steps, list):
+        steps.sort(key=lambda item: item.get("step_order", 0) if isinstance(item, dict) else 0)
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        step.pop("step_id", None)
+        if isinstance(step.get("endpoint"), dict):
+            step["endpoint"] = normalize_request(step["endpoint"])
+        step["assertions"] = _normalize_assertions({
+            "assertions": step.get("assertions", {}),
+            "expected_status": step.get("expected_status", 200),
+            "expected_body_contains": step.get("expected_body_contains"),
+        })
+        if index == 0:
+            step["variable_mappings"] = []
+
+    def remove_editor_ids(value):
+        """Strip IDs used only to keep Streamlit editor widgets stable."""
+        if isinstance(value, dict):
+            return {
+                key: remove_editor_ids(item)
+                for key, item in value.items() if key not in {"_ui_id", "mapping_id"}
+            }
+        if isinstance(value, list):
+            return [remove_editor_ids(item) for item in value]
+        return value
+
+    payload = remove_editor_ids(payload)
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _revision_endpoint_change(current: dict, original: dict) -> list[str]:
+    """Return request-defining fields that differ from a source-action snapshot."""
+    fields = (
+        ("method", "method"), ("url", "URL"), ("headers", "headers"),
+        ("query_params", "query parameters"), ("body", "body"),
+    )
+    changed = []
+
+    def effective_values(values):
+        if isinstance(values, dict):
+            return values
+        if isinstance(values, list):
+            return {
+                str(row.get("key")): row.get("value", "")
+                for row in values if isinstance(row, dict) and row.get("key") and row.get("enabled", True)
+            }
+        return {}
+
+    for key, label in fields:
+        current_value = current.get(key)
+        original_value = original.get(key)
+        if key == "method":
+            current_value = str(current_value or "GET").upper()
+            original_value = str(original_value or "GET").upper()
+        elif key in {"headers", "query_params"}:
+            current_value = effective_values(current_value)
+            original_value = effective_values(original_value)
+        elif key == "body" and current.get("include_body") is False:
+            current_value = None
+        if json.dumps(current_value, sort_keys=True, default=str) != json.dumps(original_value, sort_keys=True, default=str):
+            changed.append(label)
+    return changed
+
+
+def _revision_endpoint_status(endpoint: dict, previous: dict, snapshot_available: bool) -> str:
+    """Summarize one current endpoint's request-definition change status."""
+    if not snapshot_available:
+        return "No comparison"
+    if previous is None:
+        return "Added"
+    changed = _revision_endpoint_change(endpoint, previous)
+    return "Modified: " + ", ".join(changed) if changed else "Unchanged"
+
+
+def _revision_case_details(test_case: dict, endpoints_by_id: dict, collections_by_id: dict) -> str:
+    """Build a concise baseline option label with case and endpoint provenance."""
+    is_flow = bool(test_case.get("is_flow") or isinstance(test_case.get("steps"), list))
+    endpoint_ids = []
+    if is_flow:
+        for step in test_case.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            endpoint = step.get("endpoint")
+            endpoint_ids.append(str(step.get("endpoint_id") or (
+                endpoint.get("id") if isinstance(endpoint, dict) else ""
+            ) or ""))
+    elif test_case.get("source_endpoint_id"):
+        endpoint_ids = [str(test_case["source_endpoint_id"])]
+    endpoint_ids = list(dict.fromkeys(item for item in endpoint_ids if item))
+    collection_names = []
+    endpoint_names = []
+    deleted = []
+    for endpoint_id in endpoint_ids:
+        endpoint = endpoints_by_id.get(endpoint_id)
+        if not endpoint:
+            deleted.append(endpoint_id)
+            continue
+        endpoint_names.append(
+            f"{str(endpoint.get('method') or 'GET').upper()} "
+            f"{endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint'}"
+        )
+        collection = collections_by_id.get(str(endpoint.get("collection_id")))
+        if collection:
+            collection_names.append(str(collection.get("name") or "Untitled collection"))
+    kind = "Flow" if is_flow else str(test_case.get("type") or "test").title()
+    details = [kind]
+    if is_flow:
+        details.append(f"{len(test_case.get('steps', []) or [])} steps")
+    if endpoint_names:
+        details.append("Requests: " + ", ".join(dict.fromkeys(endpoint_names)))
+    if collection_names:
+        details.append(", ".join(dict.fromkeys(collection_names)))
+    if deleted:
+        details.append(f"references {len(deleted)} deleted endpoint(s)")
+    return " · ".join(details)
+
+
+def _select_revision_collection(project_id: str, collection_id: str, endpoint_ids: list[str]) -> None:
+    """Apply a collection-level revision selection to all of its saved requests."""
+    selected = bool(st.session_state.get(f"revision_collection_{project_id}_{collection_id}"))
+    for endpoint_id in endpoint_ids:
+        st.session_state[f"revision_endpoint_{project_id}_{endpoint_id}"] = selected
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def _fetch_projects_cached() -> list:
     """Cache project summaries for a short interval.
@@ -520,6 +691,9 @@ def _flush_toasts() -> None:
         if notice.get("kind") == "error":
             message = f":red[Error] · {message}"
             icon = ":material/error:"
+        elif notice.get("kind") == "warning":
+            message = f":orange[Warning] · {message}"
+            icon = ":material/warning:"
         else:
             message = f":green[Success] · {message}"
             icon = ":material/check_circle:"
@@ -1237,6 +1411,8 @@ def _execute_test_case(tc: dict, notify: bool = True) -> dict:
         "assertions": payload,
     })
     st.session_state.setdefault("executions", {})[tc_id] = result
+    if project.get("id"):
+        st.session_state.pop(f"tc_history_{project['id']}_{tc_id}", None)
     if notify:
         status = _test_case_status(result)
         label = tc.get("name") or "Test case"
@@ -1599,10 +1775,10 @@ def _render_manual_case_builder(project: dict) -> None:
 
 
 def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | None:
-    """Render saved-run selection and persistence controls for the project.
+    """Render test-suite selection and persistence controls for the project.
 
     Args:
-        project (dict): Current project and its saved run summaries.
+        project (dict): Current project and its saved test-suite summaries.
         test_cases (list[dict]): Cases currently displayed in the workspace.
 
     Returns:
@@ -1611,7 +1787,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
     project_id = project.get("id")
     if not project_id:
         with st.popover(
-            "Reusable runs", icon=":material/playlist_play:", width="stretch",
+            "Test suites", icon=":material/playlist_play:", width="stretch",
             help="Save and reuse named groups of test cases",
         ):
             st.info("Create or select a project first.", icon=":material/info:")
@@ -1633,28 +1809,28 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
         st.session_state[name_key] = pending_name
 
     with st.popover(
-        "Reusable runs", icon=":material/playlist_play:", width="stretch",
-        help="Load, save, update, or delete a named case selection",
+        "Test suites", icon=":material/playlist_play:", width="stretch",
+        help="Load, save, update, or delete a named test suite",
     ):
         st.markdown(
-            "<div class='aa-popover-section'>Named case selection</div>",
+            "<div class='aa-popover-section'>Test suite</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
-            "<div class='aa-popover-hint'>A run uses the latest saved version of "
+            "<div class='aa-popover-hint'>A suite uses the latest saved version of "
             "each selected case, so saved case updates carry forward.</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
-            "<div class='aa-popover-section'>1 · Load existing run</div>",
+            "<div class='aa-popover-section'>1 · Load a suite</div>",
             unsafe_allow_html=True,
         )
         picker_col, name_col = st.columns([1.1, 2], vertical_alignment="bottom")
         options = [""] + list(run_by_id)
         with picker_col:
             chosen_run = st.selectbox(
-                "Load a saved run", options, key=picker_key,
-                format_func=lambda run_id: "New run" if not run_id else run_by_id[run_id]["name"],
+                "Load a test suite", options, key=picker_key,
+                format_func=lambda run_id: "New suite" if not run_id else run_by_id[run_id]["name"],
             )
         if chosen_run != st.session_state.get(loaded_key):
             included = set(run_by_id.get(chosen_run, {}).get("case_ids", []))
@@ -1663,11 +1839,11 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
             st.session_state[name_key] = run_by_id.get(chosen_run, {}).get("name", "")
             st.session_state[loaded_key] = chosen_run
         st.markdown(
-            "<div class='aa-popover-section'>2 · Save current selection</div>",
+            "<div class='aa-popover-section'>2 · Save current selection as a suite</div>",
             unsafe_allow_html=True,
         )
         with name_col:
-            st.text_input("Run name", key=name_key, placeholder="e.g. Checkout regression")
+            st.text_input("Suite name", key=name_key, placeholder="e.g. Checkout regression")
 
         selected_ids = [
             case.get("id") for case in test_cases
@@ -1675,7 +1851,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
         ]
         save_col, delete_col, hint_col = st.columns([1.1, 0.8, 2.2], vertical_alignment="center")
         with save_col:
-            save_label = "Update run" if chosen_run else "Save run"
+            save_label = "Update suite" if chosen_run else "Save suite"
             save_clicked = st.button(
                 save_label, key=f"test_run_save_{project_id}",
                 icon=":material/save:", type="primary", width="stretch",
@@ -1684,7 +1860,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
             )
         with delete_col:
             delete_clicked = st.button(
-                "Delete run", key=f"test_run_delete_{project_id}",
+                "Delete suite", key=f"test_run_delete_{project_id}",
                 icon=":material/delete:", width="stretch", disabled=not chosen_run,
             )
         with hint_col:
@@ -1712,7 +1888,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
                 project["test_runs"] = updated_runs
                 st.session_state[pending_key] = saved["id"]
                 saved_note = f" and {len(new_cases)} new case(s)" if new_cases else ""
-                _queue_toast(f"Test run '{saved['name']}'{saved_note} saved.")
+                _queue_toast(f"Test suite '{saved['name']}'{saved_note} saved.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not save test run: {exc}")
@@ -1723,7 +1899,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
                 st.session_state[pending_key] = ""
                 st.session_state[pending_name_key] = ""
                 st.session_state[loaded_key] = None
-                _queue_toast("Test run deleted.")
+                _queue_toast("Test suite deleted.")
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not delete test run: {exc}")
@@ -1736,7 +1912,86 @@ def _test_case_request_snapshot(test_case: dict):
     return copy.deepcopy(test_case.get(field))
 
 
-def render_test_case_card(tc: dict, index: int) -> dict:
+def _flaky_summary(outcomes: list[str]) -> dict:
+    """Classify recent outcomes using the product rule of three of the latest ten."""
+    recent = outcomes[:10]
+    passed = sum(value == "passed" for value in recent)
+    non_passed = sum(value in {"failed", "error"} for value in recent)
+    return {"flaky": len(recent) >= 3 and passed > 0 and non_passed > 0,
+            "runs": len(recent), "passed": passed, "non_passed": non_passed}
+
+
+def _render_test_case_history(tc: dict, project_id: str) -> None:
+    """Load and display run snapshots and flakiness evidence for a saved case."""
+    case_id = str(tc.get("id", ""))
+    cache_key = f"tc_history_{project_id}_{case_id}"
+    load_col, note_col = st.columns([1, 4], vertical_alignment="center")
+    if load_col.button("Load history" if cache_key not in st.session_state else "Refresh history",
+                       key=f"load_history_{project_id}_{case_id}", icon=":material/history:"):
+        try:
+            payload = _raw_get(f"/api/v1/projects/{project_id}/test-cases/{case_id}/history?limit=100")
+            st.session_state[cache_key] = payload.get("executions", []) if isinstance(payload, dict) else []
+            st.rerun()
+        except Exception as exc:
+            note_col.error(f"Could not load execution history: {exc}")
+    if cache_key not in st.session_state:
+        note_col.caption("Execution records include the exact saved or in-session configuration that ran.")
+        return
+    history = st.session_state[cache_key]
+    outcomes = [str(item.get("status", "error")).lower() for item in history]
+    summary = _flaky_summary(outcomes)
+    badge = "Flaky" if summary["flaky"] else "No flaky pattern detected"
+    st.markdown(
+        f"**{badge}** · latest {summary['runs']} run(s): {summary['passed']} passed, "
+        f"{summary['non_passed']} failed or errored. Flaky requires at least 3 of the latest 10 "
+        "with both passing and non-passing outcomes."
+    )
+    if not history:
+        st.caption("No saved executions yet.")
+        return
+    st.dataframe([{
+        "Executed": item.get("created_at", "Unknown"),
+        "Outcome": str(item.get("status", "error")).upper(),
+        "Latency (ms)": item.get("latency_ms") or sum(
+            step.get("latency_ms", 0) for step in item.get("step_results", [])
+        ),
+        "Assertion details": item.get("assertion_detail", ""),
+    } for item in history], hide_index=True, width="stretch")
+    if tc.get("is_flow") or isinstance(tc.get("steps"), list):
+        step_runs = {}
+        for execution in history:
+            snapshot = execution.get("test_case_snapshot", {}) or {}
+            for index, step in enumerate(snapshot.get("steps", []) or [], start=1):
+                step_id = str(step.get("step_id") or f"legacy-{index}")
+                outcome = next((item for item in execution.get("step_results", [])
+                                if (item.get("step_id") and str(item.get("step_id")) == step_id)
+                                or (not item.get("step_id") and item.get("step_order") == index)), None)
+                if outcome:
+                    step_runs.setdefault(step_id, {"name": step.get("description") or f"Step {index}", "outcomes": []})
+                    step_runs[step_id]["outcomes"].append(str(outcome.get("status", "error")).lower())
+        if step_runs:
+            st.markdown("**Flow step history and flakiness**")
+            st.dataframe([{
+                "Step": value["name"],
+                "Flaky": "Yes" if _flaky_summary(value["outcomes"])["flaky"] else "No",
+                "Latest runs": _flaky_summary(value["outcomes"])["runs"],
+                "Passed": _flaky_summary(value["outcomes"])["passed"],
+                "Failed or errored": _flaky_summary(value["outcomes"])["non_passed"],
+            } for value in step_runs.values()], hide_index=True, width="stretch")
+    with st.expander("Executed configuration and response details"):
+        selected = st.selectbox(
+            "Execution", list(range(len(history))),
+            format_func=lambda idx: f"{history[idx].get('created_at', 'Unknown')} · {str(history[idx].get('status', 'error')).upper()}",
+            key=f"history_detail_{project_id}_{case_id}",
+        )
+        item = history[selected]
+        st.json({
+            "test_case_snapshot": item.get("test_case_snapshot"),
+            "result": {key: value for key, value in item.items() if key not in {"test_case_snapshot", "execution_id", "created_at"}},
+        })
+
+
+def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict:
     """Render a selectable test card with separated detail views.
 
     Args:
@@ -1746,6 +2001,8 @@ def render_test_case_card(tc: dict, index: int) -> dict:
     Returns:
         dict: Updated test case containing any assertion edits.
     """
+    if read_only:
+        tc = copy.deepcopy(tc)
     tc_id = tc.get("id", f"tc_{index}")
     is_flow = bool(tc.get("is_flow"))
     result = st.session_state.get("executions", {}).get(tc_id)
@@ -1784,7 +2041,13 @@ def render_test_case_card(tc: dict, index: int) -> dict:
             latency = (result or {}).get("latency_ms") or sum(
                 item.get("latency_ms", 0) for item in (result or {}).get("step_results", [])
             )
-            st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]")
+            history_key = f"tc_history_{project.get('id', '')}_{tc_id}"
+            cached_history = st.session_state.get(history_key)
+            cached_flaky = _flaky_summary([
+                str(item.get("status", "error")).lower() for item in cached_history
+            ]) if cached_history is not None else {"flaky": False}
+            flaky_badge = " :orange-badge[FLAKY]" if cached_flaky["flaky"] else ""
+            st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]{flaky_badge}")
         with run_col:
             run_clicked = st.button(
                 "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
@@ -1821,6 +2084,14 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                     st.error(f"Execution failed: {exc}")
 
         if is_open:
+            if read_only:
+                st.info("This is a historical revision. Its test cases are read only.")
+                history_tab, config_tab = st.tabs(["History", "Revision snapshot"])
+                with history_tab:
+                    _render_test_case_history(tc, project.get("id", ""))
+                with config_tab:
+                    st.json({key: value for key, value in tc.items() if key not in {"id"}})
+                return tc
             save_notice_key = f"tc_save_notice_{project.get('id', 'local')}_{tc_id}"
             if notice := st.session_state.pop(save_notice_key, None):
                 _queue_toast(notice)
@@ -1837,8 +2108,8 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                     for item in (result or {}).get("step_results", [])
                 }
                 detail_tab_key = f"tc_detail_tabs_{tc_id}"
-                steps_tab, summary_tab = st.tabs(
-                    [f"Steps ({len(tc.get('steps', []))})", "Scenario result"],
+                steps_tab, summary_tab, history_tab = st.tabs(
+                    [f"Steps ({len(tc.get('steps', []))})", "Scenario result", "History"],
                     key=detail_tab_key, on_change="rerun",
                 )
                 with steps_tab:
@@ -1881,11 +2152,13 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                             result_col.markdown(_status_badge(step_result.get("status")))
                     else:
                         st.caption("Run this scenario to see the overall and per-step results.")
+                with history_tab:
+                    _render_test_case_history(tc, project.get("id", ""))
             else:
                 request = tc.get("request", {}) or {}
                 detail_tab_key = f"tc_detail_tabs_{tc_id}"
-                assertion_tab, request_tab, result_tab = st.tabs(
-                    ["Assertions", "Request", "Result"],
+                assertion_tab, request_tab, result_tab, history_tab = st.tabs(
+                    ["Assertions", "Request", "Result", "History"],
                     key=detail_tab_key, on_change="rerun",
                 )
                 with assertion_tab:
@@ -1897,6 +2170,8 @@ def render_test_case_card(tc: dict, index: int) -> dict:
                         _render_execution_result(result, tc_id)
                     else:
                         st.caption("Run this test to inspect its response and assertion results.")
+                with history_tab:
+                    _render_test_case_history(tc, project.get("id", ""))
 
             delete_col, save_col, save_hint_col = st.columns([1, 1.35, 4], vertical_alignment="center")
             with delete_col:
@@ -2101,8 +2376,8 @@ def _filter_test_cases_by_scope(
     Args:
         test_cases (list[dict]): All project cases.
         endpoints (list[dict]): Saved project endpoint records.
-        run_ids (list[str]): Selected reusable run IDs, combined as alternatives.
-        runs (list[dict]): Project reusable run records.
+        run_ids (list[str]): Selected test-suite IDs, combined as alternatives.
+        runs (list[dict]): Project test-suite records.
         collection_ids (list[str]): Selected collection IDs, combined as alternatives.
         endpoint_ids (list[str]): Selected endpoint IDs, combined as alternatives.
 
@@ -2477,6 +2752,326 @@ def render_generation_panel() -> None:
             finally:
                 st.session_state[generation_submit_key] = time.time()
 
+    if project_id:
+        with st.expander("Create a release revision", expanded=False):
+            try:
+                saved_project = api_get(f"/api/v1/projects/{project_id}")
+                source_payload = api_get(f"/api/v1/projects/{project_id}/generation-activity?limit=500")
+                source_actions = [
+                    item for item in _normalise_generation_activity_records(source_payload)
+                    if item.get("status") == "succeeded" and item.get("business_requirements") is not None
+                ]
+                source_actions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+            except Exception as exc:
+                saved_project = None
+                source_actions = []
+                st.error(f"Could not load saved revision context: {exc}")
+            if not source_actions:
+                st.info("A successful generation action with saved requirements is needed to start a revision.")
+            elif saved_project is None:
+                st.warning("Revision selection is unavailable until the latest saved project data can be loaded.")
+            else:
+                action_by_id = {str(item["id"]): item for item in source_actions if item.get("id")}
+                source_key = f"revision_source_{project_id}"
+                source_options = list(action_by_id)
+                default_source = next(
+                    (item_id for item_id in source_options
+                     if action_by_id[item_id].get("revision_id") or action_by_id[item_id].get("mode") == "Release revision"),
+                    source_options[0],
+                )
+                pending_source = st.session_state.pop(f"{source_key}_pending", None)
+                if pending_source in action_by_id:
+                    st.session_state[source_key] = pending_source
+                if st.session_state.get(source_key) not in action_by_id:
+                    st.session_state[source_key] = default_source
+                source_id = st.selectbox(
+                    "Prior generation action", source_options, key=source_key,
+                    format_func=lambda value: (
+                        f"{action_by_id[value].get('created_at', 'Unknown')} · "
+                        f"{action_by_id[value].get('mode', 'Generation')} · "
+                        f"{len(action_by_id[value].get('generated_case_ids', []))} cases"
+                    ),
+                )
+                source_action = action_by_id[source_id]
+                saved_cases = [item for item in saved_project.get("test_cases", []) if item.get("id")]
+                saved_cases_by_id = {str(item["id"]): item for item in saved_cases}
+                session_cases_by_id = {
+                    str(item.get("id")): item
+                    for item in st.session_state.get("test_cases", []) if item.get("id")
+                }
+                current_endpoints = [item for item in saved_project.get("endpoints", []) if item.get("id")]
+                endpoints_by_id = {str(item["id"]): item for item in current_endpoints}
+                collections = saved_project.get("collections", [])
+                collections_by_id = {str(item.get("id")): item for item in collections if item.get("id")}
+                revisions = sorted(
+                    saved_project.get("test_case_revisions", []),
+                    key=lambda item: int(item.get("ordinal", 0)),
+                )
+                baseline_key = f"revision_baseline_{project_id}"
+                pending_baseline = st.session_state.pop(f"{baseline_key}_pending", None)
+                if isinstance(pending_baseline, list):
+                    st.session_state[baseline_key] = [
+                        str(case_id) for case_id in pending_baseline
+                        if str(case_id) in saved_cases_by_id
+                    ]
+                if baseline_key not in st.session_state:
+                    if revisions:
+                        suggested = [str(value) for value in revisions[-1].get("case_ids", [])]
+                    else:
+                        suggested = [str(value) for value in source_action.get("generated_case_ids", [])]
+                    st.session_state[baseline_key] = [
+                        case_id for case_id in suggested if case_id in saved_cases_by_id
+                    ]
+                else:
+                    st.session_state[baseline_key] = [
+                        str(case_id) for case_id in st.session_state[baseline_key]
+                        if str(case_id) in saved_cases_by_id
+                    ]
+                case_options = list(saved_cases_by_id)
+                baseline_ids = st.multiselect(
+                    "Cases and flows to carry forward", case_options, key=baseline_key,
+                    format_func=lambda case_id: (
+                        f"{saved_cases_by_id[case_id].get('name') or 'Untitled case'} · "
+                        f"{_revision_case_details(saved_cases_by_id[case_id], endpoints_by_id, collections_by_id)}"
+                    ),
+                    help=(
+                        "The baseline is the saved suite context the model will revise. Selected cases are carried "
+                        "into the complete new suite; unchecked cases are omitted. Add manual cases that should "
+                        "remain in the release. Deleted cases are excluded. Save or revert selected case and flow "
+                        "edits before generating; only saved configurations are used."
+                    ),
+                )
+                st.caption(f"{len(baseline_ids)} saved baseline case(s) selected.")
+                with st.expander("View selected case details", expanded=False):
+                    if baseline_ids:
+                        for case_id in baseline_ids:
+                            case = saved_cases_by_id[case_id]
+                            st.caption(
+                                f"{case.get('name') or 'Untitled case'}: "
+                                f"{_revision_case_details(case, endpoints_by_id, collections_by_id)}"
+                            )
+                    else:
+                        st.caption("No baseline cases selected.")
+                unsaved_case_ids = [
+                    case_id for case_id in baseline_ids
+                    if case_id in session_cases_by_id
+                    and _revision_case_signature(session_cases_by_id[case_id])
+                    != _revision_case_signature(saved_cases_by_id[case_id])
+                ]
+                if unsaved_case_ids:
+                    names = [saved_cases_by_id[item].get("name") or item for item in unsaved_case_ids]
+                    st.warning("Save or revert these selected case edits before generating: " + ", ".join(names))
+                st.text_area(
+                    "Previous business requirements (read only)",
+                    value=str(source_action.get("business_requirements") or ""),
+                    disabled=True, height=100,
+                )
+                if source_action.get("release_notes"):
+                    st.text_area(
+                        "Previous release notes (read only)",
+                        value=str(source_action["release_notes"]),
+                        disabled=True, height=80,
+                    )
+                revision_notes = st.text_area(
+                    "New requirement changes", key=f"revision_notes_{project_id}", height=95,
+                    placeholder="Describe changed endpoint behavior, new rules, and additional release coverage.",
+                )
+                source_snapshot = source_action.get("endpoint_snapshot")
+                source_endpoints_by_id = {
+                    str(item.get("id")): item for item in source_snapshot or []
+                    if isinstance(item, dict) and item.get("id")
+                }
+                snapshot_available = isinstance(source_snapshot, list)
+                selected_endpoint_ids = []
+                endpoint_ids_by_collection = {
+                    str(collection.get("id")): [
+                        str(item["id"]) for item in current_endpoints
+                        if str(item.get("collection_id")) == str(collection.get("id"))
+                    ] for collection in collections if collection.get("id")
+                }
+                for endpoint in current_endpoints:
+                    endpoint_key = f"revision_endpoint_{project_id}_{endpoint['id']}"
+                    st.session_state.setdefault(endpoint_key, True)
+                ungrouped_ids = [
+                    str(item["id"]) for item in current_endpoints
+                    if not any(str(item.get("collection_id")) == collection_id
+                               for collection_id in endpoint_ids_by_collection)
+                ]
+                selected_endpoint_ids = [
+                    str(item["id"]) for item in current_endpoints
+                    if st.session_state.get(f"revision_endpoint_{project_id}_{item['id']}", True)
+                ]
+                selected_collection_ids = {
+                    str(endpoints_by_id[item_id].get("collection_id"))
+                    for item_id in selected_endpoint_ids
+                    if endpoints_by_id[item_id].get("collection_id")
+                }
+                if any(item_id in ungrouped_ids for item_id in selected_endpoint_ids):
+                    selected_collection_ids.add("unassigned")
+                endpoint_help = (
+                    "Choose saved requests across project collections. All current requests start selected; "
+                    "collection checkboxes select or clear every request in that collection. Change status "
+                    "compares method, URL, headers, query parameters, and body with the source snapshot."
+                )
+                if not snapshot_available:
+                    endpoint_help += (
+                        " This source action predates endpoint snapshots, so request change badges cannot be compared."
+                    )
+                with st.popover(
+                    f"Choose endpoints · {len(selected_endpoint_ids)} selected",
+                    icon=":material/api:",
+                    help=endpoint_help,
+                    key=f"revision_endpoint_picker_{project_id}",
+                    disabled=not current_endpoints,
+                ):
+                    st.caption("Search by collection, request name, method, or URL.")
+                    search_text = st.text_input(
+                        "Search endpoints", key=f"revision_endpoint_search_{project_id}",
+                        placeholder="Search saved requests",
+                        label_visibility="collapsed",
+                    ).strip().lower()
+                    for collection in collections:
+                        collection_id = str(collection.get("id"))
+                        child_ids = endpoint_ids_by_collection.get(collection_id, [])
+                        if not child_ids:
+                            continue
+                        collection_name = str(collection.get("name") or "Untitled collection")
+                        collection_matches = bool(search_text and search_text in collection_name.lower())
+                        visible_ids = [
+                            endpoint_id for endpoint_id in child_ids
+                            if collection_matches or not search_text or search_text in " ".join((
+                                collection_name,
+                                str(endpoints_by_id[endpoint_id].get("name") or ""),
+                                str(endpoints_by_id[endpoint_id].get("url") or ""),
+                                str(endpoints_by_id[endpoint_id].get("method") or "GET"),
+                            )).lower()
+                        ]
+                        if search_text and not visible_ids:
+                            continue
+                        collection_key = f"revision_collection_{project_id}_{collection_id}"
+                        st.session_state[collection_key] = all(
+                            st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
+                            for item in child_ids
+                        )
+                        st.checkbox(
+                            f"{collection_name} · "
+                            f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in child_ids)}/{len(child_ids)} selected",
+                            key=collection_key,
+                            on_change=_select_revision_collection,
+                            args=(project_id, collection_id, child_ids),
+                            help="Select or clear every saved request in this collection.",
+                        )
+                        with st.expander(
+                            f"Requests · {len(visible_ids)} shown",
+                            expanded=bool(search_text),
+                            key=f"revision_collection_group_{project_id}_{collection_id}",
+                        ):
+                            for endpoint_id in visible_ids:
+                                endpoint = endpoints_by_id[endpoint_id]
+                                previous = source_endpoints_by_id.get(endpoint_id)
+                                request_col, status_col = st.columns([4, 2], vertical_alignment="center")
+                                with request_col:
+                                    st.checkbox(
+                                        f"{str(endpoint.get('method') or 'GET').upper()} · "
+                                        f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
+                                        key=f"revision_endpoint_{project_id}_{endpoint_id}",
+                                        help=f"URL: {endpoint.get('url') or 'No URL saved'}",
+                                    )
+                                with status_col:
+                                    st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
+                    if ungrouped_ids:
+                        group_id = "unassigned"
+                        group_name = "Outside collections"
+                        collection_matches = bool(search_text and search_text in group_name.lower())
+                        visible_ids = [
+                            endpoint_id for endpoint_id in ungrouped_ids
+                            if collection_matches or not search_text or search_text in " ".join((
+                                str(endpoints_by_id[endpoint_id].get("name") or ""),
+                                str(endpoints_by_id[endpoint_id].get("url") or ""),
+                                str(endpoints_by_id[endpoint_id].get("method") or "GET"),
+                            )).lower()
+                        ]
+                        if visible_ids:
+                            collection_key = f"revision_collection_{project_id}_{group_id}"
+                            st.session_state[collection_key] = all(
+                                st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
+                                for item in ungrouped_ids
+                            )
+                            st.checkbox(
+                                f"{group_name} · "
+                                f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in ungrouped_ids)}/{len(ungrouped_ids)} selected",
+                                key=collection_key,
+                                on_change=_select_revision_collection,
+                                args=(project_id, group_id, ungrouped_ids),
+                                help="Select or clear every saved request outside a collection.",
+                            )
+                            with st.expander(
+                                f"Requests · {len(visible_ids)} shown",
+                                expanded=bool(search_text),
+                                key=f"revision_collection_group_{project_id}_{group_id}",
+                            ):
+                                for endpoint_id in visible_ids:
+                                    endpoint = endpoints_by_id[endpoint_id]
+                                    previous = source_endpoints_by_id.get(endpoint_id)
+                                    request_col, status_col = st.columns([4, 2], vertical_alignment="center")
+                                    with request_col:
+                                        st.checkbox(
+                                            f"{str(endpoint.get('method') or 'GET').upper()} · "
+                                            f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
+                                            key=f"revision_endpoint_{project_id}_{endpoint_id}",
+                                            help=f"URL: {endpoint.get('url') or 'No URL saved'}",
+                                        )
+                                    with status_col:
+                                        st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
+                    if not current_endpoints:
+                        st.caption("No saved endpoints are available in this project.")
+                revision_options = saved_project.get("test_case_revisions", [])
+                label_key = f"revision_label_{project_id}"
+                pending_label = st.session_state.pop(f"{label_key}_pending", None)
+                if pending_label is not None:
+                    st.session_state[label_key] = pending_label
+                revision_label = st.text_input(
+                    "Release label", key=label_key,
+                    value=f"Revision {max([int(item.get('ordinal', 0)) for item in revision_options] + [0]) + 1}",
+                )
+                st.caption(
+                    f"Selected {len(baseline_ids)} saved baseline case(s) and {len(selected_endpoint_ids)} "
+                    f"current endpoint(s) across {len(selected_collection_ids)} collection(s). "
+                    "The previous revision remains unchanged."
+                )
+                revision_clicked = st.button(
+                    "Generate release revision", key=f"generate_revision_{project_id}",
+                    type="primary", icon=":material/rebase_edit:",
+                    disabled=not baseline_ids or not selected_endpoint_ids or not revision_label.strip() or bool(unsaved_case_ids),
+                )
+                if revision_clicked:
+                    with st.spinner("Generating the complete revised suite..."):
+                        try:
+                            response = api_post(
+                                f"/api/v1/projects/{project_id}/test-case-revisions",
+                                {
+                                    "source_activity_id": source_id,
+                                    "baseline_case_ids": baseline_ids,
+                                    "release_label": revision_label.strip(),
+                                    "release_notes": revision_notes,
+                                    "endpoint_ids": selected_endpoint_ids,
+                                },
+                            )
+                            project.setdefault("test_case_revisions", []).append(response["revision"])
+                            project.setdefault("test_cases", []).extend(response["test_cases"])
+                            st.session_state["test_cases"] = project["test_cases"]
+                            st.session_state[f"{source_key}_pending"] = response["activity"]["id"]
+                            st.session_state[f"{baseline_key}_pending"] = [
+                                str(item.get("id")) for item in response["test_cases"] if item.get("id")
+                            ]
+                            st.session_state[f"{label_key}_pending"] = f"Revision {response['revision'].get('ordinal', 1) + 1}"
+                            for warning in response.get("warnings", []):
+                                _queue_toast(warning, "warning")
+                            _queue_toast(f"{revision_label} created with {len(response['test_cases'])} cases.")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not generate release revision: {exc}")
+
 
 
 def render_test_case_list(loaded_run_id: str | None = None) -> None:
@@ -2495,14 +3090,18 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
     test_cases.sort(key=_test_case_sort_key)
     project = st.session_state.get("current_project") or {}
-    if not test_cases:
-        st.info("No test cases yet. Generate a set or add a manual case from a saved request.")
-        return
+    revisions = sorted(project.get("test_case_revisions", []), key=lambda item: int(item.get("ordinal", 0)))
+    project_id = project.get("id", "default")
+    revision_by_id = {str(item.get("id")): item for item in revisions}
+    latest_revision_id = str(revisions[-1].get("id")) if revisions else None
+    if revisions:
+        revision_key = f"tc_revision_view_{project_id}"
+        st.session_state.setdefault(revision_key, "All revisions")
+        view_options = ["Latest revision", "All revisions"] + list(revision_by_id)
 
     endpoints = project.get("endpoints", [])
     collections = project.get("collections", [])
     runs = project.get("test_runs", [])
-    project_id = project.get("id", "default")
     scope_keys = {
         name: f"tc_scope_{name}_{project_id}"
         for name in ("runs", "collections", "endpoints")
@@ -2518,22 +3117,34 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
     st.session_state.setdefault("test_case_filter", "All")
 
     with st.container(key="test-case-scope-filters"):
-        filter_cols = st.columns([1.2, 1.2, 1.6, 0.65], vertical_alignment="bottom")
-        with filter_cols[0]:
+        if revisions:
+            filter_cols = st.columns([1.45, 1.15, 1.15, 1.6, 0.6], vertical_alignment="bottom")
+            with filter_cols[0]:
+                view_value = st.selectbox(
+                    "Test case revision", view_options, key=revision_key,
+                    format_func=lambda value: value if value in {"Latest revision", "All revisions"}
+                    else revision_by_id[value].get("label", value),
+                )
+            filter_offset = 1
+        else:
+            filter_cols = st.columns([1.2, 1.2, 1.6, 0.65], vertical_alignment="bottom")
+            view_value = "All revisions"
+            filter_offset = 0
+        with filter_cols[filter_offset]:
             selected_run_ids = st.multiselect(
-                "Reusable runs", options_by_name["runs"], key=scope_keys["runs"],
-                placeholder="All runs", format_func=lambda run_id: next(
+                "Test suites", options_by_name["runs"], key=scope_keys["runs"],
+                placeholder="All suites", format_func=lambda run_id: next(
                     (item.get("name", "Untitled run") for item in runs if item.get("id") == run_id), run_id,
                 ),
             )
-        with filter_cols[1]:
+        with filter_cols[filter_offset + 1]:
             selected_collection_ids = st.multiselect(
                 "Collections", options_by_name["collections"], key=scope_keys["collections"],
                 placeholder="All collections", format_func=lambda collection_id: next(
                     (item.get("name", "Untitled collection") for item in collections if item.get("id") == collection_id), collection_id,
                 ),
             )
-        with filter_cols[2]:
+        with filter_cols[filter_offset + 2]:
             selected_endpoint_ids = st.multiselect(
                 "Endpoints", options_by_name["endpoints"], key=scope_keys["endpoints"],
                 placeholder="All endpoints", format_func=lambda endpoint_id: next(
@@ -2541,12 +3152,23 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
                      for item in endpoints if item.get("id") == endpoint_id), endpoint_id,
                 ),
             )
-        with filter_cols[3]:
+        with filter_cols[filter_offset + 3]:
             st.button(
                 "Clear", key=f"tc_clear_scope_filters_{project_id}",
                 help="Clear run, collection, endpoint, and result filters",
                 on_click=_clear_test_case_filters, args=(project_id,), width="stretch",
             )
+
+    if revisions:
+        if view_value == "Latest revision":
+            visible_ids = set(revisions[-1].get("case_ids", []))
+            test_cases = [item for item in test_cases if str(item.get("id")) in visible_ids]
+        elif view_value != "All revisions":
+            visible_ids = set(revision_by_id[view_value].get("case_ids", []))
+            test_cases = [item for item in test_cases if str(item.get("id")) in visible_ids]
+    if not test_cases:
+        st.info("No test cases in this revision view. Choose All revisions to browse the full project suite.")
+        return
 
     scoped_cases = _filter_test_cases_by_scope(
         test_cases, endpoints, selected_run_ids, runs,
@@ -2654,7 +3276,12 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         with save_col:
             save_clicked = st.button(
                 "Save to project", key="tc_save_project", icon=":material/save:",
-                width="stretch", disabled=not project,
+                width="stretch",
+                disabled=(
+                    not project
+                    or view_value == "All revisions" and bool(revisions)
+                    or view_value in revision_by_id and view_value != latest_revision_id
+                ),
             )
 
     if run_selected:
@@ -2666,7 +3293,7 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
                 saved_by_id = {case.get("id"): case for case in saved_cases}
                 targets = [saved_by_id[case.get("id")] for case in targets if case.get("id") in saved_by_id]
                 if not targets:
-                    st.warning("The saved run has no remaining saved test cases. Save the run again to update its selection.")
+                    st.warning("This suite has no remaining saved test cases. Update the suite to change its selection.")
             except Exception as exc:
                 st.error(f"Could not load the latest saved test cases: {exc}")
                 targets = []
@@ -2738,7 +3365,9 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
             shown += 1
             if tc.get("is_flow") or isinstance(tc.get("steps"), list):
                 st.caption(_flow_provenance_label(tc, endpoints, collections))
-            render_test_case_card(tc, test_cases.index(tc))
+            revision_id = str(tc.get("revision_id", ""))
+            read_only = revision_id in revision_by_id and revision_id != latest_revision_id
+            render_test_case_card(tc, test_cases.index(tc), read_only=read_only)
     if shown == 0:
         st.caption("No test cases match the selected filters.")
 
@@ -2810,10 +3439,10 @@ def render_generation_activity_tab() -> None:
     refresh_clicked = st.button("Refresh logs", key=refresh_key, icon=":material/refresh:")
     if cache_key not in st.session_state or refresh_clicked:
         try:
-            st.session_state[cache_key] = _raw_get(
+            st.session_state[cache_key] = api_get(
                 f"/api/v1/projects/{project_id}/generation-activity?limit=100"
             )
-        except requests.RequestException as exc:
+        except Exception as exc:
             st.error(f"Could not load generation history: {exc}")
     records = _normalise_generation_activity_records(st.session_state.get(cache_key))
     if not records:
@@ -2859,8 +3488,21 @@ def _show_generation_activity_details(record: dict) -> None:
     st.caption(f"Activity ID: {record.get('id', 'Unknown')}")
     st.markdown("**Project**")
     st.write(record.get("project_id", "Unknown project"))
-    st.markdown("**Business requirements**")
-    st.write(record.get("business_requirements") or "None provided")
+    if record.get("mode") == "Release revision":
+        previous_requirements = record.get("previous_requirements")
+        if previous_requirements is None:
+            previous_requirements = record.get("business_requirements")
+        st.markdown("**Previous business requirements**")
+        st.write(previous_requirements or "None recorded")
+        st.markdown("**Previous release notes**")
+        st.write(record.get("previous_release_notes") or "None recorded")
+        st.markdown("**New requirement changes**")
+        st.write(record.get("release_notes") or "None provided")
+        st.markdown("**Cumulative requirements saved on revised cases**")
+        st.write(record.get("business_requirements") or "None provided")
+    else:
+        st.markdown("**Business requirements**")
+        st.write(record.get("business_requirements") or "None provided")
     st.markdown("**Included endpoints**")
     endpoints = record.get("endpoints", [])
     if endpoints:

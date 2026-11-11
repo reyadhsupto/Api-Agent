@@ -120,6 +120,19 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_generation_activity_project_time
                     ON generation_activity(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS test_case_revisions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL,
+                    label TEXT NOT NULL,
+                    source_activity_id TEXT NOT NULL,
+                    previous_requirements TEXT NOT NULL DEFAULT '',
+                    previous_release_notes TEXT NOT NULL DEFAULT '',
+                    release_notes TEXT NOT NULL DEFAULT '',
+                    case_ids_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(project_id, ordinal)
+                );
                 CREATE TABLE IF NOT EXISTS app_state (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -133,6 +146,7 @@ class Database:
                 "ALTER TABLE projects ADD COLUMN IF NOT EXISTS generation_order_json TEXT NOT NULL DEFAULT '[]'",
             )
             _execute(connection, "ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS collection_id TEXT")
+            _execute(connection, "ALTER TABLE test_case_revisions ADD COLUMN IF NOT EXISTS previous_release_notes TEXT NOT NULL DEFAULT ''")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_collections_project_order ON collections(project_id, ordinal)")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_endpoints_collection_order ON endpoints(collection_id, ordinal)")
             _execute(connection, """
@@ -541,10 +555,17 @@ class Database:
                     (project_id,),
                 )
             ]
+            result["test_case_revisions"] = [
+                self._decode_revision(row) for row in _execute(
+                    connection,
+                    "SELECT * FROM test_case_revisions WHERE project_id=? ORDER BY ordinal,id",
+                    (project_id,),
+                )
+            ]
             result["executions"] = [
-                self._decode(row["payload_json"])
+                {**self._decode(row["payload_json"]), "execution_id": row["id"], "created_at": row["created_at"]}
                 for row in _execute(connection,
-                    "SELECT payload_json FROM executions WHERE project_id = ? ORDER BY created_at, id",
+                    "SELECT id,created_at,payload_json FROM executions WHERE project_id = ? ORDER BY created_at, id",
                     (project_id,),
                 )
             ]
@@ -883,9 +904,16 @@ class Database:
                 item = dict(testcase)
                 item.setdefault("id", str(uuid.uuid4()))
                 row = _execute(connection,
-                    "SELECT ordinal FROM test_cases WHERE id=? AND project_id=?",
+                    "SELECT ordinal,payload_json FROM test_cases WHERE id=? AND project_id=?",
                     (item["id"], project_id),
                 ).fetchone()
+                if item.get("is_flow") or isinstance(item.get("steps"), list):
+                    old_steps = self._decode(row["payload_json"]).get("steps", []) if row else []
+                    for index, step in enumerate(item.get("steps", []), start=1):
+                        if not step.get("step_id"):
+                            prior_id = old_steps[index - 1].get("step_id") if index <= len(old_steps) else None
+                            step["step_id"] = prior_id or str(uuid.uuid4())
+                        step["step_order"] = index
                 ordinal = row["ordinal"] if row else _execute(connection,
                     "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM test_cases WHERE project_id=?",
                     (project_id,),
@@ -958,6 +986,81 @@ class Database:
                 (str(uuid.uuid4()), project_id, test_case_id, _now(), self._encode(result)),
             )
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
+
+    def list_test_case_executions(self, project_id: str, test_case_id: str, limit: int = 100) -> list[dict] | None:
+        """Return newest execution outcomes and their executed configuration snapshots."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(
+                connection,
+                "SELECT id,created_at,payload_json FROM executions WHERE project_id=? AND test_case_id=? "
+                "ORDER BY created_at DESC,id DESC LIMIT ?",
+                (project_id, test_case_id, max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [{**self._decode(row["payload_json"]), "execution_id": row["id"], "created_at": row["created_at"]} for row in rows]
+
+    @staticmethod
+    def _decode_revision(row: dict) -> dict:
+        """Decode revision membership from its normalized project row."""
+        revision = dict(row)
+        try:
+            revision["case_ids"] = json.loads(revision.pop("case_ids_json", "[]") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            revision["case_ids"] = []
+        return revision
+
+    def get_generation_activity(self, project_id: str, activity_id: str) -> dict | None:
+        """Fetch one generation record scoped to its owning project."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "SELECT payload_json FROM generation_activity WHERE project_id=? AND id=?",
+                (project_id, activity_id),
+            ).fetchone()
+        return self._decode(row["payload_json"]) if row else None
+
+    def save_test_case_revision(self, project_id: str, revision: dict, test_cases: list[dict]) -> dict | None:
+        """Atomically persist a revision, its generated cases, and ordered membership."""
+        now = _now()
+        case_ids = [str(item["id"]) for item in test_cases]
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            ordinal = _execute(connection,
+                "SELECT COALESCE(MAX(ordinal)+1,1) AS ordinal FROM test_case_revisions WHERE project_id=?",
+                (project_id,),
+            ).fetchone()["ordinal"]
+            revision_id = revision.get("id") or str(uuid.uuid4())
+            for testcase in test_cases:
+                item = dict(testcase)
+                row = _execute(connection,
+                    "SELECT ordinal FROM test_cases WHERE id=? AND project_id=?", (item["id"], project_id)
+                ).fetchone()
+                case_ordinal = row["ordinal"] if row else _execute(connection,
+                    "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM test_cases WHERE project_id=?", (project_id,)
+                ).fetchone()["ordinal"]
+                _execute(connection,
+                    "INSERT INTO test_cases(id,project_id,ordinal,payload_json) VALUES(?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json",
+                    (item["id"], project_id, case_ordinal, self._encode(item)),
+                )
+            payload = {
+                "id": revision_id, "project_id": project_id, "ordinal": ordinal,
+                "label": revision["label"], "source_activity_id": revision["source_activity_id"],
+                "previous_requirements": revision.get("previous_requirements", ""),
+                "previous_release_notes": revision.get("previous_release_notes", ""),
+                "release_notes": revision.get("release_notes", ""),
+                "case_ids": case_ids, "created_at": now,
+            }
+            _execute(connection,
+                "INSERT INTO test_case_revisions(id,project_id,ordinal,label,source_activity_id,previous_requirements,previous_release_notes,release_notes,case_ids_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (revision_id, project_id, ordinal, payload["label"], payload["source_activity_id"],
+                 payload["previous_requirements"], payload["previous_release_notes"], payload["release_notes"],
+                 self._encode(case_ids), now),
+            )
+            _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
+        return payload
 
     def record_generation_activity(self, project_id: str, activity: dict) -> dict | None:
         """Append one generation action and return its persisted activity record."""

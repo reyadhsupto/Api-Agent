@@ -373,6 +373,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
             )
 
             step_results.append({
+                "step_id": step.get("step_id"),
                 "step_order": step_order,
                 "endpoint": endpoint.get("name", endpoint.get("url", "")),
                 "method": method,
@@ -396,6 +397,7 @@ def execute_flow_test_case(test_case: dict, base_url: str = "", assertions: dict
         except requests.RequestException as exc:
             latency_ms = round((time.perf_counter() - step_start) * 1000, 2)
             step_results.append({
+                "step_id": step.get("step_id"),
                 "step_order": step_order,
                 "endpoint": endpoint.get("name", endpoint.get("url", "")),
                 "method": method,

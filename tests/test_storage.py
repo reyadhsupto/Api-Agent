@@ -309,8 +309,8 @@ def test_project_and_execution_routes_read_and_write_postgres(database, monkeypa
     assert main.list_projects()[0]["name"] == "Default Project"
 
 
-def test_editing_saved_flow_upserts_steps_and_clears_old_execution(database, monkeypatch):
-    """Flow edits update the same case row and discard results for old request data."""
+def test_editing_saved_flow_keeps_old_execution_history(database, monkeypatch):
+    """Flow edits update the same case row while retaining earlier execution results."""
     monkeypatch.setattr(main, "database", database)
     project_id = database.create_project("Editable flow") ["id"]
     original = {
@@ -347,11 +347,12 @@ def test_editing_saved_flow_upserts_steps_and_clears_old_execution(database, mon
     assert len(project["test_cases"]) == 1
     assert len(project["test_cases"][0]["steps"]) == 2
     assert project["test_cases"][0]["steps"][1]["variable_mappings"][0]["to"] == "headers.Authorization"
-    assert project["executions"] == []
+    assert len(project["executions"]) == 1
+    assert project["executions"][0]["status"] == "passed"
 
 
-def test_execution_uses_unsaved_test_case_without_persisting_it(database, monkeypatch):
-    """The Run action can try edits before Save without changing the stored case."""
+def test_execution_persists_unsaved_configuration_snapshot(database, monkeypatch):
+    """Runs of unsaved edits persist their exact case snapshot without saving the case."""
     monkeypatch.setattr(main, "database", database)
     project_id = database.create_project("Unsaved execution") ["id"]
     database.save_test_cases(project_id, [{
@@ -376,7 +377,51 @@ def test_execution_uses_unsaved_test_case_without_persisting_it(database, monkey
     project = database.get_project(project_id)
     assert captured["request"]["method"] == "POST"
     assert project["test_cases"][0]["request"]["url"] == "https://example.test/old"
-    assert project["executions"] == []
+    assert project["executions"][0]["test_case_snapshot"]["request"]["url"] == "https://example.test/edited"
+    assert database.list_test_case_executions(project_id, "unsaved-edit")[0]["status"] == "passed"
+
+
+def test_release_revision_keeps_baseline_and_links_new_case_ids(database, monkeypatch):
+    """A revision stores a separate complete suite with source linkage and membership."""
+    monkeypatch.setattr(main, "database", database)
+    project = database.create_project("Release revisions")
+    project_id = project["id"]
+    endpoint = database.add_endpoint(project_id, {
+        "id": "release-ep", "method": "GET", "url": "https://example.test/v2",
+    })
+    baseline = {
+        "id": "baseline-case", "name": "Old case", "request": {"method": "GET", "url": "https://example.test/v1"},
+    }
+    database.save_test_cases(project_id, [baseline])
+    source = database.record_generation_activity(project_id, {
+        "business_requirements": "Previous rules", "generated_case_ids": ["baseline-case"],
+    })
+    captured = {}
+
+    def fake_revision(cases, endpoints, previous, notes, trace, prior_release_notes=""):
+        captured.update({"previous": previous, "notes": notes, "endpoints": endpoints})
+        return [
+            {"id": "temp-1", "source_case_id": "baseline-case", "name": "Updated", "type": "positive",
+             "request": {"method": "GET", "url": endpoint["url"]}},
+            {"id": "temp-new", "source_case_id": None, "name": "Added", "type": "negative",
+             "request": {"method": "GET", "url": endpoint["url"]}},
+        ]
+
+    monkeypatch.setattr(main, "generate_test_case_revision", fake_revision)
+    response = main.create_test_case_revision(project_id, main.TestCaseRevisionRequest(
+        source_activity_id=source["id"], baseline_case_ids=["baseline-case"],
+        release_label="Release 2", release_notes="Changed endpoint behavior", endpoint_ids=["release-ep"],
+    ))
+    stored = database.get_project(project_id)
+    old_case = next(item for item in stored["test_cases"] if item["id"] == "baseline-case")
+
+    assert captured == {"previous": "Previous rules", "notes": "Changed endpoint behavior", "endpoints": [endpoint]}
+    assert old_case == baseline
+    assert response["revision"]["label"] == "Release 2"
+    assert len(response["revision"]["case_ids"]) == 2
+    revised_cases = [item for item in stored["test_cases"] if item.get("revision_id") == response["revision"]["id"]]
+    assert len(revised_cases) == 2
+    assert next(item for item in revised_cases if item.get("source_case_id"))["source_case_id"] == "baseline-case"
 
 
 def test_test_case_update_rejects_invalid_mapping_target(database, monkeypatch):

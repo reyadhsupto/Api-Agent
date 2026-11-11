@@ -31,7 +31,17 @@ from frontend.app import (
     _save_request_draft,
     _selected_request_assertions,
     _normalise_generation_activity_records,
+    _flaky_summary,
 )
+
+
+def test_flakiness_uses_three_of_latest_ten_and_requires_mixed_outcomes():
+    """Flaky classification needs at least three recent runs and both outcome classes."""
+    assert _flaky_summary(["passed", "failed"])["flaky"] is False
+    assert _flaky_summary(["passed", "passed", "passed"])["flaky"] is False
+    assert _flaky_summary(["passed", "error", "passed"])["flaky"] is True
+    assert _flaky_summary(["passed"] * 10 + ["failed"])["flaky"] is False
+    assert _flaky_summary(["passed", "failed", "error"])["non_passed"] == 2
 
 
 def test_flow_step_normalization_keeps_order_and_edits_multiple_assertions():
