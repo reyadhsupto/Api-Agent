@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import sys
+from uuid import UUID
 
 from app import storage
 
@@ -14,6 +15,22 @@ else:
     from app import main
 
 from app.schemas import FlowGenerateRequest, TestCaseGenerateRequest as GenerateRequest
+
+
+def test_generated_case_ids_are_backend_uuids(monkeypatch):
+    """Replace readable model IDs with distinct UUIDs before saving generated cases."""
+    class FakeDatabase:
+        def find_test_case(self, test_case_id):
+            return None
+
+    cases = [{"id": "flow-positive"}, {"id": "flow-negative"}]
+    monkeypatch.setattr(main, "database", FakeDatabase())
+
+    main._assign_test_case_ids("project-1", cases)
+
+    assigned_ids = [case["id"] for case in cases]
+    assert len(set(assigned_ids)) == 2
+    assert all(str(UUID(case_id)) == case_id for case_id in assigned_ids)
 
 
 def test_single_generation_persists_endpoint_group_metadata(monkeypatch):

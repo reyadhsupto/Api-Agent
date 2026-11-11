@@ -9,13 +9,16 @@ Returns:
 """
 
 import json
+import csv
 import copy
+import io
 import time
 import uuid
 import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas import (
@@ -28,9 +31,10 @@ from app.schemas import (
     ContractImportRequest,
     FlowDiscoveryRequest,
     DiscoveredFlowGenerateRequest,
+    TestCaseRevisionRequest,
 )
 from app.parser import parse_curl
-from app.generator import generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases
+from app.generator import generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases, generate_test_case_revision
 from app.contracts import (
     build_dependency_graph,
     fetch_public_document,
@@ -54,6 +58,72 @@ def _generate_or_raise(generator, **kwargs) -> list:
         ) from exc
 
 
+def _project_endpoint_snapshot(project: dict | None) -> list[dict]:
+    """Capture comparable request definitions and collection placement for a project."""
+    collections_by_id = {
+        str(item.get("id")): item
+        for item in (project or {}).get("collections", []) if item.get("id")
+    }
+    snapshot = []
+    for item in (project or {}).get("endpoints", []):
+        collection_id = item.get("collection_id")
+        collection = collections_by_id.get(str(collection_id))
+        snapshot.append({
+            "id": str(item.get("id", "")),
+            "name": item.get("name", ""),
+            "method": str(item.get("method", "GET")).upper(),
+            "url": item.get("url", ""),
+            "headers": _enabled_values(item.get("headers", {})),
+            "query_params": _enabled_values(item.get("query_params", {})),
+            "body": None if item.get("include_body") is False else copy.deepcopy(item.get("body")),
+            "collection_id": str(collection_id) if collection_id else None,
+            "collection_name": collection.get("name", "Unassigned collection") if collection else "Unassigned collection",
+        })
+    return snapshot
+
+
+def _drop_unsupported_revision_mappings(test_case: dict) -> list[str]:
+    """Remove revision mappings that the flow editor and executor cannot apply.
+
+    Args:
+        test_case (dict): Generated test case, possibly a flow.
+
+    Returns:
+        list[str]: Human-readable warnings for removed mapping destinations.
+    """
+    if not (test_case.get("is_flow") or isinstance(test_case.get("steps"), list)):
+        return []
+    warnings = []
+    for step_index, step in enumerate(test_case.get("steps", []), start=1):
+        if not isinstance(step, dict):
+            continue
+        mappings = step.get("variable_mappings", [])
+        if not isinstance(mappings, list):
+            continue
+        retained = []
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                retained.append(mapping)
+                continue
+            target = mapping.get("to")
+            if not isinstance(target, str):
+                retained.append(mapping)
+                continue
+            supported = (
+                target.startswith("headers.") and len(target) > len("headers.")
+                or target.startswith("request.query.") and len(target) > len("request.query.")
+                or target.startswith("request.path.") and len(target) > len("request.path.")
+                or target == "request.body"
+                or target.startswith("request.body.") and len(target) > len("request.body.")
+            )
+            if supported:
+                retained.append(mapping)
+            else:
+                warnings.append(f"Flow step {step_index}: omitted unsupported mapping destination `{target}`.")
+        step["variable_mappings"] = retained
+    return warnings
+
+
 def _record_generation_activity(
     project_id: str,
     mode: str,
@@ -64,7 +134,8 @@ def _record_generation_activity(
     test_cases: list[dict] | None = None,
     error: str | None = None,
 ) -> None:
-    """Persist the input and outcome of a generation action for later review."""
+    """Persist the generation input, outcome, and a comparable project snapshot."""
+    endpoint_snapshot = _project_endpoint_snapshot(database.get_project(project_id))
     database.record_generation_activity(project_id, {
         "mode": mode,
         "business_requirements": business_requirements or "",
@@ -72,6 +143,7 @@ def _record_generation_activity(
             "id": item.get("id"), "name": item.get("name", ""),
             "method": item.get("method", "GET"), "url": item.get("url", ""),
         } for item in endpoints],
+        "endpoint_snapshot": endpoint_snapshot,
         "prompt": trace.get("prompt", ""),
         "llm_response": trace.get("llm_response", ""),
         "status": status,
@@ -221,13 +293,15 @@ def _postman_collection(collection: dict) -> dict:
 
 
 def _assign_test_case_ids(project_id: str, test_cases: list[dict]) -> None:
-    """Ensure generated case IDs do not overwrite earlier generations."""
+    """Replace model-provided IDs with unique UUIDs for newly generated cases."""
     seen = set()
     for test_case in test_cases:
-        test_case_id = test_case.get("id")
-        if not test_case_id or test_case_id in seen or database.find_test_case(test_case_id):
-            test_case["id"] = str(uuid.uuid4())
-        seen.add(test_case["id"])
+        while True:
+            test_case_id = str(uuid.uuid4())
+            if test_case_id not in seen and database.find_test_case(test_case_id) is None:
+                break
+        test_case["id"] = test_case_id
+        seen.add(test_case_id)
 
 
 def _ensure_response_schema_defaults(test_cases: list[dict]) -> None:
@@ -270,6 +344,22 @@ def _attach_generation_requirements(
         test_case["business_requirements"] = requirements
 
 
+def _merge_revision_requirements(
+    previous_requirements: str, previous_release_notes: str, new_requirement_changes: str,
+) -> str:
+    """Build the cumulative requirements saved on cases produced by a revision."""
+    combined = previous_requirements.strip()
+    prior_notes = previous_release_notes.strip()
+    new_changes = new_requirement_changes.strip()
+    if prior_notes and prior_notes.casefold() not in combined.casefold():
+        section = f"Release changes from the previous revision:\n{prior_notes}"
+        combined = f"{combined}\n\n{section}" if combined else section
+    if new_changes:
+        section = f"Release requirement changes:\n{new_changes}"
+        combined = f"{combined}\n\n{section}" if combined else section
+    return combined
+
+
 app = FastAPI(title="Api-Agent", version="0.1.0")
 
 app.add_middleware(
@@ -293,12 +383,176 @@ def health() -> dict:
 
 
 @app.get("/api/v1/projects/{project_id}/generation-activity")
-def get_generation_activity(project_id: str, limit: int = 100) -> list[dict]:
-    """List recent generation actions for a project."""
-    records = database.list_generation_activity(project_id, limit)
-    if records is None:
+def get_generation_activity(project_id: str, limit: int = 100, offset: int = 0) -> dict:
+    """List recent generation actions for a project with pagination.
+
+    Args:
+        project_id (str): The project ID.
+        limit (int): Maximum number of records to return (default 100).
+        offset (int): Number of records to skip (default 0).
+
+    Returns:
+        dict: {"activities": list, "total": int, "limit": int, "offset": int}
+    """
+    all_records = database.list_generation_activity(project_id, limit, offset)
+    if all_records is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return records
+    total_records = len(all_records)
+    return {
+        "activities": all_records,
+        "total": total_records,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.post("/api/v1/projects/{project_id}/test-case-revisions")
+def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest) -> dict:
+    """Generate and persist a complete new release suite without changing its baseline."""
+    project = database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    source = database.get_generation_activity(project_id, request.source_activity_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source generation action not found in this project")
+    if source.get("status") != "succeeded" or source.get("business_requirements") is None:
+        raise HTTPException(status_code=422, detail="Choose a successful generation action with saved requirements.")
+    cases_by_id = {str(item.get("id")): item for item in project.get("test_cases", [])}
+    baseline_ids = list(dict.fromkeys(request.baseline_case_ids))
+    if not baseline_ids:
+        raise HTTPException(status_code=422, detail="Select at least one baseline test case.")
+    if any(case_id not in cases_by_id for case_id in baseline_ids):
+        raise HTTPException(status_code=404, detail="One or more baseline cases do not belong to this project.")
+    endpoints_by_id = {str(item.get("id")): item for item in project.get("endpoints", [])}
+    endpoint_ids = list(dict.fromkeys(request.endpoint_ids))
+    if not endpoint_ids:
+        raise HTTPException(status_code=422, detail="Select at least one current endpoint.")
+    if any(endpoint_id not in endpoints_by_id for endpoint_id in endpoint_ids):
+        raise HTTPException(status_code=404, detail="One or more endpoints do not belong to this project.")
+
+    baseline = [cases_by_id[case_id] for case_id in baseline_ids]
+    baseline_endpoints = {}
+    for baseline_case in baseline:
+        for step in baseline_case.get("steps", []) if isinstance(baseline_case.get("steps"), list) else []:
+            if not isinstance(step, dict) or not isinstance(step.get("endpoint"), dict):
+                continue
+            old_endpoint = step["endpoint"]
+            old_id = step.get("endpoint_id", old_endpoint.get("id"))
+            if old_id is not None:
+                baseline_endpoints[str(old_id)] = old_endpoint
+        source_endpoint_id = baseline_case.get("source_endpoint_id")
+        request_data = baseline_case.get("request")
+        if source_endpoint_id and isinstance(request_data, dict):
+            baseline_endpoints.setdefault(str(source_endpoint_id), {
+                **copy.deepcopy(request_data),
+                "id": str(source_endpoint_id),
+                "name": baseline_case.get("source_endpoint_name", ""),
+            })
+    effective_endpoints_by_id = {
+        endpoint_id: _effective_request(endpoints_by_id[endpoint_id])
+        for endpoint_id in endpoint_ids
+    }
+    endpoints = [effective_endpoints_by_id[endpoint_id] for endpoint_id in endpoint_ids]
+    endpoint_snapshot = _project_endpoint_snapshot(project)
+    previous_requirements = str(source.get("business_requirements") or "")
+    previous_release_notes = str(source.get("release_notes") or "")
+    cumulative_requirements = _merge_revision_requirements(
+        previous_requirements, previous_release_notes, request.release_notes,
+    )
+    trace = {}
+    try:
+        revised = generate_test_case_revision(
+            baseline, endpoints, previous_requirements, request.release_notes, trace,
+            prior_release_notes=previous_release_notes,
+        )
+        expected_sources = set(baseline_ids)
+        represented = [str(item.get("source_case_id")) for item in revised if item.get("source_case_id")]
+        if set(represented) != expected_sources or len(represented) != len(expected_sources):
+            raise ValueError("The returned suite must contain each baseline source_case_id exactly once.")
+        revision_id = str(uuid.uuid4())
+        generated = []
+        normalization_warnings = []
+        for case in revised:
+            item = copy.deepcopy(case)
+            normalization_warnings.extend(_drop_unsupported_revision_mappings(item))
+            source_case_id = item.get("source_case_id")
+            if source_case_id is not None and str(source_case_id) not in expected_sources:
+                raise ValueError(f"Unknown source_case_id: {source_case_id}")
+            item.update({
+                "id": str(uuid.uuid4()), "revision_id": revision_id,
+                "source_case_id": str(source_case_id) if source_case_id is not None else None,
+                "business_requirements": cumulative_requirements,
+                "release_notes": request.release_notes,
+            })
+            if item.get("is_flow") or isinstance(item.get("steps"), list):
+                item["is_flow"] = True
+                for step_index, step in enumerate(item["steps"], start=1):
+                    endpoint_id = str(step.get("endpoint_id", ""))
+                    if endpoint_id in endpoint_ids:
+                        step["endpoint"] = copy.deepcopy(effective_endpoints_by_id[endpoint_id])
+                    elif endpoint_id in baseline_endpoints:
+                        step["endpoint"] = copy.deepcopy(baseline_endpoints[endpoint_id])
+                    else:
+                        raise ValueError(f"Flow step {step_index} must reference a selected current or baseline endpoint.")
+                    step["step_id"] = str(uuid.uuid4())
+                    step["step_order"] = step_index
+            _validate_editable_test_case(item)
+            generated.append(item)
+
+        revision = database.save_test_case_revision(project_id, {
+            "id": revision_id, "label": request.release_label.strip() or "Release revision",
+            "source_activity_id": request.source_activity_id,
+            "previous_requirements": previous_requirements,
+            "previous_release_notes": previous_release_notes,
+            "release_notes": request.release_notes,
+            "endpoint_snapshot": endpoint_snapshot,
+        }, generated)
+        if revision is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        activity = database.record_generation_activity(project_id, {
+            "mode": "Release revision", "business_requirements": cumulative_requirements,
+            "previous_requirements": previous_requirements,
+            "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
+            "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
+            "endpoint_snapshot": endpoint_snapshot,
+            "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "status": "succeeded", "error": "", "generated_case_ids": [item["id"] for item in generated],
+            "revision_id": revision_id, "revision_label": revision["label"],
+            "source_activity_id": request.source_activity_id, "source_case_ids": baseline_ids,
+            "warnings": normalization_warnings,
+        })
+        return {
+            "revision": revision, "test_cases": generated, "activity": activity,
+            "warnings": normalization_warnings,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        database.record_generation_activity(project_id, {
+            "mode": "Release revision", "business_requirements": cumulative_requirements,
+            "previous_requirements": previous_requirements,
+            "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
+            "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
+            "endpoint_snapshot": endpoint_snapshot,
+            "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "status": "failed", "error": str(exc), "generated_case_ids": [],
+            "source_activity_id": request.source_activity_id,
+        })
+        raise HTTPException(status_code=502, detail=f"Could not generate complete release suite: {exc}") from exc
+
+
+@app.get("/api/v1/projects/{project_id}/test-cases/{test_case_id}/history")
+def get_test_case_history(project_id: str, test_case_id: str, limit: int = 100) -> dict:
+    """Return project-scoped execution history for one saved test case."""
+    found = database.find_test_case(test_case_id, project_id)
+    if not found:
+        if database.get_project(project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Test case not found")
+    return {
+        "test_case_id": test_case_id,
+        "executions": database.list_test_case_executions(project_id, test_case_id, limit) or [],
+    }
 
 
 # --- Project Management ---
@@ -1300,15 +1554,17 @@ def save_test_cases(project_id: str, request: dict) -> dict:
 
 
 @app.get("/api/v1/projects/{project_id}/test-cases")
-def get_test_cases(project_id: str) -> list:
+def get_test_cases(project_id: str, limit: int = 50, offset: int = 0) -> dict:
     """
-    Get all test cases for a project.
+    Get paginated test cases for a project.
 
     Args:
         project_id (str): The project ID.
+        limit (int): Maximum number of test cases to return (default 50).
+        offset (int): Number of test cases to skip (default 0).
 
     Returns:
-        list: List of test cases.
+        dict: {"test_cases": list, "total": int, "limit": int, "offset": int}
 
     Raises:
         HTTPException: If project not found.
@@ -1316,7 +1572,93 @@ def get_test_cases(project_id: str) -> list:
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project["test_cases"]
+    all_cases = project.get("test_cases", [])
+    total = len(all_cases)
+    paginated = all_cases[offset:offset + limit]
+    return {
+        "test_cases": paginated,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+@app.get("/api/v1/projects/{project_id}/test-cases/export")
+def export_test_cases(
+    project_id: str,
+    limit: int = 1000,
+    offset: int = 0,
+    selected_case_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    """
+    Export test cases as CSV for a project.
+
+    Args:
+        project_id (str): The project ID.
+        limit (int): Maximum number of test cases to export (default 1000).
+        offset (int): Number of test cases to skip (default 0).
+        selected_case_ids (list[str] | None): Optional case IDs to export.
+
+    Returns:
+        StreamingResponse: CSV containing test case definitions; flow steps are JSON in one cell.
+
+    Raises:
+        HTTPException: If project not found.
+    """
+    project = database.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    all_cases = project.get("test_cases", [])
+    if selected_case_ids is not None:
+        selected_ids = set(selected_case_ids)
+        all_cases = [case for case in all_cases if str(case.get("id", "")) in selected_ids]
+    paginated = all_cases[offset:offset + limit]
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "test_case_id", "name", "type", "description", "business_requirements",
+        "is_flow", "source_endpoint_id", "source_endpoint_name",
+        "request_method", "request_url", "request_headers_json",
+        "request_query_params_json", "request_body_json", "assertions_json", "steps_json",
+    ])
+
+    def json_cell(value) -> str:
+        """Serialize structured CSV cells without losing nested request data."""
+        if value is None:
+            return ""
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    for tc in paginated:
+        is_flow = bool(tc.get("is_flow") or isinstance(tc.get("steps"), list))
+        request = (tc.get("request") or {}) if not is_flow else {}
+        writer.writerow([
+            tc.get("id", ""),
+            tc.get("name", ""),
+            tc.get("type", ""),
+            tc.get("description", ""),
+            tc.get("business_requirements", ""),
+            is_flow,
+            tc.get("source_endpoint_id", ""),
+            tc.get("source_endpoint_name", ""),
+            request.get("method", "GET") if request else "",
+            request.get("url", ""),
+            json_cell(request.get("headers")),
+            json_cell(request.get("query_params")),
+            json_cell(request.get("body")),
+            json_cell(tc.get("assertions")),
+            json_cell(tc.get("steps")) if is_flow else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="test_cases_{project_id}.csv"'},
+    )
+
+
 
 
 @app.delete("/api/v1/projects/{project_id}/test-cases")
@@ -1377,14 +1719,7 @@ def update_test_case(project_id: str, test_case_id: str, request: dict) -> dict:
     merged.update(request)
     merged["id"] = test_case_id
     _validate_editable_test_case(merged)
-    request_data_changed = (
-        existing[1].get("request") != merged.get("request")
-        or existing[1].get("steps") != merged.get("steps")
-    )
-    tc = database.update_test_case(project_id, test_case_id, merged)
-    if request_data_changed:
-        database.clear_test_case_executions(project_id, test_case_id)
-    return tc
+    return database.update_test_case(project_id, test_case_id, merged)
 
 
 def _validate_editable_test_case(test_case: dict) -> None:
@@ -1403,6 +1738,10 @@ def _validate_editable_test_case(test_case: dict) -> None:
             if not isinstance(method, str) or not method.strip() or not method.replace("-", "").isalnum():
                 raise HTTPException(status_code=422, detail=f"Flow step {index} has an invalid request method.")
             step["step_order"] = index
+            step.setdefault(
+                "step_id",
+                str(uuid.uuid5(uuid.NAMESPACE_URL, f"api-agent:{test_case.get('id')}:{index}")),
+            )
             mappings = step.get("variable_mappings", [])
             if not isinstance(mappings, list):
                 raise HTTPException(status_code=422, detail=f"Flow step {index} mappings must be a list.")
@@ -1485,85 +1824,19 @@ def execute_test_case_endpoint(request: dict) -> dict:
         if not isinstance(supplied_case, dict) or supplied_case.get("id") != test_case_id:
             raise HTTPException(status_code=422, detail="Execution test case must match the saved test-case ID.")
         test_case = copy.deepcopy(supplied_case)
-        _validate_editable_test_case(test_case)
-        persist_execution = _execution_inputs_match(found[1], test_case)
-    else:
-        persist_execution = True
+    _validate_editable_test_case(test_case)
+    execution_snapshot = copy.deepcopy(test_case)
 
     # Detect flow test cases and execute sequentially with variable substitution
     if test_case.get("is_flow"):
         result = execute_flow_test_case(test_case, assertions=assertions)
     else:
         result = execute_test_case(test_case, assertions=assertions)
-    if persist_execution:
-        database.append_execution(owning_project_id, test_case_id, result)
+    database.append_execution(owning_project_id, test_case_id, {
+        **result, "test_case_snapshot": execution_snapshot,
+        "execution_assertions": copy.deepcopy(assertions),
+    })
     return result
-
-
-def _execution_inputs_match(saved_case: dict, executed_case: dict) -> bool:
-    """Check whether executed request inputs match the saved case inputs.
-
-    The frontend normalizes assertion defaults and flow editor metadata in memory.
-    These presentation changes should not prevent recording a result for an
-    otherwise unchanged saved request. Unsaved endpoint or flow mapping edits
-    still remain session-only and do not create misleading saved-case history.
-    """
-    def request_inputs(request_data: dict) -> dict:
-        """Normalize request editor rows to the values actually sent over HTTP."""
-        def enabled_values(values) -> dict:
-            if isinstance(values, dict):
-                return dict(values)
-            if isinstance(values, list):
-                return {
-                    str(row.get("key")): row.get("value", "")
-                    for row in values
-                    if isinstance(row, dict) and row.get("key") and row.get("enabled", True)
-                }
-            return {}
-
-        return {
-            "method": str(request_data.get("method", "GET")).upper(),
-            "url": request_data.get("url", ""),
-            "headers": enabled_values(request_data.get("headers", {})),
-            "query_params": enabled_values(request_data.get("query_params", {})),
-            "body": request_data.get("body"),
-        }
-
-    is_flow = bool(saved_case.get("is_flow") or executed_case.get("is_flow"))
-    if not is_flow:
-        return request_inputs(saved_case.get("request") or {}) == request_inputs(
-            executed_case.get("request") or {}
-        )
-
-    def flow_inputs(test_case: dict) -> list[dict]:
-        inputs = []
-        ordered_steps = sorted(
-            test_case.get("steps", []),
-            key=lambda step: step.get("step_order", 0) if isinstance(step, dict) else 0,
-        )
-        for index, step in enumerate(ordered_steps, start=1):
-            if not isinstance(step, dict):
-                return []
-            mappings = step.get("variable_mappings", [])
-            normalized_mappings = [
-                {
-                    "from": mapping.get("from", ""),
-                    "to": mapping.get("to", ""),
-                    "transform": mapping.get("transform") or None,
-                }
-                for mapping in mappings
-                if isinstance(mapping, dict)
-                and (mapping.get("from") or mapping.get("to"))
-            ] if isinstance(mappings, list) else []
-            inputs.append({
-                "request": request_inputs(step.get("endpoint") or {}),
-                "variable_mappings": [] if index == 1 else normalized_mappings,
-            })
-        return inputs
-
-    saved_inputs = flow_inputs(saved_case)
-    executed_inputs = flow_inputs(executed_case)
-    return bool(saved_inputs) and saved_inputs == executed_inputs
 
 
 @app.get("/api/v1/memory/state")

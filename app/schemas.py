@@ -35,6 +35,16 @@ class FlowGenerateRequest(BaseModel):
     scenario_count: Optional[int] = None
 
 
+class TestCaseRevisionRequest(BaseModel):
+    """Inputs for generating a complete new release revision from saved cases."""
+
+    source_activity_id: str
+    baseline_case_ids: list[str] = Field(default_factory=list)
+    release_label: str
+    release_notes: str = ""
+    endpoint_ids: list[str] = Field(default_factory=list)
+
+
 class ContractPreviewRequest(BaseModel):
     """Source text or anonymous URL used to preview imported API requests.
 

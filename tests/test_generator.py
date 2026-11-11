@@ -3,7 +3,29 @@
 import pytest
 
 from app import generator
-from app.generator import _build_flow_prompt, _parse_generated_response
+from app.generator import _build_flow_prompt, _parse_generated_response, generate_test_case_revision
+
+
+def test_revision_prompt_separates_old_requirements_from_release_notes(monkeypatch):
+    """Revision generation sends baseline, old requirements, and release notes in one prompt."""
+    captured = {}
+    response = '[{"id":"tmp","source_case_id":"old-case","name":"Updated",' \
+        '"type":"positive","request":{"method":"GET","url":"/v2"}}]'
+
+    def fake_call(prompt):
+        captured["prompt"] = prompt
+        return response
+
+    monkeypatch.setattr(generator, "_call_llm_with_fallback", fake_call)
+    cases = generate_test_case_revision(
+        [{"id": "old-case", "name": "Old", "request": {"url": "/v1"}}],
+        [{"id": "endpoint-v2", "method": "GET", "url": "/v2"}],
+        "Existing business rules", "Release changes", {},
+    )
+
+    assert cases[0]["source_case_id"] == "old-case"
+    assert "Prior business requirements (read-only context):\nExisting business rules" in captured["prompt"]
+    assert "New release notes (supplement prior requirements):\nRelease changes" in captured["prompt"]
 
 
 def test_parser_rejects_malformed_flow_instead_of_returning_fallback():

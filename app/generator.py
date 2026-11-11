@@ -64,6 +64,91 @@ def generate_test_cases(
     return _parse_generated_response(generated_text)
 
 
+def generate_test_case_revision(
+    baseline_cases: list[dict],
+    endpoints: list[dict],
+    previous_requirements: str,
+    release_notes: str,
+    trace: dict | None = None,
+    prior_release_notes: str = "",
+) -> list[dict]:
+    """Generate a complete release suite from an immutable case baseline."""
+    endpoint_context = [{
+        "id": str(item.get("id", "")), "name": item.get("name", ""),
+        "method": item.get("method", "GET"), "url": item.get("url", ""),
+        "headers": item.get("headers", {}), "query_params": item.get("query_params", {}),
+        "body": item.get("body"),
+    } for item in endpoints]
+    baseline_context = []
+    for case in baseline_cases:
+        clean = {key: case.get(key) for key in (
+            "id", "name", "type", "description", "is_flow", "source_endpoint_id",
+            "source_endpoint_name", "request", "steps", "assertions", "business_requirements",
+        ) if key in case}
+        baseline_context.append(clean)
+    prompt = (
+        "You are revising a complete API test suite for a new software release. Return every baseline case, "
+        "updated where the changed endpoints or release notes require it, and add useful cases for new behavior. "
+        "Do not mutate or omit baseline cases merely to reduce output. For every retained/revised baseline case, "
+        "copy its exact id into source_case_id. New cases must use source_case_id null. Assign unique temporary ids. "
+        "For each single case, use a request object. For each flow, use ordered steps with step_order, endpoint_id, "
+        "endpoint, assertions, and variable_mappings. Use selected endpoints for updated behavior and preserve baseline "
+        "endpoint definitions for unchanged requests not selected. Preserve useful assertions and mappings, update obsolete "
+        "behavior, and include unchanged cases. Flow mappings transfer a prior response value directly into a later "
+        "request only: `to` must be `headers.NAME`, `request.query.NAME`, `request.path.NAME`, `request.body`, or "
+        "`request.body.FIELD` (nested body fields are allowed). Never use `vars.*`, temporary variables, or any other "
+        "destination. The first flow step must have an empty `variable_mappings` list because it has no prior response. "
+        "Omit a mapping if its value is not needed by a later request.\n"
+        f"{_STRICT_JSON_INSTRUCTION}\n"
+        f"Prior business requirements (read-only context):\n{previous_requirements or 'None recorded'}\n"
+        f"Previous release notes (carry-forward context):\n{prior_release_notes or 'None recorded'}\n"
+        f"New requirement changes (supplement prior requirements):\n{release_notes or 'None provided'}\n"
+        f"Selected current endpoints:\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"Baseline cases:\n{json.dumps(baseline_context, ensure_ascii=False, separators=(',', ':'))}\n"
+        "Return ONLY a JSON array. Every case must contain id, source_case_id, name, type, description, "
+        "is_flow, and either request plus assertions, or steps. Flow step_order starts at 1 and is contiguous."
+    )
+    generated_text = _call_llm_with_fallback(prompt)
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": generated_text})
+    cases = _parse_generated_response(generated_text, validate=False)
+    endpoint_catalog = {str(item.get("id")): item for item in endpoints if item.get("id") is not None}
+    for baseline_case in baseline_cases:
+        for step in baseline_case.get("steps", []) if isinstance(baseline_case.get("steps"), list) else []:
+            endpoint = step.get("endpoint") if isinstance(step, dict) else None
+            if isinstance(endpoint, dict) and endpoint.get("id") is not None:
+                endpoint_catalog.setdefault(str(endpoint["id"]), endpoint)
+            elif isinstance(step, dict) and step.get("endpoint_id") is not None and isinstance(endpoint, dict):
+                endpoint_catalog.setdefault(str(step["endpoint_id"]), endpoint)
+        source_endpoint_id = baseline_case.get("source_endpoint_id")
+        request_data = baseline_case.get("request")
+        if source_endpoint_id and isinstance(request_data, dict):
+            endpoint_catalog.setdefault(str(source_endpoint_id), {
+                **request_data,
+                "id": str(source_endpoint_id),
+                "name": baseline_case.get("source_endpoint_name", ""),
+            })
+    for case_index, case in enumerate(cases, start=1):
+        if not isinstance(case, dict) or not (case.get("is_flow") or isinstance(case.get("steps"), list)):
+            continue
+        for step_index, step in enumerate(case.get("steps", []), start=1):
+            if not isinstance(step, dict):
+                continue
+            reference = str(step.get("endpoint_id", ""))
+            endpoint = endpoint_catalog.get(reference)
+            if endpoint is None and isinstance(step.get("endpoint"), dict):
+                proposed = step["endpoint"]
+                endpoint = next((item for item in endpoint_catalog.values()
+                                 if str(item.get("method", "GET")).upper() == str(proposed.get("method", "GET")).upper()
+                                 and item.get("url") == proposed.get("url")), None)
+            if endpoint is None:
+                raise ValueError(f"Revision flow {case_index}, step {step_index} references an unknown baseline or selected endpoint.")
+            step["endpoint_id"] = str(endpoint.get("id", reference))
+            step["endpoint"] = dict(endpoint)
+    _validate_generated_cases(cases)
+    return cases
+
+
 def _validate_generated_cases(test_cases: list) -> list:
     """Validate parsed LLM cases and reject malformed output instead of fabricating cases."""
     if not isinstance(test_cases, list) or not test_cases:

@@ -1,5 +1,10 @@
 """Tests for the temporary API Client request endpoint."""
 
+import asyncio
+import csv
+import io
+import json
+
 from app import main
 from app.schemas import ApiRequest
 
@@ -61,3 +66,40 @@ def test_request_rows_respect_enabled_flags_and_postman_export_preserves_disable
     assert item["header"][1]["disabled"] is True
     assert item["url"]["query"][1]["disabled"] is True
     assert item["body"]["disabled"] is True
+
+
+def test_test_case_csv_export_contains_only_requested_cases_and_preserves_flow_steps(monkeypatch):
+    """CSV export filters by selected IDs and retains flow structure in its JSON cell."""
+    project = {"id": "project-1", "test_cases": [
+        {"id": "single-1", "name": "Single", "request": {"method": "GET", "url": "/items"}},
+        {"id": "not-selected", "name": "Omit me", "request": {"url": "/ignored"}},
+        {"id": "flow-1", "name": "Flow", "is_flow": True, "steps": [{
+            "step_order": 1,
+            "endpoint_id": "endpoint-1",
+            "endpoint": {"method": "POST", "url": "/items", "body": {"name": "A\nB"}},
+            "assertions": {"status": [{"enabled": True, "expected_status": 201}]},
+            "variable_mappings": [{"from": "$.id", "to": "request.path.item_id"}],
+        }]},
+    ]}
+
+    class FakeDatabase:
+        def get_project(self, project_id):
+            return project if project_id == project["id"] else None
+
+    monkeypatch.setattr(main, "database", FakeDatabase())
+    response = main.export_test_cases(
+        "project-1", selected_case_ids=["single-1", "flow-1"],
+    )
+
+    async def read_response():
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    payload = asyncio.run(read_response()).decode("utf-8")
+    rows = list(csv.DictReader(io.StringIO(payload)))
+
+    assert [row["test_case_id"] for row in rows] == ["single-1", "flow-1"]
+    assert len(rows[0]) == 15
+    flow_steps = json.loads(rows[1]["steps_json"])
+    assert flow_steps[0]["endpoint_id"] == "endpoint-1"
+    assert flow_steps[0]["endpoint"]["body"]["name"] == "A\nB"
+    assert flow_steps[0]["variable_mappings"][0]["to"] == "request.path.item_id"
