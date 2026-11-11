@@ -29,6 +29,9 @@ else:
     from request_controls import render_curl_aware_url, render_request_order_list
 
 BACKEND_URL = os.getenv("API_BACKEND_URL", "http://localhost:8000")
+GENERAL_CASE_COLLECTION_ID = "__general_scenarios__"
+GENERAL_CASE_COLLECTION_NAME = "General scenarios"
+NEW_GENERAL_CASE_COLLECTION = "__create_general_collection__"
 GLOBAL_CSS = """
 <style>
 :root {
@@ -252,6 +255,14 @@ div[class*="st-key-tc-card-"] {
 div[class*="st-key-tc-card-passed-"] { border-left-color: #2e9e5b !important; }
 div[class*="st-key-tc-card-failed-"] { border-left-color: #e5484d !important; }
 div[class*="st-key-tc-card-error-"] { border-left-color: #f5a524 !important; }
+div[class*="st-key-manual_pass_"] button {
+    background: #2e9e5b !important; border-color: #2e9e5b !important; color: #fff !important;
+}
+div[class*="st-key-manual_pass_"] button:hover { background: #247c47 !important; border-color: #247c47 !important; }
+div[class*="st-key-manual_fail_"] button {
+    background: #e5484d !important; border-color: #e5484d !important; color: #fff !important;
+}
+div[class*="st-key-manual_fail_"] button:hover { background: #bd3439 !important; border-color: #bd3439 !important; }
 div[class*="st-key-tc-step-"] { background: rgba(128,128,128,.035); }
 div[class*="st-key-tc-card-"] button[kind="tertiary"] {
     padding: 0 .25rem;
@@ -1423,6 +1434,26 @@ def _execute_test_case(tc: dict, notify: bool = True) -> dict:
     return result
 
 
+def _mark_general_test_case(tc: dict, status: str) -> dict:
+    """Persist a manual pass/fail mark and update the saved case's current badge."""
+    project = st.session_state.get("current_project") or {}
+    if not project.get("id"):
+        raise ValueError("Save the project before recording a manual result.")
+    result = api_post(
+        f"/api/v1/projects/{project['id']}/test-cases/{tc['id']}/manual-result",
+        {"status": status},
+    )
+    tc["manual_status"] = status
+    st.session_state.setdefault("executions", {})[str(tc["id"])] = result
+    st.session_state.pop(f"tc_history_{project['id']}_{tc['id']}", None)
+    saved_cases = st.session_state.get("test_cases", [])
+    for item in saved_cases:
+        if str(item.get("id")) == str(tc["id"]):
+            item["manual_status"] = status
+    _queue_toast(f"{tc.get('name') or 'General scenario'} marked {status}.", "success" if status == "passed" else "error")
+    return result
+
+
 def _render_execution_result(result: dict, uid: str) -> None:
     """Render overall result detail with request and response side by side.
 
@@ -1908,7 +1939,7 @@ def _render_test_run_manager(project: dict, test_cases: list[dict]) -> str | Non
 
 def _test_case_request_snapshot(test_case: dict):
     """Copy request configuration used to invalidate stale execution results."""
-    field = "steps" if test_case.get("is_flow") else "request"
+    field = "manual_steps" if test_case.get("case_kind") == "general" else "steps" if test_case.get("is_flow") else "request"
     return copy.deepcopy(test_case.get(field))
 
 
@@ -2005,14 +2036,19 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
         tc = copy.deepcopy(tc)
     tc_id = tc.get("id", f"tc_{index}")
     is_flow = bool(tc.get("is_flow"))
+    is_general = tc.get("case_kind") == "general"
     result = st.session_state.get("executions", {}).get(tc_id)
     status = _test_case_status(result)
+    if is_general and status == "not_run":
+        status = str(tc.get("manual_status") or "not_run")
     open_key = f"tc_open_{tc_id}"
     is_open = st.session_state.get(open_key, False)
     selected_key = f"tc_selected_{tc_id}"
     st.session_state.setdefault(selected_key, True)
 
-    if not is_flow:
+    if is_general:
+        assertions = {}
+    elif not is_flow:
         assertions = _normalize_assertions(tc)
     else:
         assertions = {}
@@ -2024,7 +2060,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
 
     with st.container(border=True, key=f"tc-card-{status}-{tc_id}"):
         toggle_col, select_col, title_col, status_col, run_col = st.columns(
-            [0.4, 0.4, 5.3, 1.8, 1.1], vertical_alignment="center"
+            [0.4, 0.4, 4.8, 1.7, 2.0 if is_general else 1.1], vertical_alignment="center"
         )
         with toggle_col:
             st.button(
@@ -2035,7 +2071,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
         with select_col:
             st.checkbox("Select for batch run", key=selected_key, label_visibility="collapsed", help="Include in Run selected")
         with title_col:
-            kind = ":violet-badge[FLOW]" if is_flow else f":blue-badge[{str(tc.get('type', 'test')).upper()}]"
+            kind = ":violet-badge[FLOW]" if is_flow else ":gray-badge[GENERAL]" if is_general else f":blue-badge[{str(tc.get('type', 'test')).upper()}]"
             st.markdown(f"**{index + 1}. {tc.get('name', 'Unnamed')}** {kind}")
         with status_col:
             latency = (result or {}).get("latency_ms") or sum(
@@ -2049,10 +2085,16 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
             flaky_badge = " :orange-badge[FLAKY]" if cached_flaky["flaky"] else ""
             st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]{flaky_badge}")
         with run_col:
-            run_clicked = st.button(
-                "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
-                type="primary", width="stretch",
-            )
+            if is_general:
+                passed_col, failed_col = st.columns(2, gap="small")
+                passed_clicked = passed_col.button("Passed", key=f"manual_pass_{tc_id}", type="secondary", help="Record a manual pass", width="stretch")
+                failed_clicked = failed_col.button("Failed", key=f"manual_fail_{tc_id}", type="secondary", help="Record a manual failure", width="stretch")
+                run_clicked = False
+            else:
+                run_clicked = st.button(
+                    "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
+                    type="primary", width="stretch",
+                )
 
         if tc.get("description"):
             st.caption(tc["description"])
@@ -2072,6 +2114,12 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     help="Review, update, or extend these requirements. Save changes to keep your edits.",
                     placeholder="No requirements were recorded. Add context for future reference.",
                 )
+        if is_general and (passed_clicked or failed_clicked):
+            try:
+                _mark_general_test_case(tc, "passed" if passed_clicked else "failed")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not record manual result: {exc}")
         if run_clicked:
             with st.spinner("Executing scenario sequentially..." if is_flow else "Executing request..."):
                 try:
@@ -2091,6 +2139,15 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     _render_test_case_history(tc, project.get("id", ""))
                 with config_tab:
                     st.json({key: value for key, value in tc.items() if key not in {"id"}})
+                return tc
+            if is_general:
+                st.markdown("**Manual steps**")
+                for step_index, step in enumerate(tc.get("manual_steps", []), start=1):
+                    st.markdown(f"{step_index}. {step}")
+                if tc.get("manual_status"):
+                    st.caption(f"Current manually recorded result: {tc['manual_status'].upper()}")
+                with st.expander("History", expanded=False):
+                    _render_test_case_history(tc, project.get("id", ""))
                 return tc
             save_notice_key = f"tc_save_notice_{project.get('id', 'local')}_{tc_id}"
             if notice := st.session_state.pop(save_notice_key, None):
@@ -2394,6 +2451,17 @@ def _filter_test_cases_by_scope(
             continue
         case_endpoints = _case_step_endpoints(case, endpoints)
         if endpoint_ids or collection_ids:
+            if case.get("case_kind") == "general":
+                case_collection_id = str(
+                    case.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID
+                )
+                if endpoint_ids or (
+                    collection_ids
+                    and case_collection_id not in collection_ids
+                ):
+                    continue
+                filtered.append(case)
+                continue
             matching_endpoints = [
                 endpoint for endpoint in case_endpoints
                 if (not endpoint_ids or endpoint.get("id") in endpoint_ids)
@@ -2465,7 +2533,10 @@ def _group_test_cases_by_endpoint(
     groups: dict[str, tuple[str, list[dict]]] = {}
 
     for tc in test_cases:
-        if tc.get("is_flow"):
+        if tc.get("case_kind") == "general":
+            key = f"general:{tc.get('case_collection_id') or GENERAL_CASE_COLLECTION_ID}"
+            title = str(tc.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME)
+        elif tc.get("is_flow"):
             key, title = "__flows__", "Flow scenarios"
         else:
             request = tc.get("request") or {}
@@ -2521,19 +2592,28 @@ def _generation_requests_in_order(
 def _generate_selected_cases(
     mode: str, selected: list[dict], business_req: str,
     example_test_case_ids: list[str] | None = None,
-) -> list[dict]:
+    case_collection_id: str | None = None,
+    case_collection_name: str | None = None,
+) -> dict:
     """Call the matching generation route for selected requests.
 
     Args:
-        mode (str): Single or Flow generation mode.
+        mode (str): Single, Flow, or General generation mode.
         selected (list[dict]): Ordered saved request configurations.
         business_req (str): Optional business requirements text.
         example_test_case_ids (list[str] | None): Existing cases used as generation examples.
 
     Returns:
-        list[dict]: Generated test cases.
+        dict: Generation response envelope.
     """
     project = st.session_state.get("current_project") or {}
+    if mode == "General":
+        return api_post("/api/v1/test-cases/generate", {
+            "mode": "General", "business_requirements": business_req,
+            "project_id": project.get("id"),
+            "case_collection_id": case_collection_id,
+            "case_collection_name": case_collection_name,
+        })
     if mode == "Flow":
         payload = {
             "endpoints": selected,
@@ -2549,11 +2629,120 @@ def _generate_selected_cases(
 
     payload = {
         "endpoints": selected,
+        "mode": "Single",
         "business_requirements": business_req or None,
         "project_id": project.get("id"),
         "example_test_case_ids": example_test_case_ids or [],
     }
     return api_post("/api/v1/test-cases/generate", payload)
+
+
+def _accept_generation_response(response, mode: str) -> list[dict]:
+    """Merge returned cases and retain any user-actionable clarification round."""
+    if isinstance(response, list):
+        envelope = {"test_cases": response, "clarification_questions": []}
+    elif isinstance(response, dict):
+        envelope = response
+    else:
+        raise ValueError("Generation API returned an unsupported response shape.")
+    cases = envelope.get("test_cases", [])
+    if not isinstance(cases, list):
+        raise ValueError("Generation response did not contain a test_cases list.")
+    archived_ids = {str(item) for item in envelope.get("archived_case_ids", [])}
+    activity_id = str((envelope.get("activity") or {}).get("id") or "")
+    if archived_ids and activity_id:
+        for collection in (
+            st.session_state.get("test_cases", []),
+            (st.session_state.get("current_project") or {}).get("test_cases", []),
+        ):
+            for case in collection:
+                if str(case.get("id")) in archived_ids:
+                    case["superseded_by_activity_id"] = activity_id
+    st.session_state["test_cases"] = _merge_generated_test_cases(
+        st.session_state.get("test_cases", []), cases,
+    )
+    for case in cases:
+        st.session_state[f"tc_selected_{case.get('id')}"] = True
+    questions = envelope.get("clarification_questions", [])
+    activity = envelope.get("activity") or {}
+    if questions and activity.get("id"):
+        pending = st.session_state.setdefault("generation_clarification_rounds", [])
+        pending[:] = [item for item in pending if item.get("activity_id") != activity["id"]]
+        pending.append({
+            "activity_id": activity["id"], "questions": questions,
+            "mode": mode, "revision": envelope.get("revision"),
+        })
+    return cases
+
+
+def _render_generation_clarifications(project_id: str) -> None:
+    """Collect answers to prior LLM questions and submit explicit refinement actions."""
+    if project_id:
+        cache_key = f"generation_clarifications_restored_{project_id}"
+        if not st.session_state.get(cache_key):
+            try:
+                records = _normalise_generation_activity_records(api_get(
+                    f"/api/v1/projects/{project_id}/generation-activity?limit=100"
+                ))
+                followed_ids = {str(item.get("follow_up_of")) for item in records if item.get("follow_up_of")}
+                saved_ids = {
+                    str(item.get("id")) for item in st.session_state.get("test_cases", [])
+                    if item.get("id")
+                }
+                pending = st.session_state.setdefault("generation_clarification_rounds", [])
+                known_ids = {str(item.get("activity_id")) for item in pending}
+                for record in records:
+                    activity_id = str(record.get("id") or "")
+                    generated_ids = {str(item) for item in record.get("generated_case_ids", [])}
+                    questions = record.get("clarification_questions", [])
+                    if (
+                        activity_id and activity_id not in followed_ids and activity_id not in known_ids
+                        and record.get("status") == "succeeded" and questions
+                        and generated_ids.intersection(saved_ids)
+                    ):
+                        pending.append({
+                            "activity_id": activity_id,
+                            "questions": questions,
+                            "mode": record.get("mode", "Generation"),
+                        })
+                st.session_state[cache_key] = True
+            except Exception as exc:
+                st.caption(f"Could not restore clarification questions: {exc}")
+    rounds = st.session_state.get("generation_clarification_rounds", [])
+    if not project_id or not rounds:
+        return
+    for round_item in list(rounds):
+        activity_id = round_item.get("activity_id")
+        questions = round_item.get("questions") or []
+        if not activity_id or not questions:
+            continue
+        with st.expander(f"Clarifications needed · {round_item.get('mode', 'Generation')}", expanded=True):
+            st.caption("Answer the questions and request a refined output. Earlier output stays in activity history.")
+            answers = {}
+            for index, question in enumerate(questions, start=1):
+                answers[str(index)] = st.text_area(
+                    str(question), key=f"clarification_{activity_id}_{index}", height=70,
+                )
+            if st.button("Refine generated cases", key=f"refine_{activity_id}", type="primary"):
+                if not any(value.strip() for value in answers.values()):
+                    st.warning("Answer at least one clarification question before refining.")
+                    continue
+                try:
+                    with st.spinner("Refining test cases with AI. Please wait…"):
+                        response = api_post(
+                            f"/api/v1/projects/{project_id}/generation-activity/follow-up",
+                            {"source_activity_id": activity_id, "answers": answers},
+                        )
+                        mode = round_item.get("mode", "Generation")
+                        cases = _accept_generation_response(response, mode)
+                        if response.get("revision"):
+                            project = st.session_state.get("current_project") or {}
+                            project.setdefault("test_case_revisions", []).append(response["revision"])
+                        rounds[:] = [item for item in rounds if item.get("activity_id") != activity_id]
+                        _queue_toast(f"Refined output saved with {len(cases)} case(s).")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not refine generated cases: {exc}")
 
 
 def render_generation_panel() -> None:
@@ -2566,9 +2755,9 @@ def render_generation_panel() -> None:
     st.subheader("Generate test cases")
     st.session_state.setdefault("test_generation_mode", "Single")
     mode = st.segmented_control(
-        "Generation mode", ["Single", "Flow"],
+        "Generation mode", ["General", "Single", "Flow"],
         key="test_generation_mode",
-        help="Single creates independent request tests. Flow executes selected requests in order.",
+        help="General creates manually executed scenarios from requirements. Single creates request tests. Flow executes selected requests in order.",
     ) or "Single"
 
     project = st.session_state.get("current_project") or {}
@@ -2585,69 +2774,74 @@ def render_generation_panel() -> None:
     for endpoint in endpoints:
         st.session_state.setdefault(f"generation_selected_{endpoint.get('id')}", True)
 
-    with st.container(border=True):
-        select_col, all_col, clear_col = st.columns([4.5, 1, 1], vertical_alignment="center")
-        with select_col:
-            st.markdown("**Select requests for this run**")
-            st.caption("Drag any request to set the saved order. Checked requests are used for this run.")
-        with all_col:
-            st.button(
-                "Select all", key="generation_select_all", width="stretch",
-                on_click=_select_all_generation_requests, args=(endpoints, True),
-            )
-        with clear_col:
-            st.button(
-                "Clear", key="generation_select_none", width="stretch",
-                on_click=_select_all_generation_requests, args=(endpoints, False),
-            )
+    selected = []
+    if mode != "General":
+        with st.container(border=True):
+            select_col, all_col, clear_col = st.columns([4.5, 1, 1], vertical_alignment="center")
+            with select_col:
+                st.markdown("**Select requests for this run**")
+                st.caption("Drag any request to set the saved order. Checked requests are used for this run.")
+            with all_col:
+                st.button(
+                    "Select all", key="generation_select_all", width="stretch",
+                    on_click=_select_all_generation_requests, args=(endpoints, True),
+                )
+            with clear_col:
+                st.button(
+                    "Clear", key="generation_select_none", width="stretch",
+                    on_click=_select_all_generation_requests, args=(endpoints, False),
+                )
 
-        order_rows = [
-            {
-                "id": request_id,
-                "method": requests_by_id[request_id].get("method", "GET"),
-                "name": requests_by_id[request_id].get("name") or "Untitled request",
-                "url": requests_by_id[request_id].get("url", ""),
-                "selected": bool(st.session_state.get(f"generation_selected_{request_id}", True)),
+            order_rows = [
+                {
+                    "id": request_id,
+                    "method": requests_by_id[request_id].get("method", "GET"),
+                    "name": requests_by_id[request_id].get("name") or "Untitled request",
+                    "url": requests_by_id[request_id].get("url", ""),
+                    "selected": bool(st.session_state.get(f"generation_selected_{request_id}", True)),
+                }
+                for request_id in current_order
+            ]
+            order_result = render_request_order_list(
+                order_rows, key=f"generation-request-order-{project_id or 'default'}",
+            )
+            changed = getattr(order_result, "rows_change", None)
+            if isinstance(changed, dict):
+                proposed_order = changed.get("order_ids", [])
+                proposed_selected = set(changed.get("selected_ids", []))
+                state_changed = False
+                if len(proposed_order) == len(eligible_ids) and set(proposed_order) == set(eligible_ids):
+                    if proposed_order != current_order:
+                        try:
+                            if project_id:
+                                _persist_generation_order(project_id, proposed_order)
+                            else:
+                                st.session_state["generation_order_ids"] = proposed_order
+                            state_changed = True
+                        except Exception as exc:
+                            st.error(f"Could not save request order: {exc}")
+                if proposed_selected <= set(eligible_ids):
+                    for request_id in eligible_ids:
+                        was_selected = st.session_state.get(f"generation_selected_{request_id}", True)
+                        st.session_state[f"generation_selected_{request_id}"] = request_id in proposed_selected
+                        state_changed = state_changed or was_selected != (request_id in proposed_selected)
+                if state_changed:
+                    st.rerun()
+
+            ordered_ids = st.session_state.get("generation_order_ids", current_order)
+            selected_ids = {
+                request_id for request_id in eligible_ids
+                if st.session_state.get(f"generation_selected_{request_id}", True)
             }
-            for request_id in current_order
-        ]
-        order_result = render_request_order_list(
-            order_rows, key=f"generation-request-order-{project_id or 'default'}",
-        )
-        changed = getattr(order_result, "rows_change", None)
-        if isinstance(changed, dict):
-            proposed_order = changed.get("order_ids", [])
-            proposed_selected = set(changed.get("selected_ids", []))
-            state_changed = False
-            if len(proposed_order) == len(eligible_ids) and set(proposed_order) == set(eligible_ids):
-                if proposed_order != current_order:
-                    try:
-                        if project_id:
-                            _persist_generation_order(project_id, proposed_order)
-                        else:
-                            st.session_state["generation_order_ids"] = proposed_order
-                        state_changed = True
-                    except Exception as exc:
-                        st.error(f"Could not save request order: {exc}")
-            if proposed_selected <= set(eligible_ids):
-                for request_id in eligible_ids:
-                    was_selected = st.session_state.get(f"generation_selected_{request_id}", True)
-                    st.session_state[f"generation_selected_{request_id}"] = request_id in proposed_selected
-                    state_changed = state_changed or was_selected != (request_id in proposed_selected)
-            if state_changed:
-                st.rerun()
+            selected = _generation_requests_in_order(requests_by_id, ordered_ids, selected_ids)
 
-        ordered_ids = st.session_state.get("generation_order_ids", current_order)
-        selected_ids = {
-            request_id for request_id in eligible_ids
-            if st.session_state.get(f"generation_selected_{request_id}", True)
-        }
-        selected = _generation_requests_in_order(requests_by_id, ordered_ids, selected_ids)
+            if not endpoints:
+                st.info("Enable saved requests in API Workspace to start generation.")
 
-        if not endpoints:
-            st.info("Enable saved requests in API Workspace to start generation.")
-
-    project_test_cases = _deduplicate_test_cases(st.session_state.get("test_cases", []))
+    project_test_cases = [
+        case for case in _deduplicate_test_cases(st.session_state.get("test_cases", []))
+        if not case.get("superseded_by_activity_id")
+    ]
     examples_by_id = {str(case.get("id")): case for case in project_test_cases if case.get("id")}
     example_key = f"generation_example_ids_{project_id or 'default'}"
     st.session_state.setdefault(example_key, [])
@@ -2656,26 +2850,73 @@ def render_generation_panel() -> None:
         if case_id in examples_by_id
     ]
 
-    with st.container(border=True):
-        st.markdown("**2 · Use existing cases as examples** · Optional")
-        example_ids = st.multiselect(
-            "Reference test cases",
-            options=list(examples_by_id),
-            key=example_key,
-            label_visibility="collapsed",
-            placeholder="Choose cases whose coverage or style you want more of",
-            format_func=lambda case_id: (
-                f"{'Flow' if examples_by_id[case_id].get('is_flow') else str(examples_by_id[case_id].get('type', 'test')).title()} · "
-                f"{examples_by_id[case_id].get('name') or 'Untitled case'}"
-            ),
-        )
-        if not examples_by_id:
-            st.caption("Generate or add a test case first to use it as an example.")
-        elif example_ids:
-            st.caption("Examples guide scenario coverage and style. They remain unchanged; generated cases are added alongside them.")
+    example_ids = []
+    if mode != "General":
+        with st.container(border=True):
+            st.markdown("**2 · Use existing cases as examples** · Optional")
+            example_ids = st.multiselect(
+                "Reference test cases",
+                options=list(examples_by_id),
+                key=example_key,
+                label_visibility="collapsed",
+                placeholder="Choose cases whose coverage or style you want more of",
+                format_func=lambda case_id: (
+                    f"{'Flow' if examples_by_id[case_id].get('is_flow') else str(examples_by_id[case_id].get('type', 'test')).title()} · "
+                    f"{examples_by_id[case_id].get('name') or 'Untitled case'}"
+                ),
+            )
+            if not examples_by_id:
+                st.caption("Generate or add a test case first to use it as an example.")
+            elif example_ids:
+                st.caption("Examples guide scenario coverage and style. They remain unchanged; generated cases are added alongside them.")
+
+    general_collection_id = None
+    general_collection_name = None
+    if mode == "General":
+        existing_general_collections = {}
+        for case in project_test_cases:
+            if case.get("case_kind") != "general":
+                continue
+            collection_id = str(case.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID)
+            collection_name = str(case.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME)
+            existing_general_collections[collection_id] = collection_name
+        collection_choice_key = f"general_collection_choice_{project_id or 'default'}"
+        pending_choice = st.session_state.pop(f"{collection_choice_key}_pending", None)
+        if pending_choice in existing_general_collections:
+            st.session_state[collection_choice_key] = pending_choice
+        valid_choices = [NEW_GENERAL_CASE_COLLECTION, *existing_general_collections]
+        if st.session_state.get(collection_choice_key) not in valid_choices:
+            st.session_state[collection_choice_key] = NEW_GENERAL_CASE_COLLECTION
+        with st.container(border=True):
+            st.markdown("**2 · General scenario collection**")
+            collection_choice = st.selectbox(
+                "Collection", valid_choices, key=collection_choice_key,
+                format_func=lambda value: (
+                    "Create a new collection…" if value == NEW_GENERAL_CASE_COLLECTION
+                    else existing_general_collections.get(value, value)
+                ),
+                help=(
+                    "Store scenarios in a project collection so cases for different products or business "
+                    "contexts stay organized. Choose an existing collection or create a new one."
+                ),
+            )
+            if collection_choice == NEW_GENERAL_CASE_COLLECTION:
+                general_collection_name = st.text_input(
+                    "New collection name", value="General scenarios",
+                    key=f"general_collection_name_{project_id or 'default'}",
+                    help="Use a product or business context, such as Checkout or Customer onboarding.",
+                ).strip()
+                if general_collection_name:
+                    general_collection_id = str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"api-agent:{project_id or 'default'}:general-collection:{general_collection_name.casefold()}",
+                    ))
+            else:
+                general_collection_id = collection_choice
+                general_collection_name = existing_general_collections[collection_choice]
 
     with st.container(border=True):
-        st.markdown("**3 · Add business requirements** · Optional")
+        st.markdown("**3 · Add business requirements**" + (" · Required for General" if mode == "General" else " · Optional"))
         business_req = st.text_area(
             "Business requirements", height=95, key="generation_business_requirements",
             label_visibility="collapsed",
@@ -2702,7 +2943,9 @@ def render_generation_panel() -> None:
     with generate_col:
         generate_clicked = st.button(
             "Generate test cases", icon=":material/auto_awesome:", type="primary",
-            width="stretch", disabled=not selected,
+            width="stretch", disabled=(not selected and mode != "General") or (
+                mode == "General" and (not business_req.strip() or not general_collection_name)
+            ),
         )
     with clear_col:
         with st.popover(
@@ -2722,14 +2965,16 @@ def render_generation_panel() -> None:
                 except Exception as exc:
                     st.error(f"Could not clear test cases: {exc}")
     with hint_col:
-        if not selected:
+        if mode == "General":
+            st.caption("Requirements-only scenarios · manually marked Passed or Failed")
+        elif not selected:
             st.caption(":orange[Select at least one request to generate tests.]")
         elif mode == "Flow" and len(selected) < 2:
             st.caption(":orange[Flows usually need multiple requests; selected order is preserved.]")
         else:
             st.caption(f"{len(selected)} request(s) selected · {mode.lower()} generation")
 
-    if generate_clicked and selected:
+    if generate_clicked and (selected or mode == "General"):
         now = time.time()
         if now - st.session_state.get(generation_submit_key, 0.0) < generation_cooldown:
             st.info("Generation was just submitted. Please wait before trying again.")
@@ -2737,13 +2982,14 @@ def render_generation_panel() -> None:
         st.session_state[generation_submit_key] = now
         with st.spinner("Generating with the configured LLM providers..."):
             try:
-                result = _generate_selected_cases(mode, selected, business_req, example_ids)
+                response = _generate_selected_cases(
+                    mode, selected, business_req, example_ids,
+                    general_collection_id, general_collection_name,
+                )
+                result = _accept_generation_response(response, mode)
                 if result:
-                    st.session_state["test_cases"] = _merge_generated_test_cases(
-                        st.session_state.get("test_cases", []), result,
-                    )
-                    for tc in result:
-                        st.session_state[f"tc_selected_{tc.get('id')}"] = True
+                    if mode == "General":
+                        st.session_state[f"general_collection_choice_{project_id or 'default'}_pending"] = general_collection_id
                     _queue_toast(f"Generated {len(result)} additional test case(s). Existing cases were kept.")
                 else:
                     st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
@@ -2751,6 +2997,8 @@ def render_generation_panel() -> None:
                 st.error(f"Failed to generate test cases: {exc}")
             finally:
                 st.session_state[generation_submit_key] = time.time()
+
+    _render_generation_clarifications(str(project_id or ""))
 
     if project_id:
         with st.expander("Create a release revision", expanded=False):
@@ -2793,7 +3041,10 @@ def render_generation_panel() -> None:
                     ),
                 )
                 source_action = action_by_id[source_id]
-                saved_cases = [item for item in saved_project.get("test_cases", []) if item.get("id")]
+                saved_cases = [
+                    item for item in saved_project.get("test_cases", [])
+                    if item.get("id") and not item.get("superseded_by_activity_id")
+                ]
                 saved_cases_by_id = {str(item["id"]): item for item in saved_cases}
                 session_cases_by_id = {
                     str(item.get("id")): item
@@ -2852,6 +3103,31 @@ def render_generation_panel() -> None:
                             )
                     else:
                         st.caption("No baseline cases selected.")
+                unchanged_key = f"revision_keep_unchanged_{project_id}"
+                pending_unchanged = st.session_state.pop(f"{unchanged_key}_pending", None)
+                if isinstance(pending_unchanged, list):
+                    st.session_state[unchanged_key] = [
+                        str(case_id) for case_id in pending_unchanged if str(case_id) in baseline_ids
+                    ]
+                if unchanged_key not in st.session_state:
+                    st.session_state[unchanged_key] = []
+                else:
+                    st.session_state[unchanged_key] = [
+                        str(case_id) for case_id in st.session_state[unchanged_key]
+                        if str(case_id) in baseline_ids
+                    ]
+                keep_unchanged_ids = st.multiselect(
+                    "Keep unchanged",
+                    options=baseline_ids,
+                    key=unchanged_key,
+                    format_func=lambda case_id: saved_cases_by_id[case_id].get("name") or "Untitled case",
+                    help="Selected cases are copied exactly into the new revision and skipped by AI. Other baseline cases are revised by AI.",
+                    placeholder="AI revision for every selected case",
+                )
+                st.caption(
+                    f"{len(baseline_ids) - len(keep_unchanged_ids)} sent to AI · "
+                    f"{len(keep_unchanged_ids)} kept unchanged"
+                )
                 unsaved_case_ids = [
                     case_id for case_id in baseline_ids
                     if case_id in session_cases_by_id
@@ -3037,12 +3313,13 @@ def render_generation_panel() -> None:
                 st.caption(
                     f"Selected {len(baseline_ids)} saved baseline case(s) and {len(selected_endpoint_ids)} "
                     f"current endpoint(s) across {len(selected_collection_ids)} collection(s). "
+                    "Endpoint selection is optional; the saved baseline can provide the revision context. "
                     "The previous revision remains unchanged."
                 )
                 revision_clicked = st.button(
                     "Generate release revision", key=f"generate_revision_{project_id}",
                     type="primary", icon=":material/rebase_edit:",
-                    disabled=not baseline_ids or not selected_endpoint_ids or not revision_label.strip() or bool(unsaved_case_ids),
+                    disabled=not baseline_ids or not revision_label.strip() or bool(unsaved_case_ids),
                 )
                 if revision_clicked:
                     with st.spinner("Generating the complete revised suite..."):
@@ -3055,6 +3332,7 @@ def render_generation_panel() -> None:
                                     "release_label": revision_label.strip(),
                                     "release_notes": revision_notes,
                                     "endpoint_ids": selected_endpoint_ids,
+                                    "keep_unchanged_case_ids": keep_unchanged_ids,
                                 },
                             )
                             project.setdefault("test_case_revisions", []).append(response["revision"])
@@ -3064,6 +3342,7 @@ def render_generation_panel() -> None:
                             st.session_state[f"{baseline_key}_pending"] = [
                                 str(item.get("id")) for item in response["test_cases"] if item.get("id")
                             ]
+                            st.session_state[f"{unchanged_key}_pending"] = []
                             st.session_state[f"{label_key}_pending"] = f"Revision {response['revision'].get('ordinal', 1) + 1}"
                             for warning in response.get("warnings", []):
                                 _queue_toast(warning, "warning")
@@ -3084,10 +3363,11 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         None: Writes test-case results to the Streamlit page.
     """
     raw_test_cases = st.session_state.get("test_cases", [])
-    test_cases = _deduplicate_test_cases(raw_test_cases)
-    if len(test_cases) != len(raw_test_cases):
-        st.session_state["test_cases"] = test_cases
+    deduplicated_cases = _deduplicate_test_cases(raw_test_cases)
+    if len(deduplicated_cases) != len(raw_test_cases):
+        st.session_state["test_cases"] = deduplicated_cases
         st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+    test_cases = [case for case in deduplicated_cases if not case.get("superseded_by_activity_id")]
     test_cases.sort(key=_test_case_sort_key)
     project = st.session_state.get("current_project") or {}
     revisions = sorted(project.get("test_case_revisions", []), key=lambda item: int(item.get("ordinal", 0)))
@@ -3111,6 +3391,18 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         "collections": [item.get("id") for item in collections if item.get("id")],
         "endpoints": [item.get("id") for item in endpoints if item.get("id")],
     }
+    general_collection_names = {}
+    for case in test_cases:
+        if case.get("case_kind") != "general":
+            continue
+        collection_id = str(case.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID)
+        general_collection_names[collection_id] = str(
+            case.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME
+        )
+    options_by_name["collections"].extend(
+        item for item in general_collection_names
+        if item not in options_by_name["collections"]
+    )
     for name, key in scope_keys.items():
         st.session_state.setdefault(key, [])
         st.session_state[key] = [value for value in st.session_state[key] if value in options_by_name[name]]
@@ -3141,7 +3433,8 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
             selected_collection_ids = st.multiselect(
                 "Collections", options_by_name["collections"], key=scope_keys["collections"],
                 placeholder="All collections", format_func=lambda collection_id: next(
-                    (item.get("name", "Untitled collection") for item in collections if item.get("id") == collection_id), collection_id,
+                    (item.get("name", "Untitled collection") for item in collections if item.get("id") == collection_id),
+                    general_collection_names.get(collection_id, collection_id),
                 ),
             )
         with filter_cols[filter_offset + 2]:
@@ -3175,7 +3468,13 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         selected_collection_ids, selected_endpoint_ids,
     )
     executions = st.session_state.get("executions", {})
-    statuses = {tc.get("id"): _test_case_status(executions.get(tc.get("id"))) for tc in test_cases}
+    statuses = {
+        tc.get("id"): (
+            _test_case_status(executions.get(tc.get("id")))
+            if executions.get(tc.get("id")) else str(tc.get("manual_status") or "not_run")
+        )
+        for tc in test_cases
+    }
     counts = {
         "passed": sum(statuses.get(tc.get("id")) == "passed" for tc in scoped_cases),
         "failed": sum(statuses.get(tc.get("id")) == "failed" for tc in scoped_cases),
@@ -3300,34 +3599,41 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
         if not targets:
             st.warning("Select at least one test case to run.")
         else:
-            progress = st.progress(0.0, text="Preparing execution...")
-            for number, tc in enumerate(targets, start=1):
+            general_targets = [tc for tc in targets if tc.get("case_kind") == "general"]
+            http_targets = [tc for tc in targets if tc.get("case_kind") != "general"]
+            if general_targets:
+                st.info(f"Skipped {len(general_targets)} general scenario(s); mark them Passed or Failed manually on their cards.")
+            if not http_targets:
+                st.warning("No HTTP-executable cases are selected.")
+            progress = st.progress(0.0, text="Preparing execution...") if http_targets else None
+            for number, tc in enumerate(http_targets, start=1):
                 progress.progress(
-                    (number - 1) / len(targets),
-                    text=f"Running {tc.get('name', tc.get('id'))} ({number}/{len(targets)})",
+                    (number - 1) / len(http_targets),
+                    text=f"Running {tc.get('name', tc.get('id'))} ({number}/{len(http_targets)})",
                 )
                 try:
                     _execute_test_case(tc, notify=False)
                 except Exception as exc:
                     errors.append(f"{tc.get('name', tc.get('id'))}: {exc}")
-            progress.progress(1.0, text="Execution complete")
+            if progress:
+                progress.progress(1.0, text="Execution complete")
             batch_results = [
-                st.session_state.get("executions", {}).get(tc.get("id")) for tc in targets
+                st.session_state.get("executions", {}).get(tc.get("id")) for tc in http_targets
             ]
             passed = sum(_test_case_status(result) == "passed" for result in batch_results)
             failed = sum(_test_case_status(result) == "failed" for result in batch_results)
             errored = sum(_test_case_status(result) == "error" for result in batch_results) + len(errors)
             _queue_toast(
-                f"Ran {len(targets)} test case(s): {passed} passed, {failed} failed, {errored} errors.",
+                f"Ran {len(http_targets)} HTTP case(s): {passed} passed, {failed} failed, {errored} errors.",
                 "error" if failed or errored else "success",
             )
             focus_case = next(
                 (
-                    tc for tc in targets
+                    tc for tc in http_targets
                     if _test_case_status(st.session_state.get("executions", {}).get(tc.get("id")))
                     in {"failed", "error"}
                 ),
-                targets[-1],
+                http_targets[-1] if http_targets else general_targets[-1],
             )
             focus_id = focus_case.get("id")
             st.session_state[f"tc_open_{focus_id}"] = True
@@ -3399,10 +3705,11 @@ def render_test_cases_tab() -> None:
     st.markdown(TEST_CASES_TOPBAR_CSS, unsafe_allow_html=True)
     with st.container(key="test-cases-workspace"):
         raw_test_cases = st.session_state.get("test_cases", [])
-        test_cases = _deduplicate_test_cases(raw_test_cases)
-        if len(test_cases) != len(raw_test_cases):
-            st.session_state["test_cases"] = test_cases
+        deduplicated_cases = _deduplicate_test_cases(raw_test_cases)
+        if len(deduplicated_cases) != len(raw_test_cases):
+            st.session_state["test_cases"] = deduplicated_cases
             st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+        test_cases = [case for case in deduplicated_cases if not case.get("superseded_by_activity_id")]
         project = st.session_state.get("current_project") or {}
         test_cases.sort(key=_test_case_sort_key)
         with st.container(key="test-cases-topbar"):
@@ -3418,10 +3725,7 @@ def render_test_cases_tab() -> None:
             with runs_col:
                 with st.container(key="reusable-runs-action"):
                     loaded_run_id = _render_test_run_manager(project, test_cases)
-        if st.session_state.get("endpoints"):
-            render_generation_panel()
-        else:
-            st.warning("Save a request in API Workspace and enable it for generation first.")
+        render_generation_panel()
         render_test_case_list(loaded_run_id)
 
 
@@ -3450,6 +3754,10 @@ def render_generation_activity_tab() -> None:
         return
 
     project_name = project.get("name") or "Unnamed project"
+    superseded_activity_ids = {
+        str(item.get("supersedes_activity_id")) for item in records
+        if item.get("supersedes_activity_id")
+    }
     with st.container(key=f"generation-activity-table-{project_id}"):
         header = st.columns([2.2, 1.2, 1.0, 1.7, 1.0], vertical_alignment="center")
         for column, title in zip(header, ("Execution time", "Generation type", "State", "Project", "Action")):
@@ -3465,6 +3773,8 @@ def render_generation_activity_tab() -> None:
                     st.write(record.get("mode") or "Generation")
                 with columns[2]:
                     state = str(record.get("status") or "unknown").capitalize()
+                    if str(record.get("id")) in superseded_activity_ids:
+                        state = "Superseded"
                     state_color = "#16834a" if state == "Succeeded" else "#c0393b" if state == "Failed" else "#777"
                     st.markdown(
                         f"<span style='color:{state_color};font-weight:650'>{html.escape(state)}</span>",
@@ -3521,6 +3831,68 @@ def _show_generation_activity_details(record: dict) -> None:
     if record.get("generated_case_ids"):
         st.markdown("**Generated test case IDs**")
         st.write(", ".join(record["generated_case_ids"]))
+    if record.get("follow_up_of"):
+        st.markdown("**Refined from activity**")
+        st.write(record["follow_up_of"])
+    if record.get("supersedes_activity_id"):
+        st.markdown("**Replaces active output from activity**")
+        st.write(record["supersedes_activity_id"])
+    if record.get("archived_case_ids"):
+        st.markdown("**Archived case IDs (retained in history)**")
+        st.write(", ".join(str(item) for item in record["archived_case_ids"]))
+    archived_summaries = record.get("archived_case_summaries") or []
+    if archived_summaries:
+        st.markdown("**Archived output**")
+        st.dataframe([{
+            "Name": item.get("name") or "Untitled case",
+            "Kind": "General" if item.get("case_kind") == "general" else "Flow" if item.get("is_flow") else "API test",
+            "Type": item.get("type") or "test",
+            "Description": item.get("description") or "",
+            "Case ID": item.get("id") or "",
+        } for item in archived_summaries], hide_index=True, width="stretch")
+        project_id = str(record.get("project_id") or "")
+        for archived_case in archived_summaries:
+            case_id = str(archived_case.get("id") or "")
+            if not project_id or not case_id:
+                continue
+            history_key = f"activity_archived_history_{record.get('id')}_{case_id}"
+            with st.expander(f"History · {archived_case.get('name') or case_id}", expanded=False):
+                if st.button("Load execution history", key=f"{history_key}_load"):
+                    try:
+                        st.session_state[history_key] = api_get(
+                            f"/api/v1/projects/{project_id}/test-cases/{case_id}/history?limit=100"
+                        ).get("executions", [])
+                    except Exception as exc:
+                        st.error(f"Could not load archived case history: {exc}")
+                history = st.session_state.get(history_key)
+                if history is not None:
+                    if history:
+                        st.dataframe([{
+                            "Executed": item.get("created_at", "Unknown"),
+                            "Outcome": str(item.get("status", "error")).upper(),
+                            "Latency (ms)": item.get("latency_ms", ""),
+                            "Details": item.get("assertion_detail", ""),
+                        } for item in history], hide_index=True, width="stretch")
+                        st.json(history[0])
+                    else:
+                        st.caption("No execution history is recorded for this archived case.")
+    if record.get("kept_unchanged_source_case_ids"):
+        st.markdown("**Cases copied unchanged from baseline**")
+        st.write(", ".join(str(item) for item in record["kept_unchanged_source_case_ids"]))
+        copied_ids = record.get("kept_unchanged_case_ids", [])
+        if copied_ids:
+            st.caption("New revision case IDs: " + ", ".join(str(item) for item in copied_ids))
+    if record.get("questions_answered"):
+        st.markdown("**Clarification questions**")
+        for question in record["questions_answered"]:
+            st.markdown(f"- {question}")
+    if record.get("clarification_answers"):
+        st.markdown("**User answers**")
+        st.json(record["clarification_answers"])
+    if record.get("clarification_questions"):
+        st.markdown("**Questions for the user**")
+        for question in record["clarification_questions"]:
+            st.markdown(f"- {question}")
     if record.get("error"):
         st.error(record["error"])
     with st.expander("Prompt sent to the LLM", expanded=False):
@@ -3999,12 +4371,12 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
         ):
             try:
                 with st.spinner("Generating business-named flow scenarios..."):
-                    generated = api_post(
+                    generated_response = api_post(
                         f"/api/v1/projects/{project_id}/contracts/generate-flows",
                         {"source_id": source_id, "candidate_ids": selected_candidates,
                          "business_requirements": business_requirements or None},
                     )
-                st.session_state["test_cases"] = generated
+                generated = _accept_generation_response(generated_response, "Discovered Flow")
                 st.session_state["executions"] = {}
                 _queue_toast(f"Generated {len(generated)} flow test case(s). Review them in Test Cases.")
             except Exception as exc:

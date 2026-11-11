@@ -35,6 +35,32 @@ from frontend.app import (
 )
 
 
+def test_existing_collection_filter_can_select_general_case_group():
+    """General scenarios share the existing collection filter as a virtual group."""
+    general = {
+        "id": "general-1", "case_kind": "general", "manual_steps": ["Review"],
+        "case_collection_id": "checkout-context", "case_collection_name": "Checkout · Web",
+    }
+    request_case = {
+        "id": "request-1", "source_endpoint_id": "endpoint-1",
+        "request": {"method": "GET", "url": "https://example.test"},
+    }
+
+    result = _filter_test_cases_by_scope(
+        [general, request_case], [], [], [], ["checkout-context"], [],
+    )
+    grouped = _group_test_cases_by_endpoint([
+        general,
+        {
+            "id": "general-2", "case_kind": "general", "manual_steps": ["Review"],
+            "case_collection_id": "identity-context", "case_collection_name": "Identity",
+        },
+    ], [])
+
+    assert result == [general]
+    assert [title for _, title, _ in grouped] == ["Checkout · Web", "Identity"]
+
+
 def test_flakiness_uses_three_of_latest_ten_and_requires_mixed_outcomes():
     """Flaky classification needs at least three recent runs and both outcome classes."""
     assert _flaky_summary(["passed", "failed"])["flaky"] is False

@@ -926,6 +926,69 @@ class Database:
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
             return True
 
+    def save_follow_up_generation(
+        self, project_id: str, test_cases: list[dict], activity: dict,
+        superseded_case_ids: list[str],
+    ) -> dict | None:
+        """Atomically save a refinement, its activity, and superseded source markers."""
+        now = _now()
+        activity_id = str(uuid.uuid4())
+        payload = {
+            **activity, "id": activity_id, "project_id": project_id, "created_at": now,
+        }
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            for testcase in test_cases:
+                item = dict(testcase)
+                item.setdefault("id", str(uuid.uuid4()))
+                row = _execute(connection,
+                    "SELECT ordinal,payload_json FROM test_cases WHERE id=? AND project_id=?",
+                    (item["id"], project_id),
+                ).fetchone()
+                ordinal = row["ordinal"] if row else _execute(connection,
+                    "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM test_cases WHERE project_id=?",
+                    (project_id,),
+                ).fetchone()["ordinal"]
+                _execute(connection,
+                    "INSERT INTO test_cases(id,project_id,ordinal,payload_json) VALUES(?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id,ordinal=excluded.ordinal,payload_json=excluded.payload_json",
+                    (item["id"], project_id, ordinal, self._encode(item)),
+                )
+            for case_id in superseded_case_ids:
+                row = _execute(connection,
+                    "SELECT payload_json FROM test_cases WHERE id=? AND project_id=?",
+                    (case_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Cannot supersede missing source case {case_id}.")
+                source_case = self._decode(row["payload_json"])
+                if source_case.get("superseded_by_activity_id"):
+                    raise ValueError(f"Source case {case_id} has already been superseded.")
+                source_case["superseded_by_activity_id"] = activity_id
+                _execute(connection,
+                    "UPDATE test_cases SET payload_json=? WHERE id=? AND project_id=?",
+                    (self._encode(source_case), case_id, project_id),
+                )
+            superseded_ids = {str(case_id) for case_id in superseded_case_ids}
+            if superseded_ids:
+                for run in _execute(
+                    connection, "SELECT id,case_ids_json FROM test_runs WHERE project_id=?", (project_id,),
+                ).fetchall():
+                    case_ids = self._decode(run["case_ids_json"])
+                    retained_ids = [str(case_id) for case_id in case_ids if str(case_id) not in superseded_ids]
+                    if retained_ids != case_ids:
+                        _execute(connection,
+                            "UPDATE test_runs SET case_ids_json=?,updated_at=? WHERE id=? AND project_id=?",
+                            (self._encode(retained_ids), now, run["id"], project_id),
+                        )
+            _execute(connection,
+                "INSERT INTO generation_activity(id,project_id,created_at,payload_json) VALUES(?,?,?,?)",
+                (activity_id, project_id, now, self._encode(payload)),
+            )
+            _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (now, project_id))
+        return payload
+
     def delete_test_case(self, project_id: str, test_case_id: str) -> bool:
         """Delete a test case by project and ID."""
         with self.session() as connection:

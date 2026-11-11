@@ -77,7 +77,7 @@ def test_discovered_flow_generation_attaches_saved_requests_and_filters_mappings
     monkeypatch.setattr(main, "_assign_test_case_ids", lambda project_id, cases: None)
     monkeypatch.setattr(main, "_ensure_response_schema_defaults", lambda cases: None)
 
-    def fake_generate(endpoints, candidates, business_requirements):
+    def fake_generate(endpoints, candidates, business_requirements, trace=None):
         candidate = candidates[0]
         return [{
             "id": "generated-flow", "candidate_id": candidate["id"], "name": "Checkout",
@@ -98,11 +98,11 @@ def test_discovered_flow_generation_attaches_saved_requests_and_filters_mappings
         business_requirements="A successful cart checkout",
     ))
 
-    assert result[0]["steps"][1]["endpoint"]["url"].endswith("/{cart_id}/checkout")
-    assert result[0]["steps"][1]["variable_mappings"] == [
+    assert result["test_cases"][0]["steps"][1]["endpoint"]["url"].endswith("/{cart_id}/checkout")
+    assert result["test_cases"][0]["steps"][1]["variable_mappings"] == [
         {"from": "$.cart_id", "to": "request.path.cart_id"},
     ]
-    assert saved_cases == result
+    assert saved_cases == result["test_cases"]
 
 
 def test_discovered_flow_generation_reports_malformed_llm_steps(monkeypatch):

@@ -23,6 +23,23 @@ class TestCaseGenerateRequest(BaseModel):
     project_id: Optional[str] = None
     source_endpoint_id: Optional[str] = None
     example_test_case_ids: list[str] = Field(default_factory=list)
+    mode: Literal["Single", "General"] = "Single"
+    case_collection_id: Optional[str] = None
+    case_collection_name: Optional[str] = None
+
+
+class GenerationFollowUpRequest(BaseModel):
+    """Answers to clarification questions from a prior generation activity."""
+
+    source_activity_id: str
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class ManualTestResultRequest(BaseModel):
+    """A tester-recorded outcome for a requirements-only general case."""
+
+    status: Literal["passed", "failed"]
+    note: str = ""
 
 
 class FlowGenerateRequest(BaseModel):
@@ -43,6 +60,7 @@ class TestCaseRevisionRequest(BaseModel):
     release_label: str
     release_notes: str = ""
     endpoint_ids: list[str] = Field(default_factory=list)
+    keep_unchanged_case_ids: list[str] = Field(default_factory=list)
 
 
 class ContractPreviewRequest(BaseModel):

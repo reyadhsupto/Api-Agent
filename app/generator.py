@@ -61,7 +61,114 @@ def generate_test_cases(
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     print("llm response:", generated_text)
-    return _parse_generated_response(generated_text)
+    cases, questions = _parse_generation_output(generated_text)
+    if trace is not None:
+        trace["clarification_questions"] = questions
+    return cases
+
+
+def generate_general_test_cases(
+    business_requirements: str,
+    trace: dict | None = None,
+) -> list[dict]:
+    """Generate human-readable scenarios that testers execute and mark manually."""
+    prompt = (
+        "Create general software test scenarios from the business requirements only. "
+        "These are manual scenarios and must not contain HTTP requests, endpoints, assertions, "
+        "response mappings, or executable API data. Each case needs name, type, description, "
+        "and ordered manual_steps as an array of concise human-readable strings. "
+        "Return a JSON object with test_cases and clarification_questions. Ask concise questions "
+        "when requirements are ambiguous; otherwise use an empty clarification_questions array. "
+        f"{_STRICT_JSON_INSTRUCTION}\nBusiness requirements:\n{business_requirements}"
+    )
+    raw = _call_llm_with_fallback(prompt)
+    cases, questions = _parse_generation_output(raw, validate=False)
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("Each general scenario must be a JSON object.")
+        steps = case.get("manual_steps") or case.get("steps")
+        if not isinstance(steps, list) or not steps or any(not isinstance(step, str) or not step.strip() for step in steps):
+            raise ValueError("Each general scenario needs one or more human-readable manual_steps.")
+        case["manual_steps"] = [step.strip() for step in steps]
+        case.pop("steps", None)
+        case.pop("request", None)
+        case.pop("assertions", None)
+        case.pop("variable_mappings", None)
+        case.pop("expected_status", None)
+        case.pop("expected_body_contains", None)
+        case.pop("is_flow", None)
+        case["case_kind"] = "general"
+    _validate_general_cases(cases)
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": raw, "clarification_questions": questions})
+    return cases
+
+
+def refine_generated_cases(
+    cases: list[dict], answers: dict[str, str], trace: dict | None = None,
+) -> list[dict]:
+    """Create a new, refined output using user answers while preserving source output."""
+    prompt = (
+        "Refine the supplied test cases using the user's answers to the clarification questions. "
+        "Return a complete refined case set in the same order. For each revised case, copy its input id into source_case_id; set source_case_id null for newly added cases. Preserve each original case kind and structure. "
+        "Ask additional clarification_questions only if important ambiguity remains; otherwise return an empty array. "
+        "For general cases, retain manual_steps and omit request/assertion/mapping data. For API cases, "
+        "retain executable request or flow structure. Return JSON with test_cases and clarification_questions. "
+        f"{_STRICT_JSON_INSTRUCTION}\nOriginal cases:\n{json.dumps(cases, ensure_ascii=False)}\n"
+        f"Clarification answers:\n{json.dumps(answers, ensure_ascii=False)}"
+    )
+    raw = _call_llm_with_fallback(prompt)
+    refined, questions = _parse_generation_output(raw, validate=False)
+    for original, updated in zip(cases, refined):
+        if isinstance(original, dict) and isinstance(updated, dict) and original.get("source_case_id"):
+            updated.setdefault("source_case_id", original["source_case_id"])
+    if any(item.get("case_kind") == "general" for item in cases if isinstance(item, dict)):
+        for index, case in enumerate(refined):
+            original = cases[index] if index < len(cases) else {}
+            if original.get("case_kind") == "general" or case.get("case_kind") == "general" or "manual_steps" in case:
+                case["case_kind"] = "general"
+                case["manual_steps"] = case.get("manual_steps") or case.get("steps") or original.get("manual_steps", [])
+                case.pop("steps", None)
+                for key in ("request", "assertions", "variable_mappings", "expected_status", "expected_body_contains", "is_flow"):
+                    case.pop(key, None)
+        _validate_general_cases([item for item in refined if item.get("case_kind") == "general"])
+    if trace is not None:
+        trace.update({"prompt": prompt, "llm_response": raw, "clarification_questions": questions})
+    return refined
+
+
+def _validate_general_cases(cases: list[dict]) -> None:
+    """Validate the manual-only shape used by requirements-based scenarios."""
+    if not cases:
+        raise ValueError("LLM response must contain at least one general test scenario.")
+    for index, case in enumerate(cases, start=1):
+        if not isinstance(case.get("name"), str) or not case["name"].strip():
+            raise ValueError(f"General test case {index} needs a name.")
+        for field in ("type", "description"):
+            if not isinstance(case.get(field), str) or not case[field].strip():
+                raise ValueError(f"General test case {index} needs a non-empty {field}.")
+        steps = case.get("manual_steps")
+        if not isinstance(steps, list) or not steps or any(not isinstance(item, str) or not item.strip() for item in steps):
+            raise ValueError(f"General test case {index} needs ordered manual_steps.")
+
+
+def _parse_generation_output(text: str, validate: bool = True) -> tuple[list, list[str]]:
+    """Normalize an envelope or legacy array into test cases and questions."""
+    parsed = _parse_generated_json(text)
+    if isinstance(parsed, list):
+        cases, questions = parsed, []
+    elif isinstance(parsed, dict):
+        cases = parsed.get("test_cases")
+        questions = parsed.get("clarification_questions", [])
+        if not isinstance(cases, list):
+            raise ValueError("Generation response object must contain a test_cases array.")
+        if not isinstance(questions, list) or any(not isinstance(item, str) for item in questions):
+            raise ValueError("clarification_questions must be an array of strings.")
+    else:
+        raise ValueError("Generation response must be a JSON array or object envelope.")
+    if validate:
+        _validate_generated_cases(cases)
+    return cases, [item.strip() for item in questions if item.strip()]
 
 
 def generate_test_case_revision(
@@ -83,7 +190,8 @@ def generate_test_case_revision(
     for case in baseline_cases:
         clean = {key: case.get(key) for key in (
             "id", "name", "type", "description", "is_flow", "source_endpoint_id",
-            "source_endpoint_name", "request", "steps", "assertions", "business_requirements",
+            "source_endpoint_name", "request", "steps", "manual_steps", "case_kind",
+            "assertions", "business_requirements", "case_collection_id", "case_collection_name",
         ) if key in case}
         baseline_context.append(clean)
     prompt = (
@@ -91,7 +199,7 @@ def generate_test_case_revision(
         "updated where the changed endpoints or release notes require it, and add useful cases for new behavior. "
         "Do not mutate or omit baseline cases merely to reduce output. For every retained/revised baseline case, "
         "copy its exact id into source_case_id. New cases must use source_case_id null. Assign unique temporary ids. "
-        "For each single case, use a request object. For each flow, use ordered steps with step_order, endpoint_id, "
+        "Preserve general/manual cases as case_kind general with ordered human-readable manual_steps and no request, mapping, or assertion data. For each API single case, use a request object. For each API flow, use ordered steps with step_order, endpoint_id, "
         "endpoint, assertions, and variable_mappings. Use selected endpoints for updated behavior and preserve baseline "
         "endpoint definitions for unchanged requests not selected. Preserve useful assertions and mappings, update obsolete "
         "behavior, and include unchanged cases. Flow mappings transfer a prior response value directly into a later "
@@ -102,16 +210,19 @@ def generate_test_case_revision(
         f"{_STRICT_JSON_INSTRUCTION}\n"
         f"Prior business requirements (read-only context):\n{previous_requirements or 'None recorded'}\n"
         f"Previous release notes (carry-forward context):\n{prior_release_notes or 'None recorded'}\n"
-        f"New requirement changes (supplement prior requirements):\n{release_notes or 'None provided'}\n"
-        f"Selected current endpoints:\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"New release notes (supplement prior requirements):\n{release_notes or 'None provided'}\n"
+        f"Selected current endpoints (optional; this list may be empty):\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Baseline cases:\n{json.dumps(baseline_context, ensure_ascii=False, separators=(',', ':'))}\n"
-        "Return ONLY a JSON array. Every case must contain id, source_case_id, name, type, description, "
-        "is_flow, and either request plus assertions, or steps. Flow step_order starts at 1 and is contiguous."
+        "Return a JSON object with test_cases and clarification_questions. Ask concise questions if important requirements remain ambiguous; otherwise questions is empty. Every case must contain id, source_case_id, name, type, description, "
+        "case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
     )
     generated_text = _call_llm_with_fallback(prompt)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    cases = _parse_generated_response(generated_text, validate=False)
+    cases, questions = _parse_generation_output(generated_text, validate=False)
+    if trace is not None:
+        trace["clarification_questions"] = questions
+    baseline_by_id = {str(item.get("id")): item for item in baseline_cases}
     endpoint_catalog = {str(item.get("id")): item for item in endpoints if item.get("id") is not None}
     for baseline_case in baseline_cases:
         for step in baseline_case.get("steps", []) if isinstance(baseline_case.get("steps"), list) else []:
@@ -129,6 +240,14 @@ def generate_test_case_revision(
                 "name": baseline_case.get("source_endpoint_name", ""),
             })
     for case_index, case in enumerate(cases, start=1):
+        original = baseline_by_id.get(str(case.get("source_case_id"))) if isinstance(case, dict) else None
+        if original and original.get("case_kind") == "general":
+            case["case_kind"] = "general"
+            case["manual_steps"] = case.get("manual_steps") or case.get("steps") or original.get("manual_steps", [])
+            case.pop("steps", None)
+            for field in ("request", "assertions", "variable_mappings", "expected_status", "expected_body_contains", "is_flow"):
+                case.pop(field, None)
+            continue
         if not isinstance(case, dict) or not (case.get("is_flow") or isinstance(case.get("steps"), list)):
             continue
         for step_index, step in enumerate(case.get("steps", []), start=1):
@@ -157,6 +276,12 @@ def _validate_generated_cases(test_cases: list) -> list:
     for index, test_case in enumerate(test_cases, start=1):
         if not isinstance(test_case, dict):
             raise ValueError(f"LLM test case {index} must be a JSON object.")
+        if test_case.get("case_kind") == "general" or isinstance(test_case.get("manual_steps"), list):
+            steps = test_case.get("manual_steps")
+            if not isinstance(steps, list) or not steps or any(not isinstance(step, str) or not step.strip() for step in steps):
+                raise ValueError(f"General test case {index} needs ordered human-readable manual_steps.")
+            test_case["case_kind"] = "general"
+            continue
         if test_case.get("is_flow") or "steps" in test_case:
             steps = test_case.get("steps")
             if not isinstance(steps, list) or not steps:
@@ -285,7 +410,7 @@ def _build_prompt(
         f"\nEndpoints:\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Business Requirements: {business_requirements or 'None provided'}\n"
         f"{examples_text}\n"
-        "Return ONLY a valid JSON array (no markdown, no explanation) where each item has:\n"
+        "Return a JSON object with test_cases and clarification_questions. Ask concise questions for important ambiguity in requirements or endpoint behavior while still providing the best draft; otherwise use an empty questions array. Each test case has:\n"
         "- id: unique string like \"tc_1\"\n"
         "- source_endpoint_id: exact endpoint ID when one is supplied\n"
         "- type: one of \"positive\", \"negative\", \"edge\", \"race\"\n"
@@ -493,7 +618,11 @@ def generate_flow_test_cases(
     generated_text = _call_llm_with_fallback(prompt)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    return _validate_flow_response(generated_text, endpoints)
+    cases, questions = _parse_generation_output(generated_text, validate=False)
+    _attach_flow_endpoints(cases, endpoints)
+    if trace is not None:
+        trace["clarification_questions"] = questions
+    return _validate_generated_cases(cases)
 
 
 def _attach_flow_endpoints(test_cases: list[dict], endpoints: list[dict]) -> None:
@@ -718,7 +847,7 @@ def generate_discovered_flow_test_cases(
     context = f"\nBusiness requirements:\n{business_requirements}" if business_requirements else ""
     prompt = (
         "Create executable API flow test scenarios for the selected dependency paths. "
-        "Use only the endpoint IDs and order supplied in each candidate. Return JSON only as an array. "
+        "Use only the endpoint IDs and order supplied in each candidate. Return a JSON object with test_cases and clarification_questions; ask only questions needed to resolve important ambiguity. "
         f"{_STRICT_JSON_INSTRUCTION} "
         "Each result must include id, type (positive, negative, edge, or race), name, description, "
         "is_flow true, candidate_id, and steps. Each step must include step_order (1-based), "
@@ -741,7 +870,10 @@ def generate_discovered_flow_test_cases(
     generated_text = _call_llm_with_fallback(prompt)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    return _parse_generated_response(generated_text, validate=False)
+    cases, questions = _parse_generation_output(generated_text, validate=False)
+    if trace is not None:
+        trace["clarification_questions"] = questions
+    return cases
 
 
 def _build_flow_prompt(
@@ -781,7 +913,7 @@ def _build_flow_prompt(
         f"{_STRICT_JSON_INSTRUCTION}\n"
         f"\nOrdered endpoint summaries:\n{json.dumps(endpoint_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
         f"{requirements_text}{examples_text}"
-        "Return ONLY a valid compact JSON array. Each item has id, type (positive/negative/edge/race), "
+        "Return a JSON object with test_cases and clarification_questions. Ask concise questions for important ambiguity in requirements or endpoint behavior; otherwise use an empty questions array. Each item has id, type (positive/negative/edge/race), "
         "name, description, is_flow:true, and steps. Each step contains step_order, endpoint_id copied "
         "exactly from a summary, concise description, assertions, and variable_mappings. Use only "
         "provided endpoint IDs and preserve the supplied order. A mapping uses from as a response "
@@ -795,18 +927,22 @@ def _build_flow_prompt(
     )
 
 def _parse_generated_response(text: str, validate: bool = True) -> list:
+    """Parse generated cases while accepting both envelope and legacy array output."""
+    cases, _ = _parse_generation_output(text, validate=validate)
+    return cases
+
+
+def _parse_generated_json(text: str):
     """
-    Parse the LLM response into a list of test case dicts.
+    Parse the LLM response into its JSON array or standardized object envelope.
 
     Handles common non-JSON patterns LLMs produce (e.g. JavaScript .repeat(),
     template literals) by preprocessing before json.loads.
 
     Args:
         text (str): Raw LLM output (expected JSON array).
-        validate (bool): Whether to validate test/flow response shape.
-
     Returns:
-        list: Parsed dictionaries, optionally validated as test cases.
+        Any: Parsed JSON response.
     """
     
     if not isinstance(text, str) or not text.strip():
@@ -818,10 +954,11 @@ def _parse_generated_response(text: str, validate: bool = True) -> list:
         cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
         cleaned = re.sub(r"\n```$", "", cleaned)
 
-    # Extract JSON array from response
-    match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if match:
-        text = match.group(0)
+    # Preserve an object envelope; older models may still return a bare array.
+    if not cleaned.startswith("{"):
+        match = re.search(r"\[.*\]", cleaned, re.DOTALL)
+        if match:
+            cleaned = match.group(0)
 
     # Normalize the limited JS string.repeat(N) expression sometimes emitted
     # for boundary examples, optionally followed by a literal string concat.
@@ -847,13 +984,11 @@ def _parse_generated_response(text: str, validate: bool = True) -> list:
         repeated = base * min(int(match.group("count")), 10000)
         return json.dumps(repeated + suffix, ensure_ascii=False)
 
-    text = repeat_expression.sub(_replace_repeat, text)
+    cleaned = repeat_expression.sub(_replace_repeat, cleaned)
 
     # Try direct JSON parse
     try:
-        result = json.loads(text)
-        if isinstance(result, list) and len(result) > 0:
-            return _validate_generated_cases(result) if validate else result
+        return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 

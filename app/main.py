@@ -32,9 +32,14 @@ from app.schemas import (
     FlowDiscoveryRequest,
     DiscoveredFlowGenerateRequest,
     TestCaseRevisionRequest,
+    GenerationFollowUpRequest,
+    ManualTestResultRequest,
 )
 from app.parser import parse_curl
-from app.generator import generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases, generate_test_case_revision
+from app.generator import (
+    generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases,
+    generate_test_case_revision, generate_general_test_cases, refine_generated_cases,
+)
 from app.contracts import (
     build_dependency_graph,
     fetch_public_document,
@@ -47,7 +52,10 @@ from app.storage import Database
 
 database = Database()
 
-def _generate_or_raise(generator, **kwargs) -> list:
+GENERAL_CASE_COLLECTION_ID = "__general_scenarios__"
+GENERAL_CASE_COLLECTION_NAME = "General scenarios"
+
+def _generate_or_raise(generator, **kwargs):
     """Run an LLM generator and expose malformed output as a useful API error."""
     try:
         return generator(**kwargs)
@@ -133,10 +141,13 @@ def _record_generation_activity(
     status: str,
     test_cases: list[dict] | None = None,
     error: str | None = None,
-) -> None:
+) -> dict | None:
     """Persist the generation input, outcome, and a comparable project snapshot."""
     endpoint_snapshot = _project_endpoint_snapshot(database.get_project(project_id))
-    database.record_generation_activity(project_id, {
+    record = getattr(database, "record_generation_activity", None)
+    if not callable(record):
+        return None
+    return record(project_id, {
         "mode": mode,
         "business_requirements": business_requirements or "",
         "endpoints": [{
@@ -146,6 +157,7 @@ def _record_generation_activity(
         "endpoint_snapshot": endpoint_snapshot,
         "prompt": trace.get("prompt", ""),
         "llm_response": trace.get("llm_response", ""),
+        "clarification_questions": trace.get("clarification_questions", []),
         "status": status,
         "error": error or "",
         "generated_case_ids": [str(item.get("id")) for item in (test_cases or []) if item.get("id")],
@@ -179,6 +191,13 @@ def _load_generation_examples(
         raise HTTPException(
             status_code=404,
             detail=f"Generation example test case(s) not found in project: {', '.join(missing_ids)}",
+        )
+    superseded = [case_id for case_id in dict.fromkeys(example_ids)
+                  if cases_by_id[case_id].get("superseded_by_activity_id")]
+    if superseded:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Superseded test case(s) cannot be used as examples: {', '.join(superseded)}",
         )
     return [cases_by_id[case_id] for case_id in dict.fromkeys(example_ids)]
 
@@ -423,14 +442,26 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
         raise HTTPException(status_code=422, detail="Select at least one baseline test case.")
     if any(case_id not in cases_by_id for case_id in baseline_ids):
         raise HTTPException(status_code=404, detail="One or more baseline cases do not belong to this project.")
+    keep_unchanged_ids = list(dict.fromkeys(request.keep_unchanged_case_ids))
+    if any(case_id not in baseline_ids for case_id in keep_unchanged_ids):
+        raise HTTPException(status_code=422, detail="Keep-unchanged cases must be part of the selected baseline.")
+    if any(cases_by_id[case_id].get("superseded_by_activity_id") for case_id in baseline_ids):
+        raise HTTPException(status_code=422, detail="Superseded cases cannot be included in a new revision.")
     endpoints_by_id = {str(item.get("id")): item for item in project.get("endpoints", [])}
     endpoint_ids = list(dict.fromkeys(request.endpoint_ids))
-    if not endpoint_ids:
-        raise HTTPException(status_code=422, detail="Select at least one current endpoint.")
     if any(endpoint_id not in endpoints_by_id for endpoint_id in endpoint_ids):
         raise HTTPException(status_code=404, detail="One or more endpoints do not belong to this project.")
 
     baseline = [cases_by_id[case_id] for case_id in baseline_ids]
+    general_baseline_collections = {
+        (str(item.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID),
+         str(item.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME))
+        for item in baseline if item.get("case_kind") == "general"
+    }
+    default_general_collection = (
+        next(iter(general_baseline_collections)) if len(general_baseline_collections) == 1
+        else (GENERAL_CASE_COLLECTION_ID, GENERAL_CASE_COLLECTION_NAME)
+    )
     baseline_endpoints = {}
     for baseline_case in baseline:
         for step in baseline_case.get("steps", []) if isinstance(baseline_case.get("steps"), list) else []:
@@ -459,19 +490,38 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     cumulative_requirements = _merge_revision_requirements(
         previous_requirements, previous_release_notes, request.release_notes,
     )
+    keep_unchanged_set = set(keep_unchanged_ids)
+    revision_baseline = [item for item in baseline if str(item.get("id")) not in keep_unchanged_set]
     trace = {}
     try:
-        revised = generate_test_case_revision(
-            baseline, endpoints, previous_requirements, request.release_notes, trace,
-            prior_release_notes=previous_release_notes,
-        )
-        expected_sources = set(baseline_ids)
+        if revision_baseline or endpoints or request.release_notes.strip():
+            revised = generate_test_case_revision(
+                revision_baseline, endpoints, previous_requirements, request.release_notes, trace,
+                prior_release_notes=previous_release_notes,
+            )
+        else:
+            revised = []
+        expected_sources = {str(item.get("id")) for item in revision_baseline}
         represented = [str(item.get("source_case_id")) for item in revised if item.get("source_case_id")]
         if set(represented) != expected_sources or len(represented) != len(expected_sources):
-            raise ValueError("The returned suite must contain each baseline source_case_id exactly once.")
+            raise ValueError("The returned suite must contain each AI-revised baseline source_case_id exactly once.")
+        if any(source_id not in expected_sources for source_id in represented):
+            raise ValueError("The model returned a source_case_id outside the AI-revised baseline.")
         revision_id = str(uuid.uuid4())
         generated = []
         normalization_warnings = []
+        revised_by_source = {
+            str(item["source_case_id"]): item for item in revised if item.get("source_case_id")
+        }
+        new_cases = []
+        kept_cases = []
+        for source_case_id in keep_unchanged_ids:
+            kept = copy.deepcopy(cases_by_id[source_case_id])
+            kept.update({
+                "id": str(uuid.uuid4()), "revision_id": revision_id,
+                "source_case_id": source_case_id,
+            })
+            kept_cases.append(kept)
         for case in revised:
             item = copy.deepcopy(case)
             normalization_warnings.extend(_drop_unsupported_revision_mappings(item))
@@ -484,6 +534,14 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 "business_requirements": cumulative_requirements,
                 "release_notes": request.release_notes,
             })
+            if item.get("case_kind") == "general":
+                source_case = cases_by_id.get(str(source_case_id)) if source_case_id else None
+                item["case_collection_id"] = (
+                    (source_case or {}).get("case_collection_id") or default_general_collection[0]
+                )
+                item["case_collection_name"] = (
+                    (source_case or {}).get("case_collection_name") or default_general_collection[1]
+                )
             if item.get("is_flow") or isinstance(item.get("steps"), list):
                 item["is_flow"] = True
                 for step_index, step in enumerate(item["steps"], start=1):
@@ -497,7 +555,18 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                     step["step_id"] = str(uuid.uuid4())
                     step["step_order"] = step_index
             _validate_editable_test_case(item)
-            generated.append(item)
+            if item.get("source_case_id"):
+                revised_by_source[str(item["source_case_id"])] = item
+            else:
+                new_cases.append(item)
+        for baseline_case in baseline:
+            source_case_id = str(baseline_case.get("id"))
+            if source_case_id in keep_unchanged_set:
+                generated.append(next(item for item in kept_cases if item["source_case_id"] == source_case_id))
+            else:
+                generated.append(revised_by_source[source_case_id])
+        generated.extend(new_cases)
+        new_case_ids = [str(item["id"]) for item in new_cases]
 
         revision = database.save_test_case_revision(project_id, {
             "id": revision_id, "label": request.release_label.strip() or "Release revision",
@@ -519,11 +588,17 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             "status": "succeeded", "error": "", "generated_case_ids": [item["id"] for item in generated],
             "revision_id": revision_id, "revision_label": revision["label"],
             "source_activity_id": request.source_activity_id, "source_case_ids": baseline_ids,
+            "kept_unchanged_case_ids": [item["id"] for item in kept_cases],
+            "kept_unchanged_source_case_ids": keep_unchanged_ids,
+            "revised_source_case_ids": [item for item in baseline_ids if item not in keep_unchanged_set],
+            "new_case_ids": new_case_ids,
             "warnings": normalization_warnings,
+            "clarification_questions": trace.get("clarification_questions", []),
         })
         return {
             "revision": revision, "test_cases": generated, "activity": activity,
             "warnings": normalization_warnings,
+            "clarification_questions": trace.get("clarification_questions", []),
         }
     except HTTPException:
         raise
@@ -539,6 +614,188 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             "source_activity_id": request.source_activity_id,
         })
         raise HTTPException(status_code=502, detail=f"Could not generate complete release suite: {exc}") from exc
+
+
+@app.post("/api/v1/projects/{project_id}/generation-activity/follow-up")
+def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) -> dict:
+    """Create linked refined cases and supersede prior output only after success."""
+    project = database.get_project(project_id)
+    source = database.get_generation_activity(project_id, request.source_activity_id)
+    if not project or not source:
+        raise HTTPException(status_code=404, detail="Project or source generation activity not found")
+    if source.get("status") != "succeeded":
+        raise HTTPException(status_code=422, detail="Only successful generation actions can be refined.")
+    case_by_id = {str(item.get("id")): item for item in project.get("test_cases", [])}
+    source_cases = [case_by_id[item_id] for item_id in source.get("generated_case_ids", []) if item_id in case_by_id]
+    if not source_cases:
+        raise HTTPException(status_code=422, detail="The source action has no remaining saved cases to refine.")
+    is_revision_follow_up = source.get("mode") == "Release revision"
+    if not is_revision_follow_up and any(item.get("superseded_by_activity_id") for item in source_cases):
+        raise HTTPException(status_code=422, detail="This generation output was already refined.")
+    protected_ids = {str(item) for item in source.get("kept_unchanged_case_ids", [])} if is_revision_follow_up else set()
+    source_cases_to_refine = [item for item in source_cases if str(item.get("id")) not in protected_ids]
+    answers = {str(key): str(value).strip() for key, value in request.answers.items() if str(value).strip()}
+    if not answers:
+        raise HTTPException(status_code=422, detail="Provide at least one clarification answer.")
+    source_general_collections = {
+        (str(item.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID),
+         str(item.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME))
+        for item in source_cases if item.get("case_kind") == "general"
+    }
+    default_general_collection = (
+        next(iter(source_general_collections)) if len(source_general_collections) == 1
+        else (GENERAL_CASE_COLLECTION_ID, GENERAL_CASE_COLLECTION_NAME)
+    )
+    trace = {}
+    try:
+        refined_output = (
+            refine_generated_cases(source_cases_to_refine, answers, trace)
+            if source_cases_to_refine else []
+        )
+        source_cases_by_id = {str(item.get("id")): item for item in source_cases_to_refine}
+        represented_sources = []
+        refined_by_source = {}
+        new_cases = []
+        for index, case in enumerate(refined_output):
+            if not isinstance(case, dict):
+                raise ValueError(f"Refined test case {index + 1} must be an object.")
+            raw_source_ref = case.get("source_case_id")
+            source_ref = str(raw_source_ref or case.get("id") or "")
+            original = source_cases_by_id.get(source_ref) if raw_source_ref or source_ref else None
+            if original:
+                case["source_case_id"] = original.get("id")
+                represented_sources.append(str(original.get("id")))
+            elif raw_source_ref:
+                raise ValueError(f"Refined output references an unknown source case: {raw_source_ref}")
+            case["id"] = str(uuid.uuid4())
+            case["follow_up_of"] = request.source_activity_id
+            if source.get("business_requirements"):
+                case.setdefault("business_requirements", source["business_requirements"])
+            if (
+                (original and original.get("case_kind") == "general")
+                or case.get("case_kind") == "general"
+                or isinstance(case.get("manual_steps"), list)
+            ):
+                case["case_kind"] = "general"
+                case["case_collection_id"] = (
+                    (original or {}).get("case_collection_id") or default_general_collection[0]
+                )
+                case["case_collection_name"] = (
+                    (original or {}).get("case_collection_name") or default_general_collection[1]
+                )
+                case["manual_steps"] = (
+                    case.get("manual_steps") or case.get("steps")
+                    or (original or {}).get("manual_steps", [])
+                )
+                case.pop("steps", None)
+                _validate_editable_test_case(case)
+            else:
+                if case.get("is_flow") or isinstance(case.get("steps"), list):
+                    case["is_flow"] = True
+                    for step_index, step in enumerate(case.get("steps", []), start=1):
+                        step["step_id"] = str(uuid.uuid4())
+                        step["step_order"] = step_index
+                _validate_editable_test_case(case)
+            if original:
+                refined_by_source[str(original.get("id"))] = case
+            else:
+                new_cases.append(case)
+        if (
+            len(represented_sources) != len(source_cases_to_refine)
+            or len(set(represented_sources)) != len(source_cases_to_refine)
+            or set(represented_sources) != set(source_cases_by_id)
+        ):
+            raise ValueError("The refined output must retain each unlocked source case once and may add new cases.")
+        refined = []
+        revision_id = str(uuid.uuid4()) if is_revision_follow_up else None
+        for original in source_cases:
+            original_id = str(original.get("id"))
+            if original_id in protected_ids:
+                preserved = copy.deepcopy(original)
+                preserved.update({
+                    "id": str(uuid.uuid4()), "source_case_id": original_id,
+                    "follow_up_of": request.source_activity_id,
+                })
+                if revision_id:
+                    preserved["revision_id"] = revision_id
+                refined.append(preserved)
+            elif original_id in refined_by_source:
+                refined.append(refined_by_source[original_id])
+        refined.extend(new_cases)
+        _assign_test_case_ids(project_id, refined)
+        revision = None
+        if source.get("mode") == "Release revision":
+            for case in refined:
+                case["revision_id"] = revision_id
+            revision = database.save_test_case_revision(project_id, {
+                "id": revision_id,
+                "label": f"{source.get('revision_label') or 'Revision'} clarification",
+                "source_activity_id": request.source_activity_id,
+                "previous_requirements": source.get("previous_requirements", ""),
+                "previous_release_notes": source.get("previous_release_notes", ""),
+                "release_notes": source.get("release_notes", ""),
+                "endpoint_snapshot": _project_endpoint_snapshot(project),
+            }, refined)
+        activity_payload = {
+            "mode": source.get("mode", "Generation"),
+            "business_requirements": source.get("business_requirements", ""),
+            "previous_requirements": source.get("previous_requirements", ""),
+            "previous_release_notes": source.get("previous_release_notes", ""),
+            "release_notes": source.get("release_notes", ""),
+            "endpoints": source.get("endpoints", []),
+            "endpoint_snapshot": _project_endpoint_snapshot(project),
+            "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "status": "succeeded", "error": "",
+            "generated_case_ids": [case["id"] for case in refined],
+            "clarification_questions": trace.get("clarification_questions", []),
+            "questions_answered": source.get("clarification_questions", []),
+            "clarification_answers": answers,
+            "follow_up_of": request.source_activity_id,
+            "revision_id": revision_id,
+            "revision_label": revision.get("label") if revision else source.get("revision_label"),
+            "supersedes_activity_id": None if is_revision_follow_up else request.source_activity_id,
+            "archived_case_ids": [] if is_revision_follow_up else [str(item["id"]) for item in source_cases],
+            "archived_case_summaries": [] if is_revision_follow_up else [{
+                "id": str(item.get("id")), "name": item.get("name", "Untitled case"),
+                "type": item.get("type", "test"), "description": item.get("description", ""),
+                "is_flow": bool(item.get("is_flow") or isinstance(item.get("steps"), list)),
+                "case_kind": item.get("case_kind", "api"),
+            } for item in source_cases],
+            "kept_unchanged_case_ids": [
+                str(item["id"]) for item in refined if str(item.get("source_case_id")) in protected_ids
+            ],
+            "kept_unchanged_source_case_ids": [
+                str(item["id"]) for item in source_cases if str(item.get("id")) in protected_ids
+            ],
+            "revised_source_case_ids": [str(item["id"]) for item in source_cases_to_refine],
+        }
+        if is_revision_follow_up:
+            activity = database.record_generation_activity(project_id, activity_payload)
+        else:
+            activity = database.save_follow_up_generation(
+                project_id, refined, activity_payload,
+                [str(item["id"]) for item in source_cases],
+            )
+            if activity is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+        return {
+            "test_cases": refined,
+            "clarification_questions": trace.get("clarification_questions", []),
+            "activity": activity,
+            "revision": revision,
+            "archived_case_ids": activity_payload["archived_case_ids"],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        database.record_generation_activity(project_id, {
+            "mode": source.get("mode", "Generation"), "status": "failed", "error": str(exc),
+            "follow_up_of": request.source_activity_id,
+            "questions_answered": source.get("clarification_questions", []),
+            "clarification_answers": answers, "prompt": trace.get("prompt", ""),
+            "llm_response": trace.get("llm_response", ""), "generated_case_ids": [],
+        })
+        raise HTTPException(status_code=502, detail=f"Could not refine generated cases: {exc}") from exc
 
 
 @app.get("/api/v1/projects/{project_id}/test-cases/{test_case_id}/history")
@@ -1016,7 +1273,7 @@ def discover_contract_flows(project_id: str, request: FlowDiscoveryRequest) -> d
 
 
 @app.post("/api/v1/projects/{project_id}/contracts/generate-flows")
-def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequest) -> list:
+def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequest) -> dict:
     """Generate flow cases from selected dependency paths and persist them.
 
     Args:
@@ -1099,11 +1356,11 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
-    _record_generation_activity(
+    activity = _record_generation_activity(
         project_id, "Discovered Flow", endpoints, request.business_requirements,
         trace, "succeeded", test_cases=test_cases,
     )
-    return test_cases
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
 
 @app.post("/api/v1/http/send")
@@ -1276,7 +1533,7 @@ def delete_endpoint(project_id: str, endpoint_id: str) -> dict:
 # --- Test Case Management ---
 
 @app.post("/api/v1/test-cases/generate")
-def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
+def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
     """
     Generate test cases for one or more request definitions in one LLM action.
 
@@ -1287,6 +1544,40 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
         list: Generated test cases.
     """
     project_id = request.project_id or database.current_project_id()
+    if request.mode == "General":
+        requirements = (request.business_requirements or "").strip()
+        if not requirements:
+            raise HTTPException(status_code=422, detail="Business requirements are required for general scenarios.")
+        project = database.get_project(project_id) if project_id else None
+        if project_id and project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        trace = {}
+        try:
+            test_cases = _generate_or_raise(
+                generate_general_test_cases, business_requirements=requirements, trace=trace,
+            )
+        except HTTPException as exc:
+            activity = _record_generation_activity(
+                project_id, "General", [], requirements, trace, "failed", error=str(exc.detail),
+            ) if project_id else None
+            raise
+        _attach_generation_requirements(test_cases, requirements)
+        collection_id = str(request.case_collection_id or GENERAL_CASE_COLLECTION_ID)
+        collection_name = str(request.case_collection_name or "").strip() or GENERAL_CASE_COLLECTION_NAME
+        for case in test_cases:
+            case["case_kind"] = "general"
+            case["case_collection_id"] = collection_id
+            case["case_collection_name"] = collection_name
+            case["id"] = str(uuid.uuid4())
+            case["manual_steps"] = [str(step) for step in case["manual_steps"]]
+        _assign_test_case_ids(project_id, test_cases)
+        if project_id and not database.save_test_cases(project_id, test_cases):
+            raise HTTPException(status_code=404, detail="Project not found")
+        activity = _record_generation_activity(
+            project_id, "General", [], requirements, trace, "succeeded", test_cases=test_cases,
+        ) if project_id else None
+        return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+
     supplied_endpoints = request.endpoints or (
         [request.parsed_curl] if request.parsed_curl is not None else []
     )
@@ -1388,15 +1679,15 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> list:
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
-    _record_generation_activity(
+    activity = _record_generation_activity(
         project_id, "Single", endpoints, request.business_requirements,
         trace, "succeeded", test_cases=test_cases,
     )
-    return test_cases
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
 
 @app.post("/api/v1/test-cases/generate-flow")
-def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
+def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
     """
     Generate flow test cases without a project (standalone mode).
 
@@ -1444,15 +1735,15 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> list:
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
-    _record_generation_activity(
+    activity = _record_generation_activity(
         project_id, "Flow", endpoints, business_requirements, trace,
         "succeeded", test_cases=test_cases,
     )
-    return test_cases
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
 
 @app.post("/api/v1/projects/{project_id}/test-cases/generate-flow")
-def generate_flow_test_cases_project(project_id: str, request: FlowGenerateRequest) -> list:
+def generate_flow_test_cases_project(project_id: str, request: FlowGenerateRequest) -> dict:
     """
     Generate flow test cases for a project (sequence of endpoints).
 
@@ -1518,11 +1809,11 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     _assign_test_case_ids(project_id, test_cases)
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
-    _record_generation_activity(
+    activity = _record_generation_activity(
         project_id, "Flow", ordered, business_requirements, trace,
         "succeeded", test_cases=test_cases,
     )
-    return test_cases
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
 
 @app.post("/api/v1/projects/{project_id}/test-cases/save")
@@ -1547,6 +1838,9 @@ def save_test_cases(project_id: str, request: dict) -> dict:
     for tc in new_tcs:
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
+        existing = database.find_test_case(str(tc["id"]), project_id)
+        if existing and existing[1].get("superseded_by_activity_id"):
+            raise HTTPException(status_code=409, detail="Superseded test cases cannot be reactivated or edited.")
     if not database.save_test_cases(project_id, new_tcs):
         raise HTTPException(status_code=404, detail="Project not found")
     updated = database.get_project(project_id)
@@ -1632,6 +1926,7 @@ def export_test_cases(
 
     for tc in paginated:
         is_flow = bool(tc.get("is_flow") or isinstance(tc.get("steps"), list))
+        is_general = tc.get("case_kind") == "general"
         request = (tc.get("request") or {}) if not is_flow else {}
         writer.writerow([
             tc.get("id", ""),
@@ -1647,8 +1942,8 @@ def export_test_cases(
             json_cell(request.get("headers")),
             json_cell(request.get("query_params")),
             json_cell(request.get("body")),
-            json_cell(tc.get("assertions")),
-            json_cell(tc.get("steps")) if is_flow else "",
+            json_cell(tc.get("assertions")) if not is_general else "",
+            json_cell(tc.get("steps") if is_flow else tc.get("manual_steps")) if is_flow or is_general else "",
         ])
 
     output.seek(0)
@@ -1715,6 +2010,8 @@ def update_test_case(project_id: str, test_case_id: str, request: dict) -> dict:
     existing = database.find_test_case(test_case_id, project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Test case not found")
+    if existing[1].get("superseded_by_activity_id"):
+        raise HTTPException(status_code=409, detail="Superseded test cases are read-only.")
     merged = copy.deepcopy(existing[1])
     merged.update(request)
     merged["id"] = test_case_id
@@ -1724,6 +2021,15 @@ def update_test_case(project_id: str, test_case_id: str, request: dict) -> dict:
 
 def _validate_editable_test_case(test_case: dict) -> None:
     """Validate editable request and flow-step data before persistence or execution."""
+    if test_case.get("case_kind") == "general":
+        steps = test_case.get("manual_steps")
+        if not isinstance(steps, list) or not steps or any(not isinstance(item, str) or not item.strip() for item in steps):
+            raise HTTPException(status_code=422, detail="A general test case needs ordered human-readable manual steps.")
+        for field in ("request", "assertions", "variable_mappings", "expected_status", "expected_body_contains", "is_flow"):
+            test_case.pop(field, None)
+        test_case.setdefault("case_collection_id", GENERAL_CASE_COLLECTION_ID)
+        test_case.setdefault("case_collection_name", GENERAL_CASE_COLLECTION_NAME)
+        return
     if test_case.get("is_flow"):
         steps = test_case.get("steps")
         if not isinstance(steps, list) or not steps:
@@ -1794,6 +2100,32 @@ def _validate_editable_test_case(test_case: dict) -> None:
 
 # --- Test Case Execution ---
 
+@app.post("/api/v1/projects/{project_id}/test-cases/{test_case_id}/manual-result")
+def mark_manual_test_result(
+    project_id: str, test_case_id: str, request: ManualTestResultRequest,
+) -> dict:
+    """Append a tester-marked pass/fail outcome for a general scenario."""
+    found = database.find_test_case(test_case_id, project_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    _, test_case = found
+    if test_case.get("superseded_by_activity_id"):
+        raise HTTPException(status_code=409, detail="Superseded test cases are read-only.")
+    if test_case.get("case_kind") != "general":
+        raise HTTPException(status_code=422, detail="Manual outcomes are available only for general test cases.")
+    result = {
+        "status": request.status,
+        "manual_result": True,
+        "note": request.note.strip(),
+        "assertion_detail": request.note.strip() or f"Marked {request.status} manually.",
+        "test_case_snapshot": copy.deepcopy(test_case),
+    }
+    database.append_execution(project_id, test_case_id, result)
+    updated = database.update_test_case(project_id, test_case_id, {"manual_status": request.status})
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Test case not found")
+    return {"test_case_id": test_case_id, "status": request.status, "manual_result": True}
+
 @app.post("/api/v1/test-cases/execute")
 def execute_test_case_endpoint(request: dict) -> dict:
     """
@@ -1819,6 +2151,10 @@ def execute_test_case_endpoint(request: dict) -> dict:
     if not found:
         raise HTTPException(status_code=404, detail="Test case not found")
     owning_project_id, test_case = found
+    if test_case.get("superseded_by_activity_id"):
+        raise HTTPException(status_code=409, detail="Superseded test cases cannot be executed.")
+    if test_case.get("case_kind") == "general":
+        raise HTTPException(status_code=422, detail="General scenarios are manual and cannot be HTTP executed.")
     supplied_case = request.get("test_case")
     if supplied_case is not None:
         if not isinstance(supplied_case, dict) or supplied_case.get("id") != test_case_id:
