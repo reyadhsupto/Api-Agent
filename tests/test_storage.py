@@ -74,6 +74,31 @@ def test_database_upserts_endpoint_and_test_case_instead_of_duplicating(database
     assert project["test_cases"][0]["name"] == "After"
 
 
+def test_successful_follow_up_archives_cases_and_prunes_suites_atomically(database):
+    """Superseded cases leave suites while their payload and execution history remain."""
+    project_id = database.create_project(f"Refinement {uuid.uuid4()}")["id"]
+    source = {"id": "source-case", "name": "Old scenario"}
+    database.save_test_cases(project_id, [source])
+    database.append_execution(project_id, source["id"], {"status": "passed"})
+    run = database.save_test_run(project_id, "Regression", [source["id"]])
+
+    activity = database.save_follow_up_generation(
+        project_id,
+        [{"id": "refined-case", "source_case_id": source["id"], "name": "Updated scenario"}],
+        {"mode": "General", "status": "succeeded", "generated_case_ids": ["refined-case"]},
+        [source["id"]],
+    )
+
+    project = database.get_project(project_id)
+    cases = {item["id"]: item for item in project["test_cases"]}
+    assert cases[source["id"]]["superseded_by_activity_id"] == activity["id"]
+    assert cases["refined-case"]["source_case_id"] == source["id"]
+    assert database.list_test_case_executions(project_id, source["id"], 10)[0]["status"] == "passed"
+    saved_run = next(item for item in project["test_runs"] if item["id"] == run["id"])
+    assert saved_run["case_ids"] == []
+    assert database.get_generation_activity(project_id, activity["id"])["archived_case_ids"] == [source["id"]]
+
+
 def test_legacy_endpoint_migration_is_repeatable_and_preserves_payload(database):
     """Legacy endpoint rows are assigned once without changing IDs, flags, or order."""
     project_id = database.create_project("Legacy migration") ["id"]

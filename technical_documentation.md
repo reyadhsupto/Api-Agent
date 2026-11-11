@@ -84,9 +84,21 @@ Returns parsed request components (method, url, headers, body).
 Frontend allows user to edit these components before generating test cases.
 
 ### POST /api/v1/test-cases/generate
-Body: {"parsed_curl": {...}, "business_requirements": "...", "project_id": "...", "source_endpoint_id": "...", "example_test_case_ids": ["..."]}
-Returns list of test cases. Accepts the (optionally edited) parsed_curl from the frontend.
+Body: {"parsed_curl": {...}, "business_requirements": "...", "project_id": "...", "source_endpoint_id": "...", "example_test_case_ids": ["..."], "mode": "Single", "case_collection_id": "...", "case_collection_name": "..."}
+Returns {"test_cases": [...], "clarification_questions": [...], "activity": {...}}. Accepts the (optionally edited) parsed_curl from the frontend. `mode: General` instead requires business requirements and generates manual-only cases with `case_kind: general` and ordered `manual_steps`; endpoint and example inputs are not used. General requests may include a project-scoped `case_collection_id` and `case_collection_name`; cases retain these fields through follow-up and revision generation.
 `example_test_case_ids` is optional. Selected cases are loaded from the project and used as scenario-style and coverage context; the endpoint request and business requirements remain the generation target. The cases are not copied or modified. Generated cases receive new IDs and are saved alongside the existing cases.
+
+Generation output is normalized from either the envelope `{ "test_cases": [...], "clarification_questions": [...] }` or a legacy bare array (treated as no questions). General cases contain no request, mapping, or assertion data. The frontend renders their manual steps and records Passed/Failed marks through the project-scoped manual-result endpoint; each mark is appended to execution history and contributes to flaky classification. HTTP batch runs skip general cases.
+
+### POST /api/v1/projects/{project_id}/generation-activity/follow-up
+Body: {"source_activity_id": "...", "answers": {"1": "..."}}
+Creates a linked generation activity and a new refined case set. On successful non-revision refinement, source cases receive `superseded_by_activity_id` and leave active case lists, examples, revision baselines, suites, and execution; their records, execution history, and activity remain available. The refinement and supersede markers are written atomically. Failed refinement does not supersede the source cases. The response includes `archived_case_ids`; activity records include `supersedes_activity_id`, archived IDs, questions, and answers. Release revision follow-ups instead create a new revision and preserve all prior revision cases.
+
+Revision requests may include `keep_unchanged_case_ids`, a subset of `baseline_case_ids`. The backend copies those cases with new IDs and source links without including them in the model input. Revision clarification follow-ups carry this protection forward and record source and copied IDs in activity details.
+
+### POST /api/v1/projects/{project_id}/test-cases/{test_case_id}/manual-result
+Body: {"status": "passed"} or {"status": "failed", "note": "..."}
+Appends a manual result containing the saved case snapshot and updates the case's current `manual_status`.
 
 ### POST /api/v1/test-cases/generate-flow
 Body: {"endpoints": [...], "business_requirements": "...", "project_id": "...", "example_test_case_ids": ["..."]}
@@ -152,7 +164,7 @@ New requests default to excluded from generation. Persistent eligibility is cont
 
 Single-endpoint generation sends `source_endpoint_id` with each request. The backend validates that it belongs to the selected project and stores its ID and display name with each generated test case. Optional `example_test_case_ids` are resolved from that same project and passed as prompt context; IDs outside the project or unknown IDs return 404. Examples are compacted to scenario/request/assertion/mapping fields without execution results or authorization headers. Newly generated cases get unique IDs, persist alongside prior cases, and the frontend merges them into its existing case list.
 
-The Test Cases workspace provides project-scoped multi-select filters for reusable runs, collections, and endpoints, alongside execution status. Filters combine across categories and use OR semantics within a category. A single case resolves to its source endpoint ID, with URL/method matching for legacy cases. A flow matches endpoint and collection filters when one of its steps matches all active endpoint/collection criteria; the complete scenario appears once in **Flow scenarios** and lists all participating endpoints and collections. Unresolved cases remain visible unless an endpoint or collection filter is active.
+The Test Cases workspace provides project-scoped multi-select filters for reusable runs, collections, and endpoints, alongside execution status. General scenarios can be assigned to named, project-scoped case collections; the existing **Collections** filter includes those groups without another filter control. Filters combine across categories and use OR semantics within a category. A single case resolves to its source endpoint ID, with URL/method matching for legacy cases. A flow matches endpoint and collection filters when one of its steps matches all active endpoint/collection criteria; the complete scenario appears once in **Flow scenarios** and lists all participating endpoints and collections. General scenarios match their assigned collection and are excluded when an endpoint filter is active.
 
 Test cases are grouped by endpoint while each case keeps its own generated title; unnamed endpoints use their URL as the group heading. Users can create manual single cases from one saved request or manual flows from an ordered selection of saved requests; new cases receive stable IDs, are immediately upserted into the project, and open in the editor.
 

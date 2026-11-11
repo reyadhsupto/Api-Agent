@@ -3,7 +3,41 @@
 import pytest
 
 from app import generator
-from app.generator import _build_flow_prompt, _parse_generated_response, generate_test_case_revision
+from app.generator import (
+    _build_flow_prompt, _parse_generated_response, _parse_generation_output,
+    generate_general_test_cases, generate_test_case_revision,
+)
+
+
+def test_generation_envelope_retains_questions_and_legacy_arrays_default_empty():
+    """Normalize the shared response envelope and preserve array compatibility."""
+    envelope = '{"test_cases":[{"id":"case-1","name":"A"}],"clarification_questions":["Which account?"]}'
+    cases, questions = _parse_generation_output(envelope, validate=False)
+    assert cases[0]["id"] == "case-1"
+    assert questions == ["Which account?"]
+    assert _parse_generation_output('[{"id":"case-2"}]', validate=False) == ([{"id": "case-2"}], [])
+
+
+def test_general_generation_produces_manual_only_scenarios(monkeypatch):
+    """Requirements-only output uses manual steps and exposes model questions."""
+    captured = {}
+    response = '{"test_cases":[{"id":"tmp","name":"Password reset","type":"positive",' \
+        '"description":"Verify reset","manual_steps":["Request reset","Use the emailed link"]}],' \
+        '"clarification_questions":["Should links expire?"]}'
+
+    def fake_call(prompt):
+        captured["prompt"] = prompt
+        return response
+
+    monkeypatch.setattr(generator, "_call_llm_with_fallback", fake_call)
+    trace = {}
+    cases = generate_general_test_cases("Users can reset forgotten passwords.", trace)
+
+    assert cases[0]["case_kind"] == "general"
+    assert cases[0]["manual_steps"] == ["Request reset", "Use the emailed link"]
+    assert not {"request", "assertions", "variable_mappings"} & cases[0].keys()
+    assert trace["clarification_questions"] == ["Should links expire?"]
+    assert "business requirements only" in captured["prompt"]
 
 
 def test_revision_prompt_separates_old_requirements_from_release_notes(monkeypatch):
