@@ -26,6 +26,9 @@ class TestCaseGenerateRequest(BaseModel):
     mode: Literal["Single", "General"] = "Single"
     case_collection_id: Optional[str] = None
     case_collection_name: Optional[str] = None
+    project_chat_thread_id: Optional[str] = None
+    project_chat_brief: Optional[str] = None
+    project_brief_scope_ids: list[str] = Field(default_factory=list)
 
 
 class GenerationFollowUpRequest(BaseModel):
@@ -42,6 +45,56 @@ class ManualTestResultRequest(BaseModel):
     note: str = ""
 
 
+class ProjectChatThreadRequest(BaseModel):
+    """Create or edit a project chat thread."""
+
+    title: str = "New project chat"
+    model: Optional[str] = None
+    feature_brief: Optional[str] = None
+    context_summary: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+class ProjectChatMessageRequest(BaseModel):
+    """A user message to send in a persistent project chat."""
+
+    content: str
+
+
+class ProjectBriefScopeRequest(BaseModel):
+    """Create a named project overview, feature, or microservice brief scope."""
+
+    scope_type: Literal["project", "feature", "microservice"]
+    name: str
+
+
+class ProjectBriefVersionRequest(BaseModel):
+    """Save an explicitly reviewed immutable version of a project brief."""
+
+    content: str
+    source_thread_id: Optional[str] = None
+
+
+class ProjectBriefDraftRequest(BaseModel):
+    """Request an unsaved brief draft from a project chat transcript."""
+
+    scope_id: Optional[str] = None
+    create_scope_type: Optional[Literal["feature", "microservice"]] = None
+    create_scope_name: Optional[str] = None
+
+
+class ProjectKnowledgeEntryRequest(BaseModel):
+    """Create or update a project-scoped knowledge entry."""
+
+    id: Optional[str] = None
+    title: str
+    category: str = "Product knowledge"
+    content: str
+    source_name: str = "User authored"
+    approved: bool = True
+    retired: bool = False
+
+
 class FlowGenerateRequest(BaseModel):
     endpoints: list[dict] = Field(default_factory=list)
     endpoint_ids: list[str] = Field(default_factory=list)
@@ -50,6 +103,9 @@ class FlowGenerateRequest(BaseModel):
     example_test_case_ids: list[str] = Field(default_factory=list)
     # Accepted for older clients; flow generation now lets the model determine output size.
     scenario_count: Optional[int] = None
+    project_chat_thread_id: Optional[str] = None
+    project_chat_brief: Optional[str] = None
+    project_brief_scope_ids: list[str] = Field(default_factory=list)
 
 
 class TestCaseRevisionRequest(BaseModel):
@@ -61,6 +117,9 @@ class TestCaseRevisionRequest(BaseModel):
     release_notes: str = ""
     endpoint_ids: list[str] = Field(default_factory=list)
     keep_unchanged_case_ids: list[str] = Field(default_factory=list)
+    project_chat_thread_id: Optional[str] = None
+    project_chat_brief: Optional[str] = None
+    project_brief_scope_ids: list[str] = Field(default_factory=list)
 
 
 class ContractPreviewRequest(BaseModel):
@@ -117,6 +176,8 @@ class DiscoveredFlowGenerateRequest(BaseModel):
     source_id: str
     candidate_ids: list[str] = Field(default_factory=list)
     business_requirements: Optional[str] = None
+    project_brief_scope_ids: list[str] = Field(default_factory=list)
+    project_chat_thread_id: Optional[str] = None
 
 
 class ApiRequest(BaseModel):

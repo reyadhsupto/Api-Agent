@@ -120,6 +120,78 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_generation_activity_project_time
                     ON generation_activity(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS project_chat_threads (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    context_summary TEXT NOT NULL DEFAULT '',
+                    summary_through_ordinal INTEGER NOT NULL DEFAULT -1,
+                    feature_brief TEXT NOT NULL DEFAULT '',
+                    archived BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_threads_project_updated
+                    ON project_chat_threads(project_id, archived, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS project_brief_scopes (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    scope_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    legacy_thread_id TEXT UNIQUE REFERENCES project_chat_threads(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_scopes_project_name
+                    ON project_brief_scopes(project_id, scope_type, LOWER(name)) WHERE scope_type<>'legacy';
+                CREATE INDEX IF NOT EXISTS idx_brief_scopes_project_updated
+                    ON project_brief_scopes(project_id, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS project_brief_versions (
+                    id TEXT PRIMARY KEY,
+                    scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    version_number INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    is_current BOOLEAN NOT NULL DEFAULT FALSE,
+                    source_thread_id TEXT REFERENCES project_chat_threads(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(scope_id, version_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_brief_versions_scope
+                    ON project_brief_versions(scope_id, version_number DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_versions_one_current
+                    ON project_brief_versions(scope_id) WHERE is_current=TRUE;
+                CREATE TABLE IF NOT EXISTS project_chat_messages (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES project_chat_threads(id) ON DELETE CASCADE,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    sources_json TEXT NOT NULL DEFAULT '[]',
+                    endpoint_sources_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(thread_id, ordinal)
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_order
+                    ON project_chat_messages(thread_id, ordinal);
+                CREATE TABLE IF NOT EXISTS project_knowledge_entries (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'Product knowledge',
+                    content TEXT NOT NULL,
+                    source_name TEXT NOT NULL DEFAULT 'User authored',
+                    approved BOOLEAN NOT NULL DEFAULT TRUE,
+                    retired BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_project_updated
+                    ON project_knowledge_entries(project_id, retired, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_knowledge_search
+                    ON project_knowledge_entries USING GIN (
+                        to_tsvector('english', title || ' ' || category || ' ' || content)
+                    );
                 CREATE TABLE IF NOT EXISTS test_case_revisions (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -147,6 +219,9 @@ class Database:
             )
             _execute(connection, "ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS collection_id TEXT")
             _execute(connection, "ALTER TABLE test_case_revisions ADD COLUMN IF NOT EXISTS previous_release_notes TEXT NOT NULL DEFAULT ''")
+            _execute(connection, "ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS sources_json TEXT NOT NULL DEFAULT '[]'")
+            _execute(connection, "ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS endpoint_sources_json TEXT NOT NULL DEFAULT '[]'")
+            _execute(connection, "ALTER TABLE project_chat_threads ADD COLUMN IF NOT EXISTS summary_through_ordinal INTEGER NOT NULL DEFAULT -1")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_collections_project_order ON collections(project_id, ordinal)")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_endpoints_collection_order ON endpoints(collection_id, ordinal)")
             _execute(connection, """
@@ -159,6 +234,196 @@ class Database:
             """)
         self.ensure_default_project()
         self.migrate_legacy_endpoints()
+        self.migrate_legacy_chat_briefs()
+
+    def migrate_legacy_chat_briefs(self) -> None:
+        """Preserve existing thread briefs as independent project brief scopes."""
+        with self.session() as connection:
+            projects = _execute(connection, "SELECT id FROM projects").fetchall()
+            for project in projects:
+                project_id = str(project["id"])
+                overview = _execute(
+                    connection,
+                    "SELECT id FROM project_brief_scopes WHERE project_id=? AND scope_type='project' LIMIT 1",
+                    (project_id,),
+                ).fetchone()
+                if not overview:
+                    now = _now()
+                    _execute(connection,
+                        "INSERT INTO project_brief_scopes(id,project_id,scope_type,name,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (str(uuid.uuid4()), project_id, "project", "Project overview", now, now),
+                    )
+                threads = _execute(
+                    connection,
+                    "SELECT id,title,feature_brief FROM project_chat_threads "
+                    "WHERE project_id=? AND feature_brief<>'' ORDER BY created_at,id",
+                    (project_id,),
+                ).fetchall()
+                for thread in threads:
+                    linked = _execute(
+                        connection,
+                        "SELECT id FROM project_brief_scopes WHERE legacy_thread_id=?",
+                        (thread["id"],),
+                    ).fetchone()
+                    if linked:
+                        continue
+                    now = _now()
+                    scope_id = str(uuid.uuid4())
+                    scope_name = f"Legacy brief · {str(thread['title'] or 'Project chat')[:160]}"
+                    _execute(connection,
+                        "INSERT INTO project_brief_scopes(id,project_id,scope_type,name,legacy_thread_id,created_at,updated_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (scope_id, project_id, "legacy", scope_name, thread["id"], now, now),
+                    )
+                    _execute(connection,
+                        "INSERT INTO project_brief_versions(id,scope_id,version_number,content,is_current,source_thread_id,created_at) "
+                        "VALUES(?,?,?,?,?,?,?)",
+                        (str(uuid.uuid4()), scope_id, 1, thread["feature_brief"], True, thread["id"], now),
+                    )
+
+    def list_project_brief_scopes(self, project_id: str) -> list[dict] | None:
+        """List project brief scopes with their current version and version count."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(connection,
+                "SELECT s.id,s.project_id,s.scope_type,s.name,s.created_at,s.updated_at,"
+                "v.id AS current_version_id,v.version_number AS current_version_number,"
+                "v.content AS current_content,v.created_at AS current_version_created_at,"
+                "(SELECT COUNT(*) FROM project_brief_versions allv WHERE allv.scope_id=s.id) AS version_count "
+                "FROM project_brief_scopes s LEFT JOIN project_brief_versions v "
+                "ON v.scope_id=s.id AND v.is_current=TRUE WHERE s.project_id=? "
+                "ORDER BY CASE s.scope_type WHEN 'project' THEN 0 WHEN 'feature' THEN 1 "
+                "WHEN 'microservice' THEN 2 ELSE 3 END, LOWER(s.name),s.id",
+                (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_project_brief_scope(self, project_id: str, scope_id: str) -> dict | None:
+        """Fetch one project-owned brief scope and its current version."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "SELECT s.id,s.project_id,s.scope_type,s.name,s.created_at,s.updated_at,"
+                "v.id AS current_version_id,v.version_number AS current_version_number,"
+                "v.content AS current_content,v.created_at AS current_version_created_at "
+                "FROM project_brief_scopes s LEFT JOIN project_brief_versions v "
+                "ON v.scope_id=s.id AND v.is_current=TRUE WHERE s.project_id=? AND s.id=?",
+                (project_id, scope_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_project_brief_scope(self, project_id: str, scope_type: str, name: str) -> dict | None:
+        """Create a durable project, feature, or microservice brief scope."""
+        now = _now()
+        scope = {
+            "id": str(uuid.uuid4()), "project_id": project_id,
+            "scope_type": scope_type, "name": name.strip(),
+            "created_at": now, "updated_at": now,
+        }
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            _execute(connection,
+                "INSERT INTO project_brief_scopes(id,project_id,scope_type,name,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (scope["id"], project_id, scope_type, scope["name"], now, now),
+            )
+        return scope
+
+    def list_project_brief_versions(self, project_id: str, scope_id: str) -> list[dict] | None:
+        """List versions only when the requested scope belongs to the project."""
+        with self.session() as connection:
+            if not _execute(connection,
+                "SELECT 1 FROM project_brief_scopes WHERE project_id=? AND id=?",
+                (project_id, scope_id),
+            ).fetchone():
+                return None
+            rows = _execute(connection,
+                "SELECT v.* FROM project_brief_versions v JOIN project_brief_scopes s ON s.id=v.scope_id "
+                "WHERE s.project_id=? AND s.id=? ORDER BY v.version_number DESC",
+                (project_id, scope_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_project_brief_version(
+        self, project_id: str, scope_id: str, content: str, source_thread_id: str | None = None,
+    ) -> dict | None:
+        """Append a reviewed brief version and atomically make it current."""
+        now = _now()
+        version = {
+            "id": str(uuid.uuid4()), "scope_id": scope_id, "content": content,
+            "source_thread_id": source_thread_id, "created_at": now,
+        }
+        with self.session() as connection:
+            scope = _execute(connection,
+                "SELECT id FROM project_brief_scopes WHERE project_id=? AND id=?",
+                (project_id, scope_id),
+            ).fetchone()
+            if not scope:
+                return None
+            if source_thread_id and not _execute(connection,
+                "SELECT 1 FROM project_chat_threads WHERE project_id=? AND id=?",
+                (project_id, source_thread_id),
+            ).fetchone():
+                return None
+            number = _execute(connection,
+                "SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM project_brief_versions WHERE scope_id=?",
+                (scope_id,),
+            ).fetchone()["next_version"]
+            _execute(connection,
+                "UPDATE project_brief_versions SET is_current=FALSE WHERE scope_id=?",
+                (scope_id,),
+            )
+            _execute(connection,
+                "INSERT INTO project_brief_versions(id,scope_id,version_number,content,is_current,source_thread_id,created_at) "
+                "VALUES(?,?,?,?,TRUE,?,?)",
+                (version["id"], scope_id, number, content, source_thread_id, now),
+            )
+            _execute(connection,
+                "UPDATE project_brief_scopes SET updated_at=? WHERE id=? AND project_id=?",
+                (now, scope_id, project_id),
+            )
+        return {**version, "version_number": number, "is_current": True}
+
+    def restore_project_brief_version(self, project_id: str, scope_id: str, version_id: str) -> dict | None:
+        """Make an existing immutable version current without deleting later versions."""
+        now = _now()
+        with self.session() as connection:
+            version = _execute(connection,
+                "SELECT v.* FROM project_brief_versions v JOIN project_brief_scopes s ON s.id=v.scope_id "
+                "WHERE s.project_id=? AND s.id=? AND v.id=?",
+                (project_id, scope_id, version_id),
+            ).fetchone()
+            if not version:
+                return None
+            _execute(connection, "UPDATE project_brief_versions SET is_current=FALSE WHERE scope_id=?", (scope_id,))
+            _execute(connection, "UPDATE project_brief_versions SET is_current=TRUE WHERE id=?", (version_id,))
+            _execute(connection, "UPDATE project_brief_scopes SET updated_at=? WHERE id=?", (now, scope_id))
+        return {**dict(version), "is_current": True}
+
+    def get_current_project_brief_context(self, project_id: str, selected_scope_ids: list[str]) -> list[dict] | None:
+        """Return the project overview plus selected scopes at their current versions."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            overview = _execute(connection,
+                "SELECT id FROM project_brief_scopes WHERE project_id=? AND scope_type='project' LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if not overview:
+                return None
+            selected_ids = list(dict.fromkeys([str(overview["id"]), *(str(item) for item in selected_scope_ids)]))
+            rows = _execute(connection,
+                "SELECT s.id AS scope_id,s.scope_type,s.name AS scope_name,v.id AS version_id,"
+                "v.version_number,v.content,v.created_at FROM project_brief_scopes s "
+                "LEFT JOIN project_brief_versions v ON v.scope_id=s.id AND v.is_current=TRUE "
+                "WHERE s.project_id=? AND s.id=ANY(?) ORDER BY CASE s.scope_type WHEN 'project' THEN 0 ELSE 1 END,LOWER(s.name)",
+                (project_id, selected_ids),
+            ).fetchall()
+            if len(rows) != len(selected_ids):
+                return []
+        return [dict(row) for row in rows if row["version_id"] and row["content"].strip()]
 
     def migrate_legacy_endpoints(self) -> None:
         """Move each project's pre-collection endpoints into one saved collection once."""
@@ -762,6 +1027,11 @@ class Database:
                 "INSERT INTO app_state(key,value) VALUES('current_project_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (project_id,),
             )
+            _execute(connection,
+                "INSERT INTO project_brief_scopes(id,project_id,scope_type,name,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (str(uuid.uuid4()), project_id, "project", "Project overview", now, now),
+            )
         return self.get_project(project_id)
 
     def update_project(self, project_id: str, updates: dict) -> dict | None:
@@ -1082,6 +1352,26 @@ class Database:
             ).fetchone()
         return self._decode(row["payload_json"]) if row else None
 
+    def dismiss_generation_clarifications(self, project_id: str, activity_id: str) -> dict | None:
+        """Persist that a user dismissed clarification questions for an activity."""
+        with self.session() as connection:
+            row = _execute(
+                connection,
+                "SELECT payload_json FROM generation_activity WHERE project_id=? AND id=?",
+                (project_id, activity_id),
+            ).fetchone()
+            if row is None:
+                return None
+            payload = self._decode(row["payload_json"])
+            if not payload.get("clarification_dismissed_at"):
+                payload["clarification_dismissed_at"] = _now()
+                _execute(
+                    connection,
+                    "UPDATE generation_activity SET payload_json=? WHERE project_id=? AND id=?",
+                    (self._encode(payload), project_id, activity_id),
+                )
+        return payload
+
     def save_test_case_revision(self, project_id: str, revision: dict, test_cases: list[dict]) -> dict | None:
         """Atomically persist a revision, its generated cases, and ordered membership."""
         now = _now()
@@ -1139,6 +1429,170 @@ class Database:
                 (activity_id, project_id, created_at, self._encode(payload)),
             )
         return payload
+
+    def create_chat_thread(self, project_id: str, title: str, model: str) -> dict | None:
+        """Create a persistent project chat thread."""
+        now = _now()
+        thread = {
+            "id": str(uuid.uuid4()), "project_id": project_id,
+            "title": title.strip() or "New project chat", "model": model,
+            "context_summary": "", "feature_brief": "", "archived": False,
+            "created_at": now, "updated_at": now, "messages": [],
+        }
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            _execute(connection,
+                "INSERT INTO project_chat_threads(id,project_id,title,model,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (thread["id"], project_id, thread["title"], model, now, now),
+            )
+        return thread
+
+    def list_chat_threads(self, project_id: str, include_archived: bool = False) -> list[dict] | None:
+        """List a project's chat threads, newest activity first."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(connection,
+                "SELECT id,project_id,title,model,context_summary,feature_brief,archived,created_at,updated_at "
+                "FROM project_chat_threads WHERE project_id=? AND (? OR archived=FALSE) ORDER BY updated_at DESC,id",
+                (project_id, include_archived),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_chat_thread(self, project_id: str, thread_id: str) -> dict | None:
+        """Load a thread and all of its messages only when it belongs to the project."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "SELECT * FROM project_chat_threads WHERE id=? AND project_id=?",
+                (thread_id, project_id),
+            ).fetchone()
+            if not row:
+                return None
+            thread = dict(row)
+            thread["messages"] = [dict(message) for message in _execute(connection,
+                "SELECT id,ordinal,role,content,sources_json,endpoint_sources_json,created_at FROM project_chat_messages "
+                "WHERE thread_id=? ORDER BY ordinal,id", (thread_id,),
+            ).fetchall()]
+            for message in thread["messages"]:
+                try:
+                    message["knowledge_sources"] = json.loads(message.pop("sources_json", "[]") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    message["knowledge_sources"] = []
+                try:
+                    message["endpoint_sources"] = json.loads(message.pop("endpoint_sources_json", "[]") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    message["endpoint_sources"] = []
+        return thread
+
+    def append_chat_exchange(self, project_id: str, thread_id: str, user_text: str,
+                             assistant_text: str, model: str, sources: list[dict] | None = None,
+                             endpoint_sources: list[dict] | None = None) -> dict | None:
+        """Atomically append a user/assistant exchange to a project-owned thread."""
+        now = _now()
+        with self.session() as connection:
+            thread = _execute(connection,
+                "SELECT id FROM project_chat_threads WHERE id=? AND project_id=? AND archived=FALSE",
+                (thread_id, project_id),
+            ).fetchone()
+            if not thread:
+                return None
+            ordinal = _execute(connection,
+                "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM project_chat_messages WHERE thread_id=?",
+                (thread_id,),
+            ).fetchone()["ordinal"]
+            for offset, (role, content, source_data, endpoint_data) in enumerate((
+                ("user", user_text, [], []),
+                ("assistant", assistant_text, sources or [], endpoint_sources or []),
+            )):
+                _execute(connection,
+                    "INSERT INTO project_chat_messages(id,thread_id,ordinal,role,content,sources_json,endpoint_sources_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), thread_id, ordinal + offset, role, content,
+                     self._encode(source_data), self._encode(endpoint_data), now),
+                )
+            _execute(connection,
+                "UPDATE project_chat_threads SET model=?,updated_at=? "
+                "WHERE id=? AND project_id=?",
+                (model, now, thread_id, project_id),
+            )
+        return self.get_chat_thread(project_id, thread_id)
+
+    def update_chat_thread(self, project_id: str, thread_id: str, updates: dict) -> dict | None:
+        """Update a thread title, summary, feature brief, or archive state."""
+        allowed = {key: updates[key] for key in ("title", "context_summary", "summary_through_ordinal", "feature_brief", "archived") if key in updates}
+        if not allowed:
+            return self.get_chat_thread(project_id, thread_id)
+        allowed["updated_at"] = _now()
+        columns = ",".join(f"{key}=?" for key in allowed)
+        with self.session() as connection:
+            changed = _execute(connection,
+                f"UPDATE project_chat_threads SET {columns} WHERE id=? AND project_id=?",
+                (*allowed.values(), thread_id, project_id),
+            ).rowcount
+            if not changed:
+                return None
+        return self.get_chat_thread(project_id, thread_id)
+
+    def list_knowledge_entries(self, project_id: str, include_retired: bool = False) -> list[dict] | None:
+        """List project knowledge entries in recently updated order."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(connection,
+                "SELECT * FROM project_knowledge_entries WHERE project_id=? AND (? OR retired=FALSE) "
+                "ORDER BY updated_at DESC,title,id", (project_id, include_retired),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_knowledge_entry(self, project_id: str, entry: dict) -> dict | None:
+        """Create or update a project-scoped knowledge entry."""
+        now = _now()
+        entry_id = str(entry.get("id") or uuid.uuid4())
+        payload = {
+            "id": entry_id, "project_id": project_id,
+            "title": str(entry.get("title", "")).strip(),
+            "category": str(entry.get("category") or "Product knowledge").strip(),
+            "content": str(entry.get("content", "")).strip(),
+            "source_name": str(entry.get("source_name") or "User authored").strip(),
+            "approved": bool(entry.get("approved", True)),
+            "retired": bool(entry.get("retired", False)),
+            "created_at": entry.get("created_at") or now, "updated_at": now,
+        }
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            existing = _execute(connection,
+                "SELECT project_id,created_at FROM project_knowledge_entries WHERE id=?",
+                (entry_id,),
+            ).fetchone()
+            if existing:
+                if existing["project_id"] != project_id:
+                    return None
+                payload["created_at"] = existing["created_at"]
+            _execute(connection,
+                "INSERT INTO project_knowledge_entries(id,project_id,title,category,content,source_name,approved,retired,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,category=excluded.category,"
+                "content=excluded.content,source_name=excluded.source_name,approved=excluded.approved,"
+                "retired=excluded.retired,updated_at=excluded.updated_at",
+                tuple(payload[key] for key in ("id","project_id","title","category","content","source_name","approved","retired","created_at","updated_at")),
+            )
+        return payload
+
+    def search_knowledge_entries(self, project_id: str, query: str, limit: int = 5) -> list[dict]:
+        """Retrieve approved, active project facts matching a natural-language query."""
+        terms = " ".join(word for word in query.split() if len(word) > 1)[:1000]
+        if not terms:
+            return []
+        with self.session() as connection:
+            rows = _execute(connection,
+                "SELECT id,title,category,content,source_name,ts_rank(to_tsvector('english',title || ' ' || category || ' ' || content), "
+                "websearch_to_tsquery('english',?)) AS relevance FROM project_knowledge_entries "
+                "WHERE project_id=? AND approved=TRUE AND retired=FALSE "
+                "AND to_tsvector('english',title || ' ' || category || ' ' || content) @@ websearch_to_tsquery('english',?) "
+                "ORDER BY relevance DESC,updated_at DESC LIMIT ?",
+                (terms, project_id, terms, max(1, min(int(limit), 10))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_generation_activity(self, project_id: str, limit: int = 100, offset: int = 0) -> list[dict] | None:
         """Return the newest generation records for one project.
