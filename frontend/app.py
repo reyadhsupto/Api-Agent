@@ -2107,11 +2107,23 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                 "Generation requirements",
                 expanded=bool(st.session_state[requirements_key]),
             ):
+                brief_refs = tc.get("project_brief_versions") or []
+                if brief_refs:
+                    st.caption("Saved brief versions included for this generation")
+                    for brief_ref in brief_refs:
+                        st.caption(
+                            f"{brief_ref.get('scope_name') or 'Project brief'} · "
+                            f"v{brief_ref.get('version_number') or '?'} · "
+                            f"{brief_ref.get('scope_type') or 'brief'}"
+                        )
+                if tc.get("generation_requirements"):
+                    with st.expander("Full combined generation context", expanded=False):
+                        st.markdown(str(tc["generation_requirements"]))
                 tc["business_requirements"] = st.text_area(
-                    "Requirements used for this generation",
+                    "Run-specific business requirements",
                     key=requirements_key,
                     height=110,
-                    help="Review, update, or extend these requirements. Save changes to keep your edits.",
+                    help="These instructions applied to the original generation action. Edit them only if the saved case requirements should change.",
                     placeholder="No requirements were recorded. Add context for future reference.",
                 )
         if is_general and (passed_clicked or failed_clicked):
@@ -2589,11 +2601,52 @@ def _generation_requests_in_order(
             if request_id in endpoints_by_id and request_id in selected_ids]
 
 
+def _render_project_brief_picker(project_id: str | None, key_prefix: str) -> list[str]:
+    """Render a compact selector for current feature and service briefs.
+
+    The project overview is added by the API automatically. This selector only
+    returns explicitly selected feature, microservice, or legacy brief IDs.
+    """
+    if not project_id:
+        return []
+    try:
+        scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
+    except Exception as exc:
+        st.caption(f"Project briefs are unavailable: {exc}")
+        return []
+    selectable = [
+        scope for scope in scopes
+        if scope.get("scope_type") != "project"
+        and scope.get("current_version_id")
+        and str(scope.get("current_content") or "").strip()
+    ]
+    if not selectable:
+        st.caption("No saved feature or service briefs yet. The project overview is included automatically.")
+        return []
+    by_id = {str(scope.get("id")): scope for scope in selectable if scope.get("id")}
+    key = f"{key_prefix}_brief_scope_ids_{project_id}"
+    st.session_state.setdefault(key, [])
+    st.session_state[key] = [value for value in st.session_state[key] if value in by_id]
+    return st.multiselect(
+        "Additional project briefs",
+        options=list(by_id),
+        key=key,
+        format_func=lambda value: (
+            f"{by_id[value].get('name') or 'Untitled brief'} · "
+            f"{str(by_id[value].get('scope_type') or 'feature').title()}"
+        ),
+        placeholder="Select feature or service context",
+        help="The current project overview is always included. Selected current brief versions add durable product context.",
+    )
+
+
 def _generate_selected_cases(
     mode: str, selected: list[dict], business_req: str,
     example_test_case_ids: list[str] | None = None,
     case_collection_id: str | None = None,
     case_collection_name: str | None = None,
+    project_brief_scope_ids: list[str] | None = None,
+    project_chat_thread_id: str | None = None,
 ) -> dict:
     """Call the matching generation route for selected requests.
 
@@ -2613,6 +2666,8 @@ def _generate_selected_cases(
             "project_id": project.get("id"),
             "case_collection_id": case_collection_id,
             "case_collection_name": case_collection_name,
+            "project_brief_scope_ids": project_brief_scope_ids or [],
+            "project_chat_thread_id": project_chat_thread_id,
         })
     if mode == "Flow":
         payload = {
@@ -2620,6 +2675,8 @@ def _generate_selected_cases(
             "business_requirements": business_req or None,
             "project_id": project.get("id"),
             "example_test_case_ids": example_test_case_ids or [],
+            "project_brief_scope_ids": project_brief_scope_ids or [],
+            "project_chat_thread_id": project_chat_thread_id,
         }
         route = (
             f"/api/v1/projects/{project['id']}/test-cases/generate-flow"
@@ -2633,6 +2690,8 @@ def _generate_selected_cases(
         "business_requirements": business_req or None,
         "project_id": project.get("id"),
         "example_test_case_ids": example_test_case_ids or [],
+        "project_brief_scope_ids": project_brief_scope_ids or [],
+        "project_chat_thread_id": project_chat_thread_id,
     }
     return api_post("/api/v1/test-cases/generate", payload)
 
@@ -2698,6 +2757,7 @@ def _render_generation_clarifications(project_id: str) -> None:
                     if (
                         activity_id and activity_id not in followed_ids and activity_id not in known_ids
                         and record.get("status") == "succeeded" and questions
+                        and not record.get("clarification_dismissed_at")
                         and generated_ids.intersection(saved_ids)
                     ):
                         pending.append({
@@ -2717,13 +2777,20 @@ def _render_generation_clarifications(project_id: str) -> None:
         if not activity_id or not questions:
             continue
         with st.expander(f"Clarifications needed · {round_item.get('mode', 'Generation')}", expanded=True):
-            st.caption("Answer the questions and request a refined output. Earlier output stays in activity history.")
+            st.caption("Answer these questions to request another version, or dismiss them and keep the current output.")
             answers = {}
             for index, question in enumerate(questions, start=1):
                 answers[str(index)] = st.text_area(
                     str(question), key=f"clarification_{activity_id}_{index}", height=70,
                 )
-            if st.button("Refine generated cases", key=f"refine_{activity_id}", type="primary"):
+            refine_col, dismiss_col = st.columns([2.4, 1], vertical_alignment="center")
+            with refine_col:
+                refine_clicked = st.button(
+                    "Refine generated cases", key=f"refine_{activity_id}", type="primary",
+                )
+            with dismiss_col:
+                dismiss_clicked = st.button("Dismiss", key=f"dismiss_clarifications_{activity_id}")
+            if refine_clicked:
                 if not any(value.strip() for value in answers.values()):
                     st.warning("Answer at least one clarification question before refining.")
                     continue
@@ -2743,6 +2810,18 @@ def _render_generation_clarifications(project_id: str) -> None:
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Could not refine generated cases: {exc}")
+            if dismiss_clicked:
+                try:
+                    api_post(
+                        f"/api/v1/projects/{project_id}/generation-activity/{activity_id}/dismiss-clarifications",
+                        {},
+                    )
+                    pending = st.session_state.get("generation_clarification_rounds", [])
+                    pending[:] = [item for item in pending if str(item.get("activity_id")) != str(activity_id)]
+                    _queue_toast("Clarification questions dismissed. The generated cases remain available.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not dismiss clarification questions: {exc}")
 
 
 def render_generation_panel() -> None:
@@ -2762,6 +2841,13 @@ def render_generation_panel() -> None:
 
     project = st.session_state.get("current_project") or {}
     project_id = project.get("id")
+    with st.expander("Project context", expanded=False):
+        project_brief_scope_ids = _render_project_brief_picker(project_id, "generation")
+        st.caption(
+            "Business requirements below apply to this generation only. They are combined with the project overview "
+            "and selected briefs; saving durable product knowledge happens in Project Chat."
+        )
+    project_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}") if project_id else None
     requests_by_id = {endpoint["id"]: endpoint for endpoint in endpoints}
     eligible_ids = [endpoint["id"] for endpoint in endpoints]
     current_order = [
@@ -2916,7 +3002,7 @@ def render_generation_panel() -> None:
                 general_collection_name = existing_general_collections[collection_choice]
 
     with st.container(border=True):
-        st.markdown("**3 · Add business requirements**" + (" · Required for General" if mode == "General" else " · Optional"))
+        st.markdown("**3 · Business requirements for this generation**" + (" · Required for General" if mode == "General" else " · Optional"))
         business_req = st.text_area(
             "Business requirements", height=95, key="generation_business_requirements",
             label_visibility="collapsed",
@@ -2985,6 +3071,7 @@ def render_generation_panel() -> None:
                 response = _generate_selected_cases(
                     mode, selected, business_req, example_ids,
                     general_collection_id, general_collection_name,
+                    project_brief_scope_ids, project_chat_thread_id,
                 )
                 result = _accept_generation_response(response, mode)
                 if result:
@@ -3148,6 +3235,8 @@ def render_generation_panel() -> None:
                         value=str(source_action["release_notes"]),
                         disabled=True, height=80,
                     )
+                revision_brief_scope_ids = _render_project_brief_picker(project_id, "revision")
+                revision_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
                 revision_notes = st.text_area(
                     "New requirement changes", key=f"revision_notes_{project_id}", height=95,
                     placeholder="Describe changed endpoint behavior, new rules, and additional release coverage.",
@@ -3333,6 +3422,8 @@ def render_generation_panel() -> None:
                                     "release_notes": revision_notes,
                                     "endpoint_ids": selected_endpoint_ids,
                                     "keep_unchanged_case_ids": keep_unchanged_ids,
+                                    "project_brief_scope_ids": revision_brief_scope_ids,
+                                    "project_chat_thread_id": revision_chat_thread_id,
                                 },
                             )
                             project.setdefault("test_case_revisions", []).append(response["revision"])
@@ -3729,6 +3820,305 @@ def render_test_cases_tab() -> None:
         render_test_case_list(loaded_run_id)
 
 
+def _load_project_chat_thread(project_id: str, thread_id: str) -> None:
+    """Load one persisted conversation into project-scoped session state."""
+    thread = api_get(f"/api/v1/projects/{project_id}/chat/threads/{thread_id}")
+    st.session_state[f"project_chat_thread_data_{project_id}"] = thread
+    st.session_state[f"project_chat_selected_thread_{project_id}"] = thread_id
+
+
+def _render_project_brief_manager(project_id: str, thread: dict | None) -> None:
+    """Render reviewed, versioned project overview and feature/service briefs."""
+    try:
+        scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
+    except Exception as exc:
+        st.error(f"Could not load project briefs: {exc}")
+        return
+    if not scopes:
+        st.info("No project brief scopes are available yet.")
+        return
+
+    scope_by_id = {str(item["id"]): item for item in scopes if item.get("id")}
+    overview = next((item for item in scopes if item.get("scope_type") == "project"), None)
+    scope_ids = list(scope_by_id)
+    selected_key = f"brief_manager_scope_{project_id}"
+    pending_scope = st.session_state.pop(f"{selected_key}_pending", None)
+    if pending_scope in scope_by_id:
+        st.session_state[selected_key] = pending_scope
+    if st.session_state.get(selected_key) not in scope_by_id:
+        st.session_state[selected_key] = str((overview or scopes[0]).get("id"))
+
+    left, right = st.columns([1.15, 2.85], gap="large")
+    with left:
+        st.markdown("#### Brief library")
+        selected_scope_id = st.radio(
+            "Project overview and feature briefs", scope_ids,
+            key=selected_key,
+            format_func=lambda value: (
+                f"{scope_by_id[value].get('name') or 'Untitled'}"
+                + (" · Overview" if scope_by_id[value].get("scope_type") == "project" else "")
+            ),
+            label_visibility="collapsed",
+        )
+        st.divider()
+        with st.expander("Add a feature or service brief", expanded=False):
+            scope_type = st.selectbox("Scope", ["feature", "microservice"], key=f"brief_new_type_{project_id}")
+            scope_name = st.text_input("Name", key=f"brief_new_name_{project_id}", placeholder="For example, Checkout")
+            if st.button("Create brief", key=f"brief_create_scope_{project_id}", disabled=not scope_name.strip()):
+                try:
+                    created = api_post(f"/api/v1/projects/{project_id}/brief-scopes", {
+                        "scope_type": scope_type, "name": scope_name.strip(),
+                    })
+                    st.session_state[f"{selected_key}_pending"] = created["id"]
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create brief scope: {exc}")
+
+    with right:
+        scope = scope_by_id[selected_scope_id]
+        scope_name = str(scope.get("name") or "Project brief")
+        st.markdown(f"#### {html.escape(scope_name)}")
+        st.caption(
+            ("Project overview · always included in generation" if scope.get("scope_type") == "project"
+             else f"{str(scope.get('scope_type') or 'feature').title()} context · selected explicitly for generation")
+        )
+        current_content = str(scope.get("current_content") or "")
+        version_number = scope.get("current_version_number")
+        if current_content:
+            st.markdown(f"Current version · **v{version_number or 1}**")
+            st.markdown(current_content)
+        else:
+            st.caption("No saved version yet. Discuss the product context in chat, draft a brief, then review and save it.")
+
+        if thread and not thread.get("archived"):
+            with st.expander("Draft from this conversation", expanded=False):
+                st.caption("The model consolidates the current brief with this thread. Review the draft before saving a new version.")
+                if st.button("Draft brief from conversation", key=f"brief_draft_{project_id}_{selected_scope_id}", type="primary"):
+                    try:
+                        with st.spinner("Drafting a consolidated brief from the conversation…"):
+                            draft = api_post(
+                                f"/api/v1/projects/{project_id}/chat/threads/{thread['id']}/brief-draft",
+                                {"scope_id": selected_scope_id},
+                            )
+                        st.session_state[f"brief_draft_{project_id}"] = {
+                            "scope_id": selected_scope_id,
+                            "thread_id": thread["id"],
+                            "content": draft.get("draft", ""),
+                        }
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not draft brief: {exc}")
+        else:
+            st.caption("Select an active chat thread to draft or update a brief from its discussion.")
+
+        draft_key = f"brief_draft_{project_id}"
+        draft = st.session_state.get(draft_key)
+        if draft and draft.get("scope_id") == selected_scope_id:
+            with st.container(border=True):
+                st.markdown("**Review draft**")
+                st.caption("Resolve conflicts and edit the wording before saving. Saving adds a version; it does not erase earlier versions.")
+                edited = st.text_area(
+                    "Draft content", value=draft.get("content", ""), height=300,
+                    key=f"brief_draft_editor_{project_id}_{selected_scope_id}",
+                )
+                if st.button("Save as new version", key=f"brief_save_{project_id}_{selected_scope_id}", type="primary", disabled=not edited.strip()):
+                    try:
+                        api_post(
+                            f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions",
+                            {"content": edited, "source_thread_id": draft.get("thread_id")},
+                        )
+                        st.session_state.pop(draft_key, None)
+                        st.session_state[f"{selected_key}_pending"] = selected_scope_id
+                        _queue_toast("New project brief version saved.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not save brief version: {exc}")
+
+        history_key = f"brief_versions_{project_id}_{selected_scope_id}"
+        with st.expander("Version history", expanded=False):
+            if st.button("Load versions", key=f"brief_load_versions_{project_id}_{selected_scope_id}") or history_key not in st.session_state:
+                try:
+                    st.session_state[history_key] = api_get(
+                        f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions"
+                    ) or []
+                except Exception as exc:
+                    st.error(f"Could not load brief versions: {exc}")
+            versions = st.session_state.get(history_key, [])
+            if versions:
+                for version in versions:
+                    current = bool(version.get("is_current"))
+                    with st.expander(
+                        f"Version {version.get('version_number', '?')}" + (" · Current" if current else ""),
+                        expanded=False,
+                    ):
+                        st.caption(version.get("created_at", ""))
+                        st.markdown(str(version.get("content") or ""))
+                        if not current and st.button("Make current", key=f"brief_restore_{selected_scope_id}_{version['id']}"):
+                            try:
+                                api_post(
+                                    f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions/{version['id']}/restore",
+                                    {},
+                                )
+                                st.session_state.pop(history_key, None)
+                                st.session_state[f"{selected_key}_pending"] = selected_scope_id
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not restore brief version: {exc}")
+            else:
+                st.caption("No versions saved yet.")
+
+
+def render_project_chat_tab() -> None:
+    """Render project-persistent conversations and the separate brief workspace."""
+    project = st.session_state.get("current_project") or {}
+    project_id = str(project.get("id") or "")
+    st.subheader("Project Chat")
+    if not project_id:
+        st.info("Select or create a project to start a project chat.")
+        return
+
+    list_col, main_col = st.columns([1.05, 3.95], gap="large")
+    with list_col:
+        st.markdown("#### Chats")
+        if st.button("New chat", icon=":material/add:", key=f"chat_new_{project_id}", width="stretch"):
+            try:
+                thread = api_post(f"/api/v1/projects/{project_id}/chat/threads", {"title": "New project chat"})
+                _load_project_chat_thread(project_id, str(thread["id"]))
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not create chat: {exc}")
+        show_archived = st.toggle("Show archived", key=f"chat_show_archived_{project_id}")
+        try:
+            threads = api_get(
+                f"/api/v1/projects/{project_id}/chat/threads" + ("?include_archived=true" if show_archived else "")
+            ) or []
+        except Exception as exc:
+            st.error(f"Could not load chats: {exc}")
+            threads = []
+        active_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
+        with st.container(height=520, border=False, key=f"chat_thread_list_{project_id}"):
+            for thread_item in threads:
+                thread_id = str(thread_item.get("id") or "")
+                title_col, action_col = st.columns([5, 1], vertical_alignment="center")
+                with title_col:
+                    if st.button(
+                        str(thread_item.get("title") or "New chat"),
+                        key=f"chat_open_{project_id}_{thread_id}",
+                        type="primary" if thread_id == active_thread_id else "tertiary",
+                        width="stretch",
+                    ):
+                        try:
+                            _load_project_chat_thread(project_id, thread_id)
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not open chat: {exc}")
+                with action_col:
+                    with st.popover(
+                        "⋯", type="tertiary", key=f"chat_actions_{project_id}_{thread_id}",
+                        help="Rename or archive this chat", width="content",
+                    ):
+                        renamed = st.text_input(
+                            "Thread name", value=str(thread_item.get("title") or ""),
+                            key=f"chat_rename_value_{project_id}_{thread_id}",
+                        )
+                        if st.button("Rename", key=f"chat_rename_{project_id}_{thread_id}", disabled=not renamed.strip()):
+                            try:
+                                api_put(f"/api/v1/projects/{project_id}/chat/threads/{thread_id}", {"title": renamed.strip()})
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not rename chat: {exc}")
+                        target_archived = not bool(thread_item.get("archived"))
+                        if st.button(
+                            "Restore" if thread_item.get("archived") else "Archive",
+                            key=f"chat_archive_{project_id}_{thread_id}",
+                        ):
+                            try:
+                                api_put(f"/api/v1/projects/{project_id}/chat/threads/{thread_id}", {"archived": target_archived})
+                                if thread_id == active_thread_id and target_archived:
+                                    st.session_state.pop(f"project_chat_thread_data_{project_id}", None)
+                                    st.session_state.pop(f"project_chat_selected_thread_{project_id}", None)
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not update chat: {exc}")
+
+    with main_col:
+        thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
+        thread = st.session_state.get(f"project_chat_thread_data_{project_id}")
+        if thread_id and (not thread or str(thread.get("id")) != str(thread_id)):
+            try:
+                _load_project_chat_thread(project_id, str(thread_id))
+                thread = st.session_state.get(f"project_chat_thread_data_{project_id}")
+            except Exception as exc:
+                st.error(f"Could not load chat history: {exc}")
+                thread = None
+        if not thread_id:
+            st.caption("Create or select a chat to discuss product behavior, workflows, integrations, or requirement gaps.")
+            return
+
+        conversation_tab, briefs_tab = st.tabs(["Conversation", "Project briefs"])
+        with conversation_tab:
+            if thread:
+                st.markdown(f"### {html.escape(str(thread.get('title') or 'Project chat'))}")
+            read_only = bool(thread and thread.get("archived"))
+            messages = (thread or {}).get("messages", [])
+            if not messages:
+                st.caption("Describe a feature, user journey, integration, or requirement gap below. The assistant can ask follow-up questions to clarify the product context.")
+            else:
+                with st.container(height=535, border=True, key=f"chat_history_{project_id}_{thread_id}"):
+                    for index in range(0, len(messages), 2):
+                        first = messages[index]
+                        second = messages[index + 1] if index + 1 < len(messages) else None
+                        user_message = first if first.get("role") == "user" else second
+                        assistant_message = second if first.get("role") == "user" else first
+                        label = str((user_message or {}).get("content") or "Conversation").strip().replace("\n", " ")
+                        label = label[:90] + ("…" if len(label) > 90 else "")
+                        with st.expander(label or "Conversation", expanded=True):
+                            if user_message:
+                                st.markdown("**You**")
+                                st.markdown(str(user_message.get("content") or ""))
+                            if assistant_message:
+                                st.markdown("**Assistant**")
+                                st.markdown(str(assistant_message.get("content") or ""))
+                                sources = assistant_message.get("endpoint_sources") or []
+                                if sources:
+                                    with st.expander(f"Sources · {len(sources)} saved endpoints", expanded=False):
+                                        for source in sources:
+                                            st.caption(
+                                                f"{source.get('collection_name') or 'Unassigned'} · "
+                                                f"{source.get('method', 'GET')} · {source.get('name') or source.get('url') or 'Endpoint'}"
+                                            )
+                                            st.code(str(source.get("url") or ""), language=None)
+                    scroll_flag = st.session_state.pop(f"chat_scroll_latest_{project_id}_{thread_id}", False)
+                    if scroll_flag:
+                        anchor_id = f"chat-scroll-{project_id}-{thread_id}"
+                        st.html(
+                            f'<div id="{html.escape(anchor_id, quote=True)}"></div><script>'
+                            f'(()=>{{const a=document.getElementById({json.dumps(anchor_id)});if(!a)return;'
+                            'let n=a.parentElement;while(n&&n!==document.body){const s=getComputedStyle(n);'
+                            'if(/(auto|scroll)/.test(s.overflowY)&&n.scrollHeight>n.clientHeight){n.scrollTop=n.scrollHeight;break;}n=n.parentElement;}})();'
+                            '</script>', unsafe_allow_javascript=True,
+                        )
+            if read_only:
+                st.info("This chat is archived. Restore it from the thread menu to continue the conversation.")
+            else:
+                message = st.chat_input("Message about this project…", key=f"chat_composer_{project_id}_{thread_id}")
+                if message:
+                    try:
+                        with st.spinner("Thinking with the project context…"):
+                            response = api_post(
+                                f"/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages",
+                                {"content": message},
+                            )
+                        st.session_state[f"project_chat_thread_data_{project_id}"] = response.get("thread")
+                        st.session_state[f"chat_scroll_latest_{project_id}_{thread_id}"] = True
+                        st.session_state[f"project_chat_selected_thread_{project_id}"] = thread_id
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not send message: {exc}")
+        with briefs_tab:
+            _render_project_brief_manager(project_id, thread)
+
+
 def render_generation_activity_tab() -> None:
     """Render project generation history, including exact prompts and responses."""
     st.header("Generation activity")
@@ -3813,6 +4203,26 @@ def _show_generation_activity_details(record: dict) -> None:
     else:
         st.markdown("**Business requirements**")
         st.write(record.get("business_requirements") or "None provided")
+    brief_context = record.get("project_brief_context") or {}
+    brief_versions = brief_context.get("versions") or record.get("project_brief_versions") or []
+    if brief_versions:
+        st.markdown("**Project brief versions used**")
+        for brief in brief_versions:
+            with st.expander(
+                f"{brief.get('scope_name') or brief.get('name') or 'Project brief'} · v{brief.get('version_number') or '?'}",
+                expanded=False,
+            ):
+                st.caption(
+                    f"{brief.get('scope_type') or 'brief'} · scope {brief.get('scope_id') or 'unknown'} · "
+                    f"version {brief.get('version_id') or 'unknown'}"
+                )
+                st.markdown(str(brief.get("content") or ""))
+    chat_thread_id = record.get("project_chat_thread_id") or brief_context.get("thread_id")
+    if chat_thread_id:
+        st.caption(f"Project Chat thread: {chat_thread_id}")
+    if record.get("effective_generation_context"):
+        with st.expander("Complete context sent for generation", expanded=False):
+            st.markdown(str(record["effective_generation_context"]))
     st.markdown("**Included endpoints**")
     endpoints = record.get("endpoints", [])
     if endpoints:
@@ -3886,6 +4296,8 @@ def _show_generation_activity_details(record: dict) -> None:
         st.markdown("**Clarification questions**")
         for question in record["questions_answered"]:
             st.markdown(f"- {question}")
+    if record.get("clarification_dismissed_at"):
+        st.caption(f"Clarification questions dismissed · {record['clarification_dismissed_at']}")
     if record.get("clarification_answers"):
         st.markdown("**User answers**")
         st.json(record["clarification_answers"])
@@ -4360,10 +4772,13 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
             st.caption("The dependency graph has no acyclic multi-endpoint paths to execute.")
             return
         business_requirements = st.text_area(
-            "Business meaning or rules for these flows (optional)", height=90,
+            "Business requirements for this generation (optional)", height=90,
             key=f"contract_flow_requirements_{project_id}_{source_id}",
             placeholder="For example, describe what makes a checkout complete or which outcomes should be asserted.",
         )
+        with st.expander("Project context", expanded=False):
+            project_brief_scope_ids = _render_project_brief_picker(project_id, "contract_flow")
+            st.caption("The project overview is included automatically. Selected saved briefs add durable context.")
         if st.button(
             "Generate flow test cases", type="primary", icon=":material/auto_awesome:",
             key=f"contract_generate_flows_{project_id}_{source_id}",
@@ -4374,7 +4789,9 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                     generated_response = api_post(
                         f"/api/v1/projects/{project_id}/contracts/generate-flows",
                         {"source_id": source_id, "candidate_ids": selected_candidates,
-                         "business_requirements": business_requirements or None},
+                         "business_requirements": business_requirements or None,
+                         "project_brief_scope_ids": project_brief_scope_ids,
+                         "project_chat_thread_id": st.session_state.get(f"project_chat_selected_thread_{project_id}")},
                     )
                 generated = _accept_generation_response(generated_response, "Discovered Flow")
                 st.session_state["executions"] = {}
@@ -5948,8 +6365,8 @@ def main() -> None:
                 _queue_toast(f"Fetched {len(tcs)} test case(s).")
                 st.rerun()
 
-    workspace_tab, test_tab, activity_tab = st.tabs(
-        ["API Workspace", "Test Cases", "Generation Activity"],
+    workspace_tab, test_tab, chat_tab, activity_tab = st.tabs(
+        ["API Workspace", "Test Cases", "Project Chat", "Generation Activity"],
     )
 
     with workspace_tab:
@@ -5973,6 +6390,8 @@ def main() -> None:
 
     with test_tab:
         render_test_cases_tab()
+    with chat_tab:
+        render_project_chat_tab()
     with activity_tab:
         render_generation_activity_tab()
     _flush_toasts()

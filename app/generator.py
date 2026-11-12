@@ -178,6 +178,7 @@ def generate_test_case_revision(
     release_notes: str,
     trace: dict | None = None,
     prior_release_notes: str = "",
+    project_brief_context: str = "",
 ) -> list[dict]:
     """Generate a complete release suite from an immutable case baseline."""
     endpoint_context = [{
@@ -210,7 +211,11 @@ def generate_test_case_revision(
         f"{_STRICT_JSON_INSTRUCTION}\n"
         f"Prior business requirements (read-only context):\n{previous_requirements or 'None recorded'}\n"
         f"Previous release notes (carry-forward context):\n{prior_release_notes or 'None recorded'}\n"
+        f"Current saved project briefs (durable context; do not treat as new release changes):\n{project_brief_context or 'None selected'}\n"
         f"New release notes (supplement prior requirements):\n{release_notes or 'None provided'}\n"
+        "Treat explicit release changes as scoped updates. If they conflict with saved requirements or briefs "
+        "without making the intended behavior clear, ask a concise clarification question rather than guessing. "
+        "Never alter the stored briefs.\n"
         f"Selected current endpoints (optional; this list may be empty):\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Baseline cases:\n{json.dumps(baseline_context, ensure_ascii=False, separators=(',', ':'))}\n"
         "Return a JSON object with test_cases and clarification_questions. Ask concise questions if important requirements remain ambiguous; otherwise questions is empty. Every case must contain id, source_case_id, name, type, description, "
@@ -550,6 +555,40 @@ def _openrouter_call(prompt: str, api_key: str, url: str) -> str:
     response.raise_for_status()
     print(response.json()["choices"][0]["message"]["content"])
     return response.json()["choices"][0]["message"]["content"]
+
+
+def openrouter_chat(messages: list[dict], model: str | None = None, max_tokens: int | None = None) -> str:
+    """Send a multi-message conversation to the configured OpenRouter model.
+
+    Args:
+        messages: Ordered system/user/assistant messages for this call.
+        model: Optional model override; defaults to ``OPENROUTER_MODEL``.
+        max_tokens: Optional completion limit, capped by the shared configured ceiling.
+
+    Returns:
+        Assistant message text.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("Project Chat requires OPENROUTER_API_KEY to be configured.")
+    selected_model = model or os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": selected_model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": min(max_tokens or _output_token_limit(), _output_token_limit()),
+        },
+        timeout=600,
+    )
+    response.raise_for_status()
+    result = response.json()
+    try:
+        return str(result["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError("OpenRouter returned no assistant message.") from exc
 
 
 def _cohere_call(prompt: str, api_key: str, url: str) -> str:

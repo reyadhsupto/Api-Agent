@@ -47,7 +47,7 @@ Mode: Act
 - Single generation sends all selected endpoints in one `/api/v1/test-cases/generate` request; the LLM prompt returns independent cases tagged with their source endpoint ID
 - Generation supports General requirements-only scenarios alongside Single, Flow, contract-discovered Flow, and Release Revision modes. General cases store ordered `manual_steps` under `case_kind: general` and contain no HTTP request/assertion/mapping data; testers record Passed/Failed as append-only manual history, and HTTP batch execution skips these cases
 - General cases carry project-scoped `case_collection_id`/`case_collection_name` metadata. The General generation form can reuse or create a named collection for a product or business context; the existing Collections filter lists these groups without another filter. Legacy General cases use the default General scenarios collection
-- All generation prompts request an envelope containing `test_cases` and optional `clarification_questions`; legacy LLM arrays normalize to an empty question list. Users answer questions through explicit project-scoped follow-up actions; successful non-revision follow-ups supersede source output in active workflows while retaining case records and execution history, and revision follow-ups create a new revision. Activities retain questions, answers, and replacement linkage
+- All generation prompts request an envelope containing `test_cases` and optional `clarification_questions`; legacy LLM arrays normalize to an empty question list. Users can answer questions through explicit project-scoped follow-up actions or dismiss a round; dismissal is persisted on the source activity and survives refresh. Successful non-revision follow-ups supersede source output in active workflows while retaining case records and execution history, and revision follow-ups create a new revision. Activities retain questions, answers, dismissal time, and replacement linkage
 - All newly generated single cases and flows receive backend-generated UUID IDs across generation routes; model-provided IDs are ignored, while existing and manual case IDs stay stable
 - Each generated case stores the submitted business requirements in its JSON payload; the case editor lets users revise them, and selected generation examples pass those requirements into later prompts
 - Test-case generation ignores rapid duplicate submissions per project to prevent queued Streamlit button clicks from issuing a second LLM request
@@ -94,6 +94,13 @@ Mode: Act
 - Test Cases collapses duplicate case IDs in session state to the latest payload before selection, grouping, or rendering to avoid duplicate cards and executions
 - Generation accepts a separate project-scoped picker of existing case examples; the backend loads examples by ID, prompts use compact case context, and generated cases merge into the current list without replacing examples
 - Test Cases filters combine test suite, collection, endpoint, and result scopes; multi-collection flows appear once when a matching step qualifies and show all participating endpoint and collection provenance
+- Project Chat adds multiple PostgreSQL-persisted threads per project using OpenRouter chat completions; the app stores full ordered transcripts, thread model IDs, rolling summaries, and assistant-side endpoint source snapshots
+- Chat requests retrieve up to eight saved endpoint summaries matching meaningful name, URL, or collection tokens; context uses a configurable recent-message count and character budget, summarizing older transcript messages as they leave the recent window without deleting them
+- Project Chat has no Knowledge Hub UI; project context is stored as a project overview plus versioned feature/microservice briefs. Users draft from a chat discussion, review and edit explicitly, then save an immutable version; older versions remain viewable and can be restored. Existing per-thread briefs migrate to preserved legacy scopes.
+- Project Chat thread list and conversation history use independent scroll containers; user/assistant exchanges are individually collapsible and expanded by default, and the composer stays outside the history scroller. After a successful reply, the chat scrolls to the new exchange. Empty threads omit the history panel and show a brief prompt above the composer.
+- Project Chat tab sits beside Test Cases and Generation Activity; Chat uses a compact left thread list with rename/archive actions in a plain tertiary three-dot menu, archived threads read-only until restored, endpoint source references, and a separate Project briefs workspace with a scope library, current brief, draft review, save-version, history, and restore actions
+- Generation always includes the current project overview and accepts explicit current feature/microservice brief scope IDs plus run-specific Business requirements; run-specific text never updates durable briefs. Generation Activity records exact versions, contents, prompts, and run input; cases retain version references and generation requirements.
+- Persistent context architecture, process flow, diagram, tradeoffs, configuration, and API behavior are documented in `docs/persistent_context.md`
 
 ## In Progress
 - None
@@ -114,8 +121,12 @@ Mode: Act
 - HTTP Client: python requests
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
-- Frontend: Streamlit (API Workspace, Test Cases, and Generation Activity tabs)
+- Frontend: Streamlit (API Workspace, Test Cases, Project Chat, and Generation Activity tabs)
 - LLM: Multiple free-tier APIs with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
+- Project Chat: OpenRouter multi-message chat completion; `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `PROJECT_CHAT_RECENT_MESSAGES`, and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` configure model and bounded context
+- Brief drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` limits transcript characters considered alongside the rolling summary; the default is 48000
+- Legacy Knowledge Hub tables remain for compatibility but are not retrieved. Durable product context now uses project-owned overview and feature/microservice brief scopes with immutable versions.
+- Project chat is app-persistent rather than provider-thread-persistent: full messages are in PostgreSQL and older turns are summarized. Generation receives current versioned project briefs, selected feature/service briefs, run-specific requirements, and selected endpoints/baseline, not the full transcript; activity stores the exact context used
 - Export/import: Postman Collection v2.1 export and request import; environment, script, and authentication import remain out of scope
 - Contract discovery: maximal acyclic dependency paths are ranked by dependency-edge count descending, then endpoint method and path ascending
 - Code style: Minimal functions, flat structure, easy to read

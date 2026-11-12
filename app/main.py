@@ -12,6 +12,8 @@ import json
 import csv
 import copy
 import io
+import os
+import re
 import time
 import uuid
 import requests
@@ -34,11 +36,18 @@ from app.schemas import (
     TestCaseRevisionRequest,
     GenerationFollowUpRequest,
     ManualTestResultRequest,
+    ProjectChatThreadRequest,
+    ProjectChatMessageRequest,
+    ProjectBriefScopeRequest,
+    ProjectBriefVersionRequest,
+    ProjectBriefDraftRequest,
+    ProjectKnowledgeEntryRequest,
 )
 from app.parser import parse_curl
 from app.generator import (
     generate_test_cases, generate_flow_test_cases, generate_discovered_flow_test_cases,
     generate_test_case_revision, generate_general_test_cases, refine_generated_cases,
+    openrouter_chat,
 )
 from app.contracts import (
     build_dependency_graph,
@@ -54,6 +63,118 @@ database = Database()
 
 GENERAL_CASE_COLLECTION_ID = "__general_scenarios__"
 GENERAL_CASE_COLLECTION_NAME = "General scenarios"
+
+
+def _resolve_project_briefs(
+    project_id: str, scope_ids: list[str], thread_id: str | None = None,
+    legacy_brief: str | None = None,
+) -> dict:
+    """Resolve the current project overview and selected current brief versions."""
+    if thread_id and not database.get_chat_thread(project_id, thread_id):
+        raise HTTPException(status_code=404, detail="Project chat thread not found.")
+    scopes = database.list_project_brief_scopes(project_id)
+    if scopes is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    scope_ids_available = {str(item["id"]) for item in scopes}
+    if any(str(item) not in scope_ids_available for item in scope_ids):
+        raise HTTPException(status_code=404, detail="One or more selected brief scopes do not belong to this project.")
+    scope_by_id = {str(item["id"]): item for item in scopes}
+    for scope_id in scope_ids:
+        selected = scope_by_id[str(scope_id)]
+        if selected.get("scope_type") == "project":
+            continue
+        if not selected.get("current_version_id") or not str(selected.get("current_content") or "").strip():
+            raise HTTPException(status_code=422, detail=f"Selected brief '{selected.get('name')}' has no saved current version.")
+    briefs = database.get_current_project_brief_context(project_id, scope_ids)
+    if briefs is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {
+        "thread_id": thread_id,
+        "briefs": briefs,
+        "versions": [{
+            "scope_id": item["scope_id"], "scope_type": item["scope_type"],
+            "scope_name": item["scope_name"], "version_id": item["version_id"],
+            "version_number": item["version_number"], "content": item["content"],
+        } for item in briefs],
+        "legacy_brief": str(legacy_brief or "").strip(),
+        "knowledge_sources": [],
+    }
+
+
+def _format_project_briefs(context: dict) -> str:
+    """Format selected saved briefs as distinct, labeled prompt context."""
+    sections = []
+    for item in context.get("briefs", []):
+        label = "Project overview" if item.get("scope_type") == "project" else (
+            f"{item.get('scope_type', 'feature').title()} brief: {item.get('scope_name', '')}"
+        )
+        sections.append(f"{label} (version {item.get('version_number')}):\n{item.get('content', '')}")
+    if context.get("legacy_brief"):
+        sections.append("Legacy chat brief (unversioned compatibility context):\n" + context["legacy_brief"])
+    return "\n\n".join(sections)
+
+
+def _compose_generation_requirements(run_requirements: str | None, context: dict) -> str | None:
+    """Combine durable brief context and this action's requirements for the model."""
+    parts = []
+    briefs = _format_project_briefs(context)
+    if briefs:
+        parts.append("Current saved project briefs (durable context):\n" + briefs)
+    action_text = str(run_requirements or "").strip()
+    if action_text:
+        parts.append("Requirements for this generation action:\n" + action_text)
+    if briefs and action_text:
+        parts.append(
+            "Context precedence: saved briefs are the durable baseline. Treat an explicit, clear instruction "
+            "in this generation request as a change for this run. If the intended change is ambiguous or "
+            "conflicts without explaining which rule should apply, ask a concise clarification question instead "
+            "of guessing. Do not rewrite or persist saved briefs."
+        )
+    combined = "\n\n".join(parts)
+    return combined or None
+
+
+def _retrieved_project_context(project_id: str, query: str) -> tuple[list[dict], list[dict]]:
+    """Return project endpoint references with clear lexical matches."""
+    knowledge = []
+    project = database.get_project(project_id) or {}
+    stop_words = {
+        "about", "after", "also", "and", "are", "can", "could", "does", "for", "from",
+        "have", "help", "how", "into", "message", "please", "request", "sent", "show",
+        "tell", "that", "the", "their", "them", "then", "these", "this", "those", "was",
+        "what", "when", "where", "which", "with", "would", "you", "your", "endpoint", "api",
+    }
+    terms = {
+        token for token in re.findall(r"[a-z0-9]+", query.casefold())
+        if len(token) >= 3 and token not in stop_words
+    }
+    collection_names = {
+        str(item.get("id")): str(item.get("name") or "")
+        for item in project.get("collections", [])
+    }
+    endpoint_matches = []
+    for endpoint in project.get("endpoints", []):
+        searchable = " ".join(
+            [str(endpoint.get(key) or "") for key in ("name", "url")]
+            + [collection_names.get(str(endpoint.get("collection_id")), "")]
+        ).casefold()
+        endpoint_terms = set(re.findall(r"[a-z0-9]+", searchable))
+        matched_terms = sorted(terms & endpoint_terms)
+        # Require multiple independent matches, unless the one match is a
+        # distinctive six-character term such as a product or integration name.
+        if len(matched_terms) >= 2 or any(len(term) >= 6 for term in matched_terms):
+            endpoint_matches.append((len(matched_terms), endpoint, matched_terms))
+    endpoint_matches.sort(key=lambda match: (-match[0], str(match[1].get("name") or "")))
+    endpoints = [{
+        "id": item.get("id"),
+        "name": item.get("name"),
+        "method": item.get("method", "GET"),
+        "url": item.get("url", ""),
+        "collection_id": item.get("collection_id"),
+        "collection_name": collection_names.get(str(item.get("collection_id")), "Uncategorized"),
+        "matched_terms": matched_terms,
+    } for _, item, matched_terms in endpoint_matches[:8]]
+    return knowledge, endpoints
 
 def _generate_or_raise(generator, **kwargs):
     """Run an LLM generator and expose malformed output as a useful API error."""
@@ -141,6 +262,9 @@ def _record_generation_activity(
     status: str,
     test_cases: list[dict] | None = None,
     error: str | None = None,
+    project_chat_context: dict | None = None,
+    project_brief_context: dict | None = None,
+    effective_generation_context: str | None = None,
 ) -> dict | None:
     """Persist the generation input, outcome, and a comparable project snapshot."""
     endpoint_snapshot = _project_endpoint_snapshot(database.get_project(project_id))
@@ -150,6 +274,9 @@ def _record_generation_activity(
     return record(project_id, {
         "mode": mode,
         "business_requirements": business_requirements or "",
+        "run_business_requirements": business_requirements or "",
+        "effective_generation_context": effective_generation_context or "",
+        "project_brief_context": project_brief_context or {"thread_id": None, "briefs": [], "versions": []},
         "endpoints": [{
             "id": item.get("id"), "name": item.get("name", ""),
             "method": item.get("method", "GET"), "url": item.get("url", ""),
@@ -161,6 +288,7 @@ def _record_generation_activity(
         "status": status,
         "error": error or "",
         "generated_case_ids": [str(item.get("id")) for item in (test_cases or []) if item.get("id")],
+        "project_chat_context": project_chat_context or {},
     })
 
 
@@ -356,11 +484,19 @@ def _ensure_response_schema_defaults(test_cases: list[dict]) -> None:
 
 def _attach_generation_requirements(
     test_cases: list[dict], business_requirements: str | None,
+    project_brief_context: dict | None = None,
+    effective_generation_context: str | None = None,
 ) -> None:
-    """Store the generation action's requirement text on every resulting case."""
+    """Store run-specific requirements and durable brief-version links on cases."""
     requirements = business_requirements or ""
+    brief_versions = [{key: item.get(key) for key in (
+        "scope_id", "scope_type", "scope_name", "version_id", "version_number",
+    )} for item in (project_brief_context or {}).get("versions", [])]
     for test_case in test_cases:
         test_case["business_requirements"] = requirements
+        test_case["run_business_requirements"] = requirements
+        test_case["generation_requirements"] = effective_generation_context or requirements
+        test_case["project_brief_versions"] = copy.deepcopy(brief_versions)
 
 
 def _merge_revision_requirements(
@@ -425,12 +561,293 @@ def get_generation_activity(project_id: str, limit: int = 100, offset: int = 0) 
     }
 
 
+@app.post("/api/v1/projects/{project_id}/generation-activity/{activity_id}/dismiss-clarifications")
+def dismiss_generation_clarifications(project_id: str, activity_id: str) -> dict:
+    """Hide pending clarification prompts while retaining the generation activity."""
+    activity = database.dismiss_generation_clarifications(project_id, activity_id)
+    if activity is None:
+        if database.get_project(project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Generation activity not found in this project")
+    return activity
+
+
+@app.get("/api/v1/projects/{project_id}/chat/threads")
+def list_project_chat_threads(project_id: str, include_archived: bool = False) -> list[dict]:
+    """List persistent conversations belonging to one project."""
+    result = database.list_chat_threads(project_id, include_archived)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/chat/threads")
+def create_project_chat_thread(project_id: str, request: ProjectChatThreadRequest) -> dict:
+    """Create a project chat thread using the configured OpenRouter model by default."""
+    model = (request.model or os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")).strip()
+    result = database.create_chat_thread(project_id, request.title, model)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.get("/api/v1/projects/{project_id}/chat/threads/{thread_id}")
+def get_project_chat_thread(project_id: str, thread_id: str) -> dict:
+    """Load a project-owned thread and its complete persisted transcript."""
+    result = database.get_chat_thread(project_id, thread_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project")
+    return result
+
+
+@app.put("/api/v1/projects/{project_id}/chat/threads/{thread_id}")
+def update_project_chat_thread(project_id: str, thread_id: str, request: ProjectChatThreadRequest) -> dict:
+    """Update supported metadata on a project-owned chat thread."""
+    updates = request.dict(exclude_unset=True)
+    updates.pop("model", None)
+    result = database.update_chat_thread(project_id, thread_id, updates)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages")
+def send_project_chat_message(project_id: str, thread_id: str, request: ProjectChatMessageRequest) -> dict:
+    """Retrieve bounded project context, call OpenRouter, then persist the exchange."""
+    user_text = request.content.strip()
+    if not user_text:
+        raise HTTPException(status_code=422, detail="Message cannot be empty.")
+    if len(user_text) > 20000:
+        raise HTTPException(status_code=413, detail="Message is too long (maximum 20,000 characters).")
+    thread = database.get_chat_thread(project_id, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project")
+    if thread.get("archived"):
+        raise HTTPException(status_code=409, detail="Archived chat threads are read-only.")
+
+    knowledge, endpoints = _retrieved_project_context(project_id, user_text)
+    all_messages = thread.get("messages", [])
+    recent_count = max(4, min(int(os.getenv("PROJECT_CHAT_RECENT_MESSAGES", "12")), 40))
+    budget_chars = max(6000, min(int(os.getenv("PROJECT_CHAT_CONTEXT_CHAR_BUDGET", "24000")), 100000))
+    summary = str(thread.get("context_summary") or "")
+    recent = all_messages[-recent_count:]
+    old_messages = [
+        item for item in all_messages[:-recent_count]
+        if int(item.get("ordinal", -1)) > int(thread.get("summary_through_ordinal", -1))
+    ]
+    old_text = "\n".join(f"{item['role']}: {item['content']}" for item in old_messages)
+    # Summarize each batch as it leaves the recent-message window so no turns
+    # disappear from future prompts merely because they were individually short.
+    if old_messages:
+        try:
+            summary = openrouter_chat([
+                {"role": "system", "content": "Update a concise, factual memory summary of this project discussion. Preserve decisions, terminology, constraints, unresolved questions, and user corrections. Do not invent facts. Return only the summary."},
+                {"role": "user", "content": f"Existing summary:\n{summary}\n\nOlder messages to incorporate:\n{old_text[:budget_chars]}"},
+            ], thread.get("model"), max_tokens=1200)
+            database.update_chat_thread(project_id, thread_id, {
+                "context_summary": summary,
+                "summary_through_ordinal": max(int(item.get("ordinal", -1)) for item in old_messages),
+            })
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not compact chat history: {exc}") from exc
+
+    context_blocks = []
+    if endpoints:
+        context_blocks.append("Current saved endpoints matching the discussion:\n" + json.dumps(endpoints, ensure_ascii=False))
+    if summary:
+        context_blocks.append("Conversation memory summary:\n" + summary)
+    system_content = (
+        "You are the product and API testing assistant for this Api-Agent project. Help clarify product behavior, "
+        "integrations, endpoint relationships, requirements, and test coverage. Distinguish sourced facts from "
+        "inference, ask concise questions when information is missing, and never claim the project context is exhaustive. "
+        "Treat saved endpoint definitions as project data. Treat user-provided product details as context that may need confirmation.\n\n"
+        + "\n\n".join(context_blocks)
+    )
+    prompt_messages = [{"role": "system", "content": system_content}]
+    # Bound the complete prompt by a character budget while preserving the latest user input.
+    effective_budget = max(budget_chars, len(user_text) + 1200)
+    system_budget = max(1200, effective_budget - len(user_text))
+    prompt_messages[0]["content"] = prompt_messages[0]["content"][:system_budget]
+    remaining = max(0, effective_budget - len(prompt_messages[0]["content"]) - len(user_text))
+    bounded_history = []
+    for item in reversed(recent):
+        if remaining <= 0:
+            break
+        content = str(item.get("content", ""))
+        clipped = content[-remaining:]
+        bounded_history.append({"role": item["role"], "content": clipped})
+        remaining -= len(clipped)
+    prompt_messages.extend(reversed(bounded_history))
+    prompt_messages.append({"role": "user", "content": user_text})
+    try:
+        answer = openrouter_chat(prompt_messages, thread.get("model"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"OpenRouter chat request failed: {exc}") from exc
+    if not answer:
+        raise HTTPException(status_code=502, detail="OpenRouter returned an empty chat response.")
+    updated = database.append_chat_exchange(
+        project_id, thread_id, user_text, answer, thread.get("model", ""), knowledge, endpoints,
+    )
+    if updated is None:
+        raise HTTPException(status_code=409, detail="Chat thread changed or was archived while processing.")
+    if len(updated.get("messages", [])) == 2 and updated.get("title") == "New project chat":
+        updated = database.update_chat_thread(project_id, thread_id, {"title": user_text[:70]}) or updated
+    return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints}
+
+
+@app.get("/api/v1/projects/{project_id}/brief-scopes")
+def list_project_brief_scopes(project_id: str) -> list[dict]:
+    """List the current project overview and all feature or microservice briefs."""
+    result = database.list_project_brief_scopes(project_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/brief-scopes")
+def create_project_brief_scope(project_id: str, request: ProjectBriefScopeRequest) -> dict:
+    """Create a named feature or microservice scope for durable briefs."""
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Brief scope name is required.")
+    existing = database.list_project_brief_scopes(project_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if request.scope_type == "project":
+        raise HTTPException(status_code=422, detail="The project overview is created automatically.")
+    if any(item["scope_type"] == request.scope_type and item["name"].casefold() == name.casefold() for item in existing):
+        raise HTTPException(status_code=409, detail="A brief with this name already exists in that scope type.")
+    result = database.create_project_brief_scope(project_id, request.scope_type, name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return result
+
+
+@app.get("/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions")
+def list_project_brief_versions(project_id: str, scope_id: str) -> list[dict]:
+    """List immutable versions of one brief scope owned by the project."""
+    result = database.list_project_brief_versions(project_id, scope_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Brief scope not found in this project.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions")
+def save_project_brief_version(
+    project_id: str, scope_id: str, request: ProjectBriefVersionRequest,
+) -> dict:
+    """Append a user-reviewed brief version and make it the current version."""
+    if not request.content.strip():
+        raise HTTPException(status_code=422, detail="Brief content is required.")
+    result = database.save_project_brief_version(
+        project_id, scope_id, request.content.strip(), request.source_thread_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Brief scope or source thread not found in this project.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions/{version_id}/restore")
+def restore_project_brief_version(project_id: str, scope_id: str, version_id: str) -> dict:
+    """Set an existing immutable version as current without deleting newer versions."""
+    result = database.restore_project_brief_version(project_id, scope_id, version_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Brief version not found in this project.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/chat/threads/{thread_id}/brief-draft")
+def draft_project_brief(
+    project_id: str, thread_id: str, request: ProjectBriefDraftRequest,
+) -> dict:
+    """Draft an unsaved consolidated brief from one project chat thread."""
+    thread = database.get_chat_thread(project_id, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project.")
+    if thread.get("archived"):
+        raise HTTPException(status_code=409, detail="Restore the archived chat before drafting a brief.")
+    if request.scope_id:
+        scope = database.get_project_brief_scope(project_id, request.scope_id)
+        if not scope:
+            raise HTTPException(status_code=404, detail="Brief scope not found in this project.")
+    else:
+        scope_type = request.create_scope_type
+        scope_name = str(request.create_scope_name or "").strip()
+        if scope_type not in {"feature", "microservice"} or not scope_name:
+            raise HTTPException(status_code=422, detail="Choose an existing scope or provide a new feature/microservice name.")
+        scopes = database.list_project_brief_scopes(project_id) or []
+        if any(item["scope_type"] == scope_type and item["name"].casefold() == scope_name.casefold() for item in scopes):
+            raise HTTPException(status_code=409, detail="A brief with this name already exists in that scope type.")
+        scope = database.create_project_brief_scope(project_id, scope_type, scope_name)
+        if not scope:
+            raise HTTPException(status_code=404, detail="Project not found.")
+
+    messages = thread.get("messages", [])
+    summary = str(thread.get("context_summary") or "")
+    transcript = "\n\n".join(
+        f"{item.get('role', 'assistant').upper()}: {item.get('content', '')}"
+        for item in messages
+    )
+    draft_budget = max(12000, min(int(os.getenv("PROJECT_BRIEF_DRAFT_CHAR_BUDGET", "48000")), 120000))
+    summary = summary[-min(10000, draft_budget // 4):]
+    current = str(scope.get("current_content") or "")
+    current = current[-min(18000, draft_budget // 3):]
+    transcript_budget = max(4000, draft_budget - len(summary) - len(current))
+    transcript = transcript[-transcript_budget:]
+    scope_label = f"{scope.get('scope_type')} · {scope.get('name')}"
+    prompt = (
+        "Create a concise but sufficiently detailed, durable product brief from the supplied discussion. "
+        "Separate confirmed behavior, business rules, workflows, integrations and relationships, constraints, "
+        "acceptance criteria, and unresolved questions. Do not invent facts. When new statements supersede old "
+        "rules, use the latest confirmed rule and list unresolved contradictions under Open questions. Retain "
+        "current brief facts that the conversation does not change. Return only the draft in clear Markdown.\n\n"
+        f"Brief scope: {scope_label}\n\n"
+        f"Current brief to consolidate (may be empty):\n{current or 'None'}\n\n"
+        f"Conversation memory summary:\n{summary or 'None'}\n\n"
+        f"Complete saved conversation transcript:\n{transcript or 'No messages recorded.'}"
+    )
+    try:
+        draft = openrouter_chat([
+            {"role": "system", "content": "You are a careful product analyst producing a reviewed source-of-truth brief."},
+            {"role": "user", "content": prompt},
+        ], thread.get("model"), max_tokens=5000)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not draft project brief: {exc}") from exc
+    if not draft:
+        raise HTTPException(status_code=502, detail="The model returned an empty brief draft.")
+    return {"scope": scope, "draft": draft, "source_thread_id": thread_id}
+
+
+@app.get("/api/v1/projects/{project_id}/knowledge")
+def list_project_knowledge(project_id: str, include_retired: bool = False) -> list[dict]:
+    """List the project's knowledge hub entries."""
+    result = database.list_knowledge_entries(project_id, include_retired)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge")
+def save_project_knowledge(project_id: str, request: ProjectKnowledgeEntryRequest) -> dict:
+    """Create or update a project-scoped knowledge entry."""
+    if not request.title.strip() or not request.content.strip():
+        raise HTTPException(status_code=422, detail="Knowledge title and content are required.")
+    result = database.save_knowledge_entry(project_id, request.dict())
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
 @app.post("/api/v1/projects/{project_id}/test-case-revisions")
 def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest) -> dict:
     """Generate and persist a complete new release suite without changing its baseline."""
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    brief_context = _resolve_project_briefs(
+        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+        request.project_chat_brief,
+    )
     source = database.get_generation_activity(project_id, request.source_activity_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source generation action not found in this project")
@@ -487,17 +904,20 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     endpoint_snapshot = _project_endpoint_snapshot(project)
     previous_requirements = str(source.get("business_requirements") or "")
     previous_release_notes = str(source.get("release_notes") or "")
+    revision_notes_for_prompt = request.release_notes
+    project_brief_text = _format_project_briefs(brief_context)
     cumulative_requirements = _merge_revision_requirements(
-        previous_requirements, previous_release_notes, request.release_notes,
+        previous_requirements, previous_release_notes, revision_notes_for_prompt,
     )
     keep_unchanged_set = set(keep_unchanged_ids)
     revision_baseline = [item for item in baseline if str(item.get("id")) not in keep_unchanged_set]
     trace = {}
     try:
-        if revision_baseline or endpoints or request.release_notes.strip():
+        if revision_baseline or endpoints or revision_notes_for_prompt.strip() or project_brief_text:
             revised = generate_test_case_revision(
-                revision_baseline, endpoints, previous_requirements, request.release_notes, trace,
+                revision_baseline, endpoints, previous_requirements, revision_notes_for_prompt, trace,
                 prior_release_notes=previous_release_notes,
+                project_brief_context=project_brief_text,
             )
         else:
             revised = []
@@ -567,6 +987,15 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 generated.append(revised_by_source[source_case_id])
         generated.extend(new_cases)
         new_case_ids = [str(item["id"]) for item in new_cases]
+        brief_refs = [{key: item.get(key) for key in (
+            "scope_id", "scope_type", "scope_name", "version_id", "version_number",
+        )} for item in brief_context.get("versions", [])]
+        for case in generated:
+            case["run_business_requirements"] = request.release_notes
+            case["project_brief_versions"] = copy.deepcopy(brief_refs)
+            case["generation_requirements"] = "\n\n".join(
+                part for part in [cumulative_requirements, project_brief_text] if part
+            )
 
         revision = database.save_test_case_revision(project_id, {
             "id": revision_id, "label": request.release_label.strip() or "Release revision",
@@ -580,6 +1009,11 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             raise HTTPException(status_code=404, detail="Project not found")
         activity = database.record_generation_activity(project_id, {
             "mode": "Release revision", "business_requirements": cumulative_requirements,
+            "run_business_requirements": request.release_notes,
+            "effective_generation_context": "\n\n".join(
+                part for part in [cumulative_requirements, project_brief_text] if part
+            ),
+            "project_brief_context": brief_context,
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
             "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
@@ -594,6 +1028,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             "new_case_ids": new_case_ids,
             "warnings": normalization_warnings,
             "clarification_questions": trace.get("clarification_questions", []),
+            "project_chat_context": {"thread_id": brief_context.get("thread_id")},
         })
         return {
             "revision": revision, "test_cases": generated, "activity": activity,
@@ -605,8 +1040,14 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     except Exception as exc:
         database.record_generation_activity(project_id, {
             "mode": "Release revision", "business_requirements": cumulative_requirements,
+            "run_business_requirements": request.release_notes,
+            "effective_generation_context": "\n\n".join(
+                part for part in [cumulative_requirements, project_brief_text] if part
+            ),
+            "project_brief_context": brief_context,
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
+            "project_chat_context": {"thread_id": brief_context.get("thread_id")},
             "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
             "endpoint_snapshot": endpoint_snapshot,
             "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
@@ -625,6 +1066,10 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
         raise HTTPException(status_code=404, detail="Project or source generation activity not found")
     if source.get("status") != "succeeded":
         raise HTTPException(status_code=422, detail="Only successful generation actions can be refined.")
+    source_brief_context = source.get("project_brief_context") or {"thread_id": None, "briefs": [], "versions": []}
+    source_brief_refs = [{key: item.get(key) for key in (
+        "scope_id", "scope_type", "scope_name", "version_id", "version_number",
+    )} for item in source_brief_context.get("versions", [])]
     case_by_id = {str(item.get("id")): item for item in project.get("test_cases", [])}
     source_cases = [case_by_id[item_id] for item_id in source.get("generated_case_ids", []) if item_id in case_by_id]
     if not source_cases:
@@ -669,6 +1114,13 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
                 raise ValueError(f"Refined output references an unknown source case: {raw_source_ref}")
             case["id"] = str(uuid.uuid4())
             case["follow_up_of"] = request.source_activity_id
+            case["run_business_requirements"] = source.get(
+                "run_business_requirements", source.get("business_requirements", ""),
+            )
+            case["generation_requirements"] = source.get(
+                "effective_generation_context", source.get("business_requirements", ""),
+            )
+            case["project_brief_versions"] = copy.deepcopy(source_brief_refs)
             if source.get("business_requirements"):
                 case.setdefault("business_requirements", source["business_requirements"])
             if (
@@ -739,6 +1191,9 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
         activity_payload = {
             "mode": source.get("mode", "Generation"),
             "business_requirements": source.get("business_requirements", ""),
+            "run_business_requirements": source.get("run_business_requirements", source.get("business_requirements", "")),
+            "effective_generation_context": source.get("effective_generation_context", source.get("business_requirements", "")),
+            "project_brief_context": source_brief_context,
             "previous_requirements": source.get("previous_requirements", ""),
             "previous_release_notes": source.get("previous_release_notes", ""),
             "release_notes": source.get("release_notes", ""),
@@ -1289,6 +1744,10 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    brief_context = _resolve_project_briefs(
+        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+    )
+    effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     endpoints = [
         item for item in project.get("endpoints", [])
         if item.get("contract", {}).get("source_id") == request.source_id
@@ -1306,18 +1765,21 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
         test_cases = generate_discovered_flow_test_cases(
             endpoints=endpoints,
             candidates=candidates,
-            business_requirements=request.business_requirements,
+            business_requirements=effective_context,
             trace=trace,
         )
     except (ValueError, RuntimeError) as exc:
         _record_generation_activity(
             project_id, "Discovered Flow", endpoints, request.business_requirements,
-            trace, "failed", error=str(exc),
+            trace, "failed", error=str(exc), project_brief_context=brief_context,
+            effective_generation_context=effective_context,
         )
         raise HTTPException(status_code=502, detail=f"LLM returned invalid flow data: {exc}") from exc
     if not isinstance(test_cases, list) or not test_cases:
         raise HTTPException(status_code=502, detail="LLM returned no usable flow scenarios.")
-    _attach_generation_requirements(test_cases, request.business_requirements)
+    _attach_generation_requirements(
+        test_cases, request.business_requirements, brief_context, effective_context,
+    )
     candidates_by_id = {item["id"]: item for item in candidates}
     endpoints_by_id = {item["id"]: _effective_request(item) for item in endpoints}
     for test_case in test_cases:
@@ -1358,7 +1820,8 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
         raise HTTPException(status_code=404, detail="Project not found")
     activity = _record_generation_activity(
         project_id, "Discovered Flow", endpoints, request.business_requirements,
-        trace, "succeeded", test_cases=test_cases,
+        trace, "succeeded", test_cases=test_cases, project_brief_context=brief_context,
+        effective_generation_context=effective_context,
     )
     return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
@@ -1544,10 +2007,17 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         list: Generated test cases.
     """
     project_id = request.project_id or database.current_project_id()
+    if request.project_chat_thread_id and not project_id:
+        raise HTTPException(status_code=422, detail="A project is required to use project chat context.")
+    brief_context = _resolve_project_briefs(
+        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+        request.project_chat_brief,
+    ) if project_id else {"thread_id": None, "briefs": [], "versions": [], "legacy_brief": ""}
+    effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     if request.mode == "General":
-        requirements = (request.business_requirements or "").strip()
+        requirements = (effective_context or "").strip()
         if not requirements:
-            raise HTTPException(status_code=422, detail="Business requirements are required for general scenarios.")
+            raise HTTPException(status_code=422, detail="Add run-specific business requirements or save a project brief.")
         project = database.get_project(project_id) if project_id else None
         if project_id and project is None:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1558,10 +2028,15 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
             )
         except HTTPException as exc:
             activity = _record_generation_activity(
-                project_id, "General", [], requirements, trace, "failed", error=str(exc.detail),
+                project_id, "General", [], request.business_requirements, trace, "failed", error=str(exc.detail),
+                project_chat_context={"thread_id": brief_context.get("thread_id")},
+                project_brief_context=brief_context,
+                effective_generation_context=effective_context,
             ) if project_id else None
             raise
-        _attach_generation_requirements(test_cases, requirements)
+        _attach_generation_requirements(
+            test_cases, request.business_requirements, brief_context, effective_context,
+        )
         collection_id = str(request.case_collection_id or GENERAL_CASE_COLLECTION_ID)
         collection_name = str(request.case_collection_name or "").strip() or GENERAL_CASE_COLLECTION_NAME
         for case in test_cases:
@@ -1574,7 +2049,10 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         if project_id and not database.save_test_cases(project_id, test_cases):
             raise HTTPException(status_code=404, detail="Project not found")
         activity = _record_generation_activity(
-            project_id, "General", [], requirements, trace, "succeeded", test_cases=test_cases,
+            project_id, "General", [], request.business_requirements, trace, "succeeded", test_cases=test_cases,
+            project_chat_context={"thread_id": brief_context.get("thread_id")},
+            project_brief_context=brief_context,
+            effective_generation_context=effective_context,
         ) if project_id else None
         return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
@@ -1610,8 +2088,9 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         endpoints.append(endpoint)
 
     examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
+    business_requirements = effective_context
     generation_args = {
-        "business_requirements": request.business_requirements,
+        "business_requirements": business_requirements,
         "example_test_cases": examples,
     }
     trace = {}
@@ -1626,9 +2105,14 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         _record_generation_activity(
             project_id, "Single", endpoints, request.business_requirements,
             trace, "failed", error=str(exc.detail),
+            project_chat_context={"thread_id": brief_context.get("thread_id")},
+            project_brief_context=brief_context,
+            effective_generation_context=effective_context,
         )
         raise
-    _attach_generation_requirements(test_cases, request.business_requirements)
+    _attach_generation_requirements(
+        test_cases, request.business_requirements, brief_context, effective_context,
+    )
 
     endpoints_by_id = {
         str(item["id"]): item for item in endpoints if item.get("id") is not None
@@ -1682,6 +2166,9 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
     activity = _record_generation_activity(
         project_id, "Single", endpoints, request.business_requirements,
         trace, "succeeded", test_cases=test_cases,
+        project_chat_context={"thread_id": brief_context.get("thread_id")},
+        project_brief_context=brief_context,
+        effective_generation_context=effective_context,
     )
     return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
@@ -1698,8 +2185,12 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
         list: Generated flow test cases.
     """
     endpoints = [_effective_request(item) for item in request.endpoints]
-    business_requirements = request.business_requirements
     project_id = request.project_id or database.current_project_id()
+    brief_context = _resolve_project_briefs(
+        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+        request.project_chat_brief,
+    ) if project_id else {"thread_id": None, "briefs": [], "versions": [], "legacy_brief": ""}
+    effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
 
     if not endpoints:
         raise HTTPException(status_code=400, detail="No endpoints provided")
@@ -1710,17 +2201,22 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
         test_cases = _generate_or_raise(
             generate_flow_test_cases,
             endpoints=endpoints,
-            business_requirements=business_requirements,
+            business_requirements=effective_context,
             example_test_cases=examples,
             trace=trace,
         )
     except HTTPException as exc:
         _record_generation_activity(
-            project_id, "Flow", endpoints, business_requirements, trace,
+            project_id, "Flow", endpoints, request.business_requirements, trace,
             "failed", error=str(exc.detail),
+            project_chat_context={"thread_id": brief_context.get("thread_id")},
+            project_brief_context=brief_context,
+            effective_generation_context=effective_context,
         )
         raise
-    _attach_generation_requirements(test_cases, business_requirements)
+    _attach_generation_requirements(
+        test_cases, request.business_requirements, brief_context, effective_context,
+    )
     for tc in test_cases:
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
@@ -1736,8 +2232,11 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
     activity = _record_generation_activity(
-        project_id, "Flow", endpoints, business_requirements, trace,
+        project_id, "Flow", endpoints, request.business_requirements, trace,
         "succeeded", test_cases=test_cases,
+        project_chat_context={"thread_id": brief_context.get("thread_id")},
+        project_brief_context=brief_context,
+        effective_generation_context=effective_context,
     )
     return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
@@ -1760,10 +2259,14 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     project = database.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    brief_context = _resolve_project_briefs(
+        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+        request.project_chat_brief,
+    )
+    effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     examples = _load_generation_examples(project_id, request.example_test_case_ids, project)
     endpoint_ids = request.endpoint_ids
     endpoints_data = [_effective_request(item) for item in request.endpoints]
-    business_requirements = request.business_requirements
 
     # Use full endpoint data if provided, otherwise look up from project
     if endpoints_data:
@@ -1784,17 +2287,22 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
         test_cases = _generate_or_raise(
             generate_flow_test_cases,
             endpoints=ordered,
-            business_requirements=business_requirements,
+            business_requirements=effective_context,
             example_test_cases=examples,
             trace=trace,
         )
     except HTTPException as exc:
         _record_generation_activity(
-            project_id, "Flow", ordered, business_requirements, trace,
+            project_id, "Flow", ordered, request.business_requirements, trace,
             "failed", error=str(exc.detail),
+            project_chat_context={"thread_id": brief_context.get("thread_id")},
+            project_brief_context=brief_context,
+            effective_generation_context=effective_context,
         )
         raise
-    _attach_generation_requirements(test_cases, business_requirements)
+    _attach_generation_requirements(
+        test_cases, request.business_requirements, brief_context, effective_context,
+    )
     for tc in test_cases:
         if not tc.get("id"):
             tc["id"] = str(uuid.uuid4())
@@ -1810,8 +2318,11 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     if not database.save_test_cases(project_id, test_cases):
         raise HTTPException(status_code=404, detail="Project not found")
     activity = _record_generation_activity(
-        project_id, "Flow", ordered, business_requirements, trace,
+        project_id, "Flow", ordered, request.business_requirements, trace,
         "succeeded", test_cases=test_cases,
+        project_chat_context={"thread_id": brief_context.get("thread_id")},
+        project_brief_context=brief_context,
+        effective_generation_context=effective_context,
     )
     return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
 
