@@ -105,7 +105,7 @@ If a host port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONT
 
 ### Projects, collections, and requests
 
-Select or create a project in the sidebar. In API Workspace, the compact collection navigator is headed by the active project name, stays beside the playground on desktop, and stacks above it on narrow screens. **Import** and **Discover** open contract tools, and the plus beside search creates a collection. Use the × in an open contract panel’s title row to dismiss it. Search filters collection names, request names, and URLs. Expand a collection to browse its indented requests, which are linked visually to their parent by a subtle tree guide. The checkbox at the left of a collection controls generation eligibility for every request in it; request checkboxes control individual eligibility. Request names are truncated to fit, show the URL on hover or keyboard focus, and open the request in the playground when clicked. Plain, unboxed three-dot menus provide request rename, duplicate, and delete actions, and collection rename, Postman export, and delete actions. A saved request belongs to a project collection; an open request tab is a temporary draft until saved.
+Select or create a project in the sidebar. In API Workspace, the compact collection navigator is headed by the active project name, stays beside the playground on desktop, and stacks above it on narrow screens. **Import** and **Discover** open contract tools, and the plus beside search creates a collection. Use the × in an open contract panel’s title row to dismiss it. Search filters collection names, request names, and URLs, and the method filter narrows the tree to GET, POST, PUT, PATCH, or DELETE requests. An enabled-of-total counter under the search box summarises generation eligibility for the project. Expand a collection to browse its indented requests, which are linked visually to their parent by a subtle tree guide. The checkbox at the left of a collection controls generation eligibility for every request in it; request checkboxes control individual eligibility. A partly enabled collection shows enabled/total (partial) beside its name, so an unchecked box is not mistaken for a fully excluded collection. Request names are truncated to fit, show the URL on hover or keyboard focus, and open the request in the playground when clicked. Plain, unboxed three-dot menus provide request rename, duplicate, and delete actions, and collection rename, Postman export download, and delete actions. Export downloads the collection only when you click it, so browsing the tree does not issue export requests. A saved request belongs to a project collection; an open request tab is a temporary draft until saved.
 
 The playground supports manual request editing or cURL import. Paste or type a one-line or multiline command beginning with `curl` into the URL field and pause for three seconds; the frontend parses recognized commands automatically. Regular URLs are not parsed as cURL. Review the method, URL, query parameters, headers, and body before sending or saving. Contract imports omit payloads from GET and DELETE requests.
 
@@ -116,7 +116,9 @@ Use **Send** for request-only execution. To check a response, open **Assertions*
 - **Field value:** JSONPath plus the expected value.
 - **Response schema:** a JSON Schema document used to validate a JSON response.
 
-Each assertion has an enabled checkbox. **Run All** sends one request and evaluates every enabled assertion; an individual **Run** sends a fresh request for that assertion even when it is disabled for Run All. The response panel shows the HTTP response and each assertion outcome.
+An **Auth** tab holds Bearer token, Basic auth, or API key credentials. They stay with the request and become the header only when it is sent; an explicit header on the Headers tab still wins. **Body** offers No body or Raw and reports the effective Content-Type plus whether the text parses as JSON. A request tab prefixed with an asterisk has unsaved edits, and the editor shows a matching caption.
+
+Each assertion has an enabled checkbox. **Run All** sends one request and evaluates every enabled assertion; an individual **Run** sends a fresh request for that assertion even when it is disabled for Run All. The response panel shows status, latency, payload size, Pretty or Raw body, headers, and a Test Results table with one row per assertion.
 
 ### Import contracts and discover flows
 
@@ -190,6 +192,7 @@ Variable mappings are scoped to one flow scenario. They pass a value from a prev
 - Saved request assertions are stored with the request. Generated case and flow-step assertions are stored with their test cases.
 - Existing endpoint records are migrated at startup into each project's **Imported Endpoints** collection. Existing SQLite data is not automatically migrated.
 - Five-second success and error toasts use green and red accents; API failures also retain detailed inline errors.
+- The default theme is pure black: base dark in .streamlit/config.toml with a #000000 canvas, a #050506 rail, and #0a0a0c panels. A light palette ships in frontend/styles/tokens.py but is not exposed as a runtime toggle, because Streamlit cannot retheme its own widgets.
 
 ## API overview
 

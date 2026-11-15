@@ -101,6 +101,27 @@ Mode: Act
 - Project Chat tab sits beside Test Cases and Generation Activity; Chat uses a compact left thread list with rename/archive actions in a plain tertiary three-dot menu, archived threads read-only until restored, endpoint source references, and a separate Project briefs workspace with a scope library, current brief, draft review, save-version, history, and restore actions
 - Generation always includes the current project overview and accepts explicit current feature/microservice brief scope IDs plus run-specific Business requirements; run-specific text never updates durable briefs. Generation Activity records exact versions, contents, prompts, and run input; cases retain version references and generation requirements.
 - Persistent context architecture, process flow, diagram, tradeoffs, configuration, and API behavior are documented in `docs/persistent_context.md`
+- Frontend split into `frontend/core.py` (shared state, API clients, helpers), `frontend/views/*` (one module per workspace mode), and `frontend/styles/*` (design tokens plus CSS blocks); `frontend/app.py` is now a thin entry point
+- Postman-style black-first shell: `--aa-*` tokens injected once, left-rail mode switcher replacing top-level tabs, dense surfaces and typography, visible focus rings, and reduced-motion support
+- Fixed regressions from the extraction: restored `_toggle_session_state` (deleted with the CSS slice),
+  removed the stale `API_BASE` reference, and made the views import `frontend.core` absolutely so package
+  imports work under pytest
+- Test-case toolbar uses one merged Expand/Collapse toggle; Export CSV is a single `st.link_button` that
+  streams from the backend export route, because this Streamlit version does not accept a callable for
+  `st.download_button(data=...)` and a second widget was not wanted
+- Frontend test suite is green (20/20); remaining suite failures are the pre-existing PostgreSQL-backed storage, contract, and provenance tests
+- Collections rail: HTTP-method filter, `enabled of total` project counter, and honest collection state
+  (`total` when fully enabled, `enabled/total (partial)` when partly, `0/total` when none) because a checkbox
+  cannot express indeterminate selection
+- Removed the eager Postman-export prefetch from the collection kebab: popover bodies render on every rerun,
+  so it was one extra API call per collection per interaction. The action is now an on-demand download link
+- Request editor gains an Auth tab (Bearer token, Basic auth, API key) whose header is materialised at
+  send time and never overrides an explicit header row
+- Body mode is a segmented No body or Raw control with live Content-Type and JSON validity feedback
+- Unsaved edits are tracked from a canonical signature, so opening a saved request stays clean; the tab
+  strip shows a leading asterisk and the editor shows a caption until the draft is saved
+- Playground assertion results render as a compact Test Results table
+- Frontend read timeouts are scoped (15/30/60 s) so a stalled backend cannot freeze a page for 300 s
 
 ## In Progress
 - None
@@ -121,7 +142,8 @@ Mode: Act
 - HTTP Client: python requests
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
-- Frontend: Streamlit (API Workspace, Test Cases, Project Chat, and Generation Activity tabs)
+- Frontend: Streamlit, single page with a left-rail mode switcher (API Workspace, Test Cases, Project Chat, Generation Activity); styles in `frontend/styles`, views in `frontend/views`
+- Frontend theme: black-first via `.streamlit/config.toml` plus `--aa-*` CSS tokens; a light palette is available in `tokens.py` but not exposed until native widget colours can switch with it
 - LLM: Multiple free-tier APIs with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
 - Project Chat: OpenRouter multi-message chat completion; `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `PROJECT_CHAT_RECENT_MESSAGES`, and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` configure model and bounded context
 - Brief drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` limits transcript characters considered alongside the rolling summary; the default is 48000

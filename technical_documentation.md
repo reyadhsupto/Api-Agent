@@ -53,8 +53,15 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 ### app/schemas.py
 - Minimal Pydantic models for request/response validation
 
-### frontend/app.py
-- Streamlit app with API Workspace and Test Cases tabs plus collapsed-by-default project sidebar
+### frontend (Streamlit UI)
+- `frontend/app.py` is a thin entry point: sys.path bootstrap, explicit imports, and `main()`
+- `frontend/core.py` holds shared state, API clients, CSS constants, and render helpers
+- `frontend/views/{api_workspace,test_cases,chat,activity}.py` render one workspace mode each
+- `frontend/styles/{tokens,base,shell,request_tabs,test_cases}.py` own the design tokens and CSS blocks
+- `.streamlit/config.toml` sets the black-first native theme (base dark, background #000000, accent #ff6c37)
+- The left rail switches modes (API Workspace, Test Cases, Project Chat, Generation Activity); the selection is stored in `st.session_state["ui_mode"]` and only the active mode renders
+- Design tokens are emitted once as CSS custom properties on `:root` by `frontend.styles.inject_styles`; components consume `--aa-*` variables instead of hard-coded colours
+- Import contract: modules use absolute `frontend.*` imports, so the same files load under `streamlit run` and package imports from tests
 - API Workspace provides temporary request tabs, manual editing, debounced cURL parsing in the URL field, quick sends, response display, and saved project collections
 - Single generated tests retain source endpoint metadata and display in endpoint groups; flow scenarios have a separate group
 - Saved requests can be selected and explicitly ordered for generation
@@ -64,6 +71,32 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 - Each test case card: compact status summary, repeatable status/body-contains/JSONPath/JSON Schema assertions, separate request/result views for single cases, and expandable per-step flow details
 - Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
 - Calls FastAPI endpoints via python requests
+- Scripts use `requests.get` for reads; reads that trigger LLM work inherit the 300 second timeout
+- The test-case toolbar keeps one merged Expand/Collapse control and one Export CSV control
+- Export CSV is a `st.link_button` to `/api/v1/projects/{id}/test-cases/export` with repeated
+  `selected_case_ids` parameters, so the backend streams the file on click instead of the frontend
+  pre-fetching bytes on every rerun
+- The collections rail filters by HTTP method with a segmented control and shows an
+  `enabled of total` counter for the project
+- Collection rows show real selection state: `name · total` when every request is enabled and
+  `name · enabled/total (partial)` when only some are, because `st.checkbox` cannot render an
+  indeterminate mark
+- The collection and request kebabs are quiet affordances: three-dot icons at 40% opacity that
+  reach full accent opacity on row hover or keyboard focus
+- Collection export is a link to the backend route, not a prefetch: Streamlit renders popover
+  bodies on every run, so fetching inside a kebab would cost one API call per collection per rerun
+- The request editor exposes Params, Headers, Body, Auth, and Assertions tabs
+- Body is No body or Raw; Raw shows the effective Content-Type and, for JSON, whether the text parses
+- Auth stores credentials on the draft (Bearer token, Basic auth, or API key) and materialises the
+  header at send time; an explicit header on the Headers tab takes precedence
+- `_request_signature` normalises method, URL, enabled header and query rows, body content, auth, and
+  body type, so opening a saved request never reports unsaved changes. A leading asterisk marks a
+  request tab with unsaved edits, and the editor shows a caption until the draft is saved
+- Playground assertion runs render a Test Results table (Result, Assertion, Detail)
+- Read timeouts are scoped: 15 s for raw project summaries, 30 s for GET and DELETE, 60 s for PUT, and
+  300 s only for POST routes that call an LLM or execute requests
+  `selected_case_ids` parameters, so the backend streams the file on click instead of the frontend
+  pre-fetching bytes on every rerun
 - Queues five-second success and error toasts for meaningful completed actions; success and error messages use green and red accents, queued messages survive Streamlit reruns, and batch execution reports one aggregate toast
 - Running a single test opens its Result tab; running a flow opens its Scenario result tab. Batch execution opens the first failed or errored case, or the last executed case when all pass
 - Contract import UI accepts pasted text, JSON/YAML/Markdown/text files, and public anonymous documentation URLs; previews all endpoint proposals before import
@@ -271,3 +304,5 @@ Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a
 - Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
 - Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions
 - Clean caches: `make clean-cache` (keeps the virtual environment)
+- Native Streamlit widget colours come from `.streamlit/config.toml`; the app palette lives in `frontend/styles/tokens.py`
+- The light palette ships in `tokens.py` but is not wired to a control: Streamlit cannot retheme its own widgets at runtime, so a half-applied dark mode is avoided

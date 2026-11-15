@@ -13,7 +13,7 @@ if "streamlit" not in sys.modules:
     )
     sys.modules["streamlit"] = streamlit_stub
 
-from frontend.app import (
+from frontend.core import (
     _generation_requests_in_order,
     _group_test_cases_by_endpoint,
     _filter_test_cases_by_scope,
@@ -351,7 +351,7 @@ def test_request_assertions_persist_with_saved_request(monkeypatch):
         captured["payload"] = payload
         return {**payload, "id": "saved-request", "collection_id": "collection-1"}
 
-    monkeypatch.setattr("frontend.app.api_post", fake_api_post)
+    monkeypatch.setattr("frontend.core.api_post", fake_api_post)
     _save_request_draft(draft, "collection-1", "project-1")
 
     restored = _new_request_draft(captured["payload"])
@@ -377,7 +377,7 @@ def test_contract_metadata_survives_opening_and_resaving_an_imported_request(mon
         captured.update(payload)
         return {**payload, "id": "saved-request", "collection_id": "collection-1"}
 
-    monkeypatch.setattr("frontend.app.api_post", fake_api_post)
+    monkeypatch.setattr("frontend.core.api_post", fake_api_post)
     _save_request_draft(draft, "collection-1", "project-1")
 
     assert captured["contract"] == contract
