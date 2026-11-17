@@ -7,7 +7,7 @@
 | Backend Framework | FastAPI | Async support, automatic OpenAPI docs, easy routing |
 | HTTP Client | python requests | User-specified standard for outbound API calls |
 | Frontend | Streamlit + embedded Components v2 | Python UI with browser controls for cURL debounce and sortable request rows |
-| LLM Providers | Groq, OpenRouter, Cohere, HuggingFace | Free tiers, multiple for fallback |
+| LLM Providers | AMD Token Lab, OpenRouter, Groq, Cohere, Hugging Face | Ordered environment-based fallback |
 | cURL Parsing | shlex + custom logic | No heavy dependency, easy to understand |
 | Contract Parsing | PyYAML + standard JSON parsing | OpenAPI/Swagger YAML and JSON input |
 | Persistence | PostgreSQL + psycopg | Durable storage for local and containerized app runs |
@@ -53,17 +53,56 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 ### app/schemas.py
 - Minimal Pydantic models for request/response validation
 
-### frontend/app.py
-- Streamlit app with API Workspace and Test Cases tabs plus collapsed-by-default project sidebar
+### frontend (Streamlit UI)
+- `frontend/app.py` is a thin entry point: sys.path bootstrap, explicit imports, and `main()`
+- `frontend/core.py` holds shared state, API clients, CSS constants, and render helpers
+- `frontend/views/{api_workspace,test_cases,chat,activity}.py` render one workspace mode each
+- `frontend/styles/{tokens,base,shell,theme,light,request_tabs,test_cases}.py` own the design tokens and CSS blocks
+- `.streamlit/config.toml` sets the single native light theme (base light, background #f6f7fa, accent #ff6c37)
+- `frontend/styles/theme.py` re-points the native widgets Streamlit paints outside its theme
+  variables (toolbar buttons, popover, tooltip, toast, segmented pill, slider, progress, spinner,
+  tab highlight, notice) at the `--aa-*` tokens so native surfaces match the light palette
+- The left rail switches modes (API Workspace, Test Cases, Project Chat, Activity Logs); Activity Logs has Generation and Knowledge Extraction subviews, and only the selected workspace renders
+- Design tokens are emitted once as CSS custom properties on `:root` by `frontend.styles.inject_styles`; components consume `--aa-*` variables instead of hard-coded colours
+- Import contract: modules use absolute `frontend.*` imports, so the same files load under `streamlit run` and package imports from tests
 - API Workspace provides temporary request tabs, manual editing, debounced cURL parsing in the URL field, quick sends, response display, and saved project collections
 - Single generated tests retain source endpoint metadata and display in endpoint groups; flow scenarios have a separate group
 - Saved requests can be selected and explicitly ordered for generation
 - Test Cases supports single and flow generation/execution with editable assertions
 - Generation controls use a Single/Flow selector, selected saved-request list, optional business requirements, and a primary generation action; no scenario count is requested for flows
+- Project Chat turns only append to the thread; explicit Knowledge Hub drafts are created only after a user action
+- The Knowledge Hub stores immutable project, feature, and microservice page versions; features can link to multiple shared microservice pages
+- Generation includes the project page plus selected feature pages and their linked microservices; exact version snapshots are attached to generated cases and activity records
 - Results use status counts, result filters, select/expand controls, per-case execution, batch execution with progress, and explicit project save
 - Each test case card: compact status summary, repeatable status/body-contains/JSONPath/JSON Schema assertions, separate request/result views for single cases, and expandable per-step flow details
 - Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
 - Calls FastAPI endpoints via python requests
+- The frontend uses `requests` only; read timeouts are scoped by call type (see the timeout bullet below)
+- The test-case toolbar keeps one merged Expand/Collapse control and one Export CSV control
+- Export CSV is a `st.link_button` to `/api/v1/projects/{id}/test-cases/export` with repeated
+  `selected_case_ids` parameters, so the backend streams the file only on click
+- The collections rail filters by HTTP method with a segmented control and shows an
+  `enabled of total` counter for the project
+- Collection rows show real selection state: `name · total` when every request is enabled and
+  `name · enabled/total (partial)` when only some are, because `st.checkbox` cannot render an
+  indeterminate mark
+- The collection and request kebabs are quiet affordances: three-dot icons at 40% opacity that
+  reach full accent opacity on row hover or keyboard focus
+- Collection export is a link to the backend route, not a prefetch: Streamlit renders popover
+  bodies on every run, so fetching inside a kebab would cost one API call per collection per rerun
+- The request editor exposes Params, Headers, Body, Auth, and Assertions tabs
+- Body is No body or Raw; Raw shows the effective Content-Type and, for JSON, whether the text parses
+- Auth stores credentials on the draft (Bearer token, Basic auth, or API key) and materialises the
+  header at send time; an explicit header on the Headers tab takes precedence
+- `_request_signature` normalises method, URL, enabled header and query rows, body content, auth, and
+  body type, so opening a saved request never reports unsaved changes. A leading asterisk marks a
+  request tab with unsaved edits, and the editor shows a caption until the draft is saved
+- Playground assertion runs render a Test Results table (Result, Assertion, Detail)
+- Each test-case card header carries the Run action for the card type (Run, or Passed/Failed for a
+  general scenario) plus a kebab holding Delete; the footer keeps Save changes and its unsaved-edits
+  hint, so the destructive action is not adjacent to the save action
+- Read timeouts are scoped: 15 s for raw project summaries, 30 s for GET and DELETE, 60 s for PUT, and
+  300 s only for POST routes that call an LLM or execute requests
 - Queues five-second success and error toasts for meaningful completed actions; success and error messages use green and red accents, queued messages survive Streamlit reruns, and batch execution reports one aggregate toast
 - Running a single test opens its Result tab; running a flow opens its Scenario result tab. Batch execution opens the first failed or errored case, or the last executed case when all pass
 - Contract import UI accepts pasted text, JSON/YAML/Markdown/text files, and public anonymous documentation URLs; previews all endpoint proposals before import
@@ -88,7 +127,9 @@ Body: {"parsed_curl": {...}, "business_requirements": "...", "project_id": "..."
 Returns {"test_cases": [...], "clarification_questions": [...], "activity": {...}}. Accepts the (optionally edited) parsed_curl from the frontend. `mode: General` instead requires business requirements and generates manual-only cases with `case_kind: general` and ordered `manual_steps`; endpoint and example inputs are not used. General requests may include a project-scoped `case_collection_id` and `case_collection_name`; cases retain these fields through follow-up and revision generation.
 `example_test_case_ids` is optional. Selected cases are loaded from the project and used as scenario-style and coverage context; the endpoint request and business requirements remain the generation target. The cases are not copied or modified. Generated cases receive new IDs and are saved alongside the existing cases.
 
-Generation output is normalized from either the envelope `{ "test_cases": [...], "clarification_questions": [...] }` or a legacy bare array (treated as no questions). General cases contain no request, mapping, or assertion data. The frontend renders their manual steps and records Passed/Failed marks through the project-scoped manual-result endpoint; each mark is appended to execution history and contributes to flaky classification. HTTP batch runs skip general cases.
+Generation output is normalized from either the envelope `{ "test_cases": [...], "clarification_questions": [...] }` or a legacy bare array (treated as no questions). General cases contain no request, mapping, or generated assertion data. The frontend renders their manual steps and records Passed/Failed marks through the project-scoped manual-result endpoint; each mark is appended to execution history and contributes to flaky classification. A Failed mark can include an optional `failure_reason`, shown on the card as its assertion result and retained on the execution entry. HTTP batch runs skip general cases.
+
+General scenario collection groups are separate from endpoint collections. `GET /api/v1/projects/{project_id}/general-case-collections` lists them and `POST` with `{"name":"..."}` creates one before generation. Existing groups are migrated from saved General case metadata at startup, and saving a General case keeps its group metadata synchronized.
 
 ### POST /api/v1/projects/{project_id}/generation-activity/follow-up
 Body: {"source_activity_id": "...", "answers": {"1": "..."}}
@@ -97,8 +138,8 @@ Creates a linked generation activity and a new refined case set. On successful n
 Revision requests may include `keep_unchanged_case_ids`, a subset of `baseline_case_ids`. The backend copies those cases with new IDs and source links without including them in the model input. Revision clarification follow-ups carry this protection forward and record source and copied IDs in activity details.
 
 ### POST /api/v1/projects/{project_id}/test-cases/{test_case_id}/manual-result
-Body: {"status": "passed"} or {"status": "failed", "note": "..."}
-Appends a manual result containing the saved case snapshot and updates the case's current `manual_status`.
+Body: {"status": "passed"} or {"status": "failed", "failure_reason": "..."}
+The failure reason is optional and limited to 2,000 characters. Each result appends an execution-history entry containing the saved case snapshot and assertion detail, then updates the case's current `manual_status` and `manual_failure_reason`. The earlier `note` field remains accepted for compatibility.
 
 ### POST /api/v1/test-cases/generate-flow
 Body: {"endpoints": [...], "business_requirements": "...", "project_id": "...", "example_test_case_ids": ["..."]}
@@ -164,7 +205,7 @@ New requests default to excluded from generation. Persistent eligibility is cont
 
 Single-endpoint generation sends `source_endpoint_id` with each request. The backend validates that it belongs to the selected project and stores its ID and display name with each generated test case. Optional `example_test_case_ids` are resolved from that same project and passed as prompt context; IDs outside the project or unknown IDs return 404. Examples are compacted to scenario/request/assertion/mapping fields without execution results or authorization headers. Newly generated cases get unique IDs, persist alongside prior cases, and the frontend merges them into its existing case list.
 
-The Test Cases workspace provides project-scoped multi-select filters for reusable runs, collections, and endpoints, alongside execution status. General scenarios can be assigned to named, project-scoped case collections; the existing **Collections** filter includes those groups without another filter control. Filters combine across categories and use OR semantics within a category. A single case resolves to its source endpoint ID, with URL/method matching for legacy cases. A flow matches endpoint and collection filters when one of its steps matches all active endpoint/collection criteria; the complete scenario appears once in **Flow scenarios** and lists all participating endpoints and collections. General scenarios match their assigned collection and are excluded when an endpoint filter is active.
+The Test Cases workspace provides project-scoped multi-select filters for reusable runs, collections, and endpoints, alongside execution status. General scenarios can be assigned to named, project-scoped case collections. Create one from the General generation form before generation or reuse an existing group; the existing **Collections** filter includes these groups without another filter control. Empty groups persist in PostgreSQL. Existing groups are seeded from saved General cases during startup. Filters combine across categories and use OR semantics within a category. A single case resolves to its source endpoint ID, with URL/method matching for legacy cases. A flow matches endpoint and collection filters when one of its steps matches all active endpoint/collection criteria; the complete scenario appears once in **Flow scenarios** and lists all participating endpoints and collections. General scenarios match their assigned collection and are excluded when an endpoint filter is active.
 
 Test cases are grouped by endpoint while each case keeps its own generated title; unnamed endpoints use their URL as the group heading. Users can create manual single cases from one saved request or manual flows from an ordered selection of saved requests; new cases receive stable IDs, are immediately upserted into the project, and open in the editor.
 
@@ -187,6 +228,20 @@ Projects, collections, saved requests, test cases, named test runs, execution hi
 - Delete a project and its dependent rows through foreign-key cascades
 
 Set `DATABASE_URL` in `.env` for local app processes. Docker Compose connects the backend to the `postgres` service and persists data in the named `api_agent_pgdata` volume. A default project is created automatically and receives standalone generated tests. The selected project is persisted and restored after restart. Collection/request changes and assertion edits are saved explicitly; generated cases and execution results are saved automatically. Existing SQLite files are not migrated automatically.
+
+### Project Chat, Knowledge Hub, and generation context
+
+The end-to-end data flow and user workflow are documented in [docs/persistent_context.md](docs/persistent_context.md). Chat loads a bounded thread summary and recent transcript plus relevant current Hub pages and saved endpoints. Each exchange is stored in PostgreSQL; a normal chat turn does not invoke a second extraction request. Users explicitly prepare an update from a discussion, review separate drafts and section-level changes for selected pages, and save selected versions atomically.
+
+The Knowledge Hub uses the existing scoped immutable document-version store. Each project has a shared project-wide page plus feature and microservice pages. A many-to-many link table associates features with reusable microservices. The additive startup migration retains old brief and fact records, appends source-labeled approved facts and legacy thread briefs to Hub page versions once, and leaves unapproved legacy rows out of active prompt context. A history restore appends a new version instead of mutating prior versions. Activity Logs → Knowledge Extraction shows historical extraction attempts together with current Hub operations.
+
+Test generation combines the project page, selected feature pages, linked microservice pages, run-specific Business requirements, and the selected endpoint or revision context. It does not send the full chat transcript to generation or save run-specific requirements into the Hub. Unresolved details belong in a visibly labeled **Open questions** section. Activity Logs → Generation and generated cases preserve exact Hub version references and content snapshots, endpoint snapshot, prompt, response, and action requirements.
+
+Single creates independent endpoint cases; Flow uses the chosen endpoint order; General creates manual requirements-only scenarios; contract-discovered Flow starts from a selected contract dependency path. Release Revision additionally supplies selected saved baseline cases, previous requirements and release notes, new changes, and current selected endpoints. Users can mark baseline cases to carry unchanged. Clarification responses create linked follow-up actions; prior outputs remain available in history according to the active revision/refinement rules. The linked guide describes each mode, its context inputs, limitations, and provenance.
+
+### Reset the local Docker database
+
+`make docker-db-reset` is the destructive reset path for the current Compose project only. It requires an interactive terminal and the exact confirmation `RESET`, stops the Compose stack, resolves and removes only the `api_agent_pgdata` volume, then rebuilds and starts the stack. The backend's idempotent initialization creates the current tables and indexes and its startup bootstrap creates the built-in Default Project and overview scope. Other project-specific Compose volumes are not selected by the reset script. `make docker-down` stops services without deleting data. The reset target never reads or drops a database identified only by a local `DATABASE_URL`.
 
 For the Docker stack, `make docker-up-build` builds images and starts all services; use `make docker-up` on later starts to skip builds and reuse existing images. Dependency installation is in a separate image layer, after requirements are copied and before application source, so source-only edits do not reinstall packages. BuildKit caches pip downloads for dependency rebuilds.
 
@@ -243,26 +298,26 @@ Flow execution runs all steps sequentially:
 6. Aggregate results: pass if all enabled assertions pass across all steps
 
 
-## 8. LLM Fallback Strategy
-Provider order (configurable via env):
-1. Groq (free tier) — dynamically selects the model with the largest context window from `/v1/models`
-2. OpenRouter (free tier) — uses model from `OPENROUTER_MODEL` env var (default: `nvidia/nemotron-3-ultra-550b-a55b:free`)
-3. Cohere (free tier)
-4. HuggingFace (free tier)
+## 8. LLM Provider Routing and Fallback
 
-Simple function tries providers in order. On 429 or error, moves to next. If all fail, returns error.
+Generation, Project Chat, and Knowledge Hub model calls use the shared provider dispatcher. `LLM_PROVIDER_ORDER` is a comma-separated precedence list; the default is `amd,openrouter,groq,cohere,huggingface`. Providers without keys are skipped, and unknown provider names are a configuration error. API or provider response failures advance to the next configured provider. Once a provider returns a completion, application-level validation runs without another provider attempt; malformed JSON and malformed flow data are reported as generation errors.
 
-Generated test-case output is validated before storage. Malformed JSON or malformed flow steps are rejected with an HTTP 502 error explaining the invalid field; the system does not create synthetic fallback test cases.
+AMD Token Lab uses the OpenAI-compatible chat-completions endpoint `https://api.tokenlab.amd.com/v1/chat/completions`, bearer authorization, and `AMD_MODEL` read at request time (default `Gemma-4-31B-IT`). `AMD_API_KEY` supplies its key. OpenRouter uses `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`; Groq uses its largest available active model; Cohere and Hugging Face retain their configured/default models. `API_AGENT_LLM_MAX_OUTPUT_TOKENS` bounds completion output. The shared dispatcher preserves the existing text-only interface.
+
+Every successful completion returns provider/model metadata. Generation activities and Knowledge Extraction events retain this metadata; assistant chat messages retain it in their message records and return it in the message API response. Chat threads retry the configured provider order on each call; their stored model is descriptive metadata, not a provider pin.
+
+Generated test-case output is validated before storage. Malformed JSON or malformed flow steps are rejected with an HTTP 502 error explaining the invalid field; the system does not create synthetic fallback test cases or call another provider for that application-level validation failure.
 
 ### Groq Dynamic Model Selection
 Before calling the chat completion API, the system calls `GET /v1/models` to list available models, then selects the one with the largest `context_window` (currently `llama-3.1-8b-instant` with 131072 tokens).
 
-### OpenRouter Configuration
-Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a specific model. OpenRouter provides access to many free models from various providers.
+### Provider Configuration
+Set one or more provider keys in `.env`, then arrange their precedence with `LLM_PROVIDER_ORDER`. To use AMD Token Lab, set `AMD_API_KEY` and optionally `AMD_MODEL`. Changing `AMD_MODEL` affects the next AMD request without restarting provider selection logic. OpenRouter remains available as a fallback through `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`.
 
 ## 9. Deployment
 - Local: `make docker-db-up`, then `make run-local-backend` and `make run-local-frontend` in separate terminals
 - Docker: `make docker-up`, `make docker-logs`, and `make docker-down`
+- Destructive fresh local Docker database: `make docker-db-reset` (requires typing `RESET`)
 - FastAPI local: `uvicorn app.main:app --reload` on port 8000
 - Streamlit local: `streamlit run frontend/app.py` on port 8501
 - Single user, local only, no auth
@@ -271,3 +326,91 @@ Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a
 - Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
 - Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions
 - Clean caches: `make clean-cache` (keeps the virtual environment)
+- Native Streamlit widget colours come from `.streamlit/config.toml`; the app palette lives in `frontend/styles/tokens.py`
+- The frontend uses one light palette; no theme selector or dark-mode session state is exposed
+- Streamlit 1.66 publishes no theme custom properties (no `--text-color`, no `--st-*`), so `frontend/styles/light.py` restates native surfaces to match the app palette
+- Data grids and charts use Streamlit's native light canvas, with surrounding borders and captions styled from the same light tokens
+- `.st-key-test-case-toolbar` is sticky; breakpoints at
+  1440, 1024, and 768 px reflow the workspace without hiding actions
+- Vertical and horizontal gaps are tightened for fine pointers only, so coarse pointers keep
+  44 px touch targets
+- Muted text uses #8a919c, which clears 4.5:1 on black and on the panel surfaces
+- Test-case generation runs inside a `st.status` block that settles to running, complete, no
+  cases, or failed, instead of leaving a spinner of unknown weight
+
+## Frontend theme and surface system
+
+### Single light palette
+
+`frontend/styles/tokens.py` retains matching `DARK` and `LIGHT` token maps for
+stylesheet compatibility, but only `LIGHT` is used by the application.
+`DEFAULT_THEME` is `light`, and `active_theme()` always returns that value.
+There is no in-app theme switch or theme session key.
+
+`.streamlit/config.toml` configures Streamlit's native theme as light. The app
+also injects `frontend/styles/light.py` to align native surfaces such as menus,
+dialogs, tooltips, toasts, code, alerts, chat bubbles, and widget edges with the
+light tokens. Data grids and charts use Streamlit's native light canvas as well.
+
+### The box system
+
+`frontend/styles/surfaces.py` owns one card recipe (`.aa-box` plus quiet, inset,
+raised, and selected variants) and the explicit edges of native containers.
+Every value is a token, so the recipe needs no theme branch.
+
+Light mode separates surfaces with a pale canvas (`#f6f7fa`), white panels,
+slightly tinted inner panels, and a graduated border ladder. Interactive edges
+remain stronger than card dividers so controls are identifiable without hover.
+
+Nested boxes drop to `--aa-line-soft` and `--aa-panel-alt`, so a card inside a
+card reads as a child rather than a second frame.
+
+### Collection rail
+
+`frontend/styles/layout.py` holds the workspace grid (rail pinned, editor
+fluid, single column below 760px). `frontend/styles/rail.py` turns each
+collection into a filled card with a declared border, joins its requests with a
+vertical guide line, and marks the active request with an accent bar. Selection
+is carried by the accent edge, never by fill alone, so it survives both
+palettes. The three-dot triggers rest at reduced opacity and resolve to the
+accent on row hover, row focus, or their own focus.
+
+### Chat workspace
+
+`frontend/views/chat.py` renders a conversation rail (search, All/Active/Archived
+filter, per-thread action menu) beside a flat transcript. Each message has a
+local timestamp above it; assistant bubbles align left with a muted surface and
+user bubbles align right with an accent tint, without role labels. Long messages
+start expanded and can collapse. Bubbles use two-thirds of the transcript width
+on desktop and expand on narrow screens. The transcript uses normal page
+scrolling, and the composer has a palette-aware outline and focus ring. The
+thread rail defaults to Active and supports archive, restore, and confirmed
+permanent deletion; thread deletion cascades to its messages while preserving
+Knowledge Hub pages and generation activity. Grounded answers include one `Sources`
+disclosure instead of a code block per endpoint. Sending a message reports
+through `st.status` with terminal states. Knowledge Hub is a peer view beside
+Conversation. Its page editor shows version history and diffs, supports feature
+to microservice links, and reviews multi-page updates before an atomic save.
+
+### Release revisions
+
+The revision workflow moved out of a collapsed expander at the foot of the
+generation panel into `_render_revision_dialog`, opened from a `Create release
+revision` button in Test Cases. Because a dialog body runs only while the dialog
+is open, the saved project and the generation history are now read once per
+session instead of on every rerun of the panel.
+
+### Activity log views
+
+The Activity Logs workspace has two project-scoped subviews. Generation uses the paged `generation-activity` API and opens full activity records in a dialog. Knowledge Extraction combines retained `extracted` and `extraction_failed` events with append-only Knowledge Hub events for page creation, feature-to-microservice link changes, draft preparation/failure, reviewed page saves, and version restores. Chat turns do not create extraction events. Hub draft events retain the exact prompt messages, raw model response, provider/model metadata, source thread, and destination page; save/restore events retain the resulting version and content. The paged activity-list API returns summaries without loading large prompt/response bodies, while a project-scoped detail API loads the full record when the user opens a row. Historical extraction prompts and provider metadata remain available where those snapshots were recorded.
+
+`GET /api/v1/projects/{id}/knowledge/activity?limit=25&offset=0` returns paged summaries for extraction and Hub events. `GET /api/v1/projects/{id}/knowledge/activity/{event_id}` returns the full event payload and, for extraction events, its retained source submission. Both routes enforce project scope.
+
+### Generation activity paging
+
+`GET /api/v1/projects/{id}/generation-activity` returns
+`{"activities", "total", "limit", "offset"}`. `total` is a `COUNT(*)`
+(`Database.count_generation_activity`), not the page length, so a pager can state
+the real number of pages. The view keeps the page size and offset in session
+state, clamps the offset when records are deleted, and disables Previous
+and Next at the boundaries.

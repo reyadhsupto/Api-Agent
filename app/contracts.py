@@ -1,7 +1,6 @@
 """Parse API contracts and derive conservative request dependency flows."""
 
 import hashlib
-import html
 import ipaddress
 import json
 import re

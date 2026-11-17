@@ -4,7 +4,7 @@
 VENV_PYTHON := .venv/bin/python
 PIP := $(VENV_PYTHON) -m pip
 
-.PHONY: help install install-frontend setup run-backend run-frontend run-local-backend run-local-frontend docker-up docker-up-build docker-down docker-db-up docker-logs test clean venv
+.PHONY: help install install-frontend setup run-backend run-frontend run-local-backend run-local-frontend docker-up docker-up-build docker-down docker-db-up docker-db-reset docker-logs test clean venv
 
 help: ## Show available make commands
 	@echo "Api-Agent - Make Commands"
@@ -20,6 +20,7 @@ help: ## Show available make commands
 	@echo "  make docker-up          Start the Docker stack using existing images"
 	@echo "  make docker-up-build    Rebuild images and start the Docker stack"
 	@echo "  make docker-db-up       Run only PostgreSQL for local app development"
+	@echo "  make docker-db-reset    Delete this Compose project's PostgreSQL data and recreate the stack"
 	@echo "  make docker-down        Stop Docker Compose services"
 	@echo "  make docker-logs        Follow Docker Compose logs"
 	@echo ""
@@ -75,6 +76,9 @@ docker-up-build: ## Rebuild images and start PostgreSQL, backend, and frontend
 
 docker-db-up: ## Run PostgreSQL only for locally run app processes
 	docker compose up -d postgres
+
+docker-db-reset: ## Destructively reset this Compose project's PostgreSQL volume (requires typing RESET)
+	bash scripts/reset_local_database.sh
 
 docker-down: ## Stop Docker Compose services and retain PostgreSQL data
 	docker compose down

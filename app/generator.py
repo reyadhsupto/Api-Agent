@@ -57,7 +57,7 @@ def generate_test_cases(
         business_requirements,
         example_test_cases,
     )
-    generated_text = _call_llm_with_fallback(prompt)
+    generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     print("llm response:", generated_text)
@@ -81,7 +81,7 @@ def generate_general_test_cases(
         "when requirements are ambiguous; otherwise use an empty clarification_questions array. "
         f"{_STRICT_JSON_INSTRUCTION}\nBusiness requirements:\n{business_requirements}"
     )
-    raw = _call_llm_with_fallback(prompt)
+    raw = _call_llm_with_fallback(prompt, trace)
     cases, questions = _parse_generation_output(raw, validate=False)
     for case in cases:
         if not isinstance(case, dict):
@@ -117,7 +117,7 @@ def refine_generated_cases(
         f"{_STRICT_JSON_INSTRUCTION}\nOriginal cases:\n{json.dumps(cases, ensure_ascii=False)}\n"
         f"Clarification answers:\n{json.dumps(answers, ensure_ascii=False)}"
     )
-    raw = _call_llm_with_fallback(prompt)
+    raw = _call_llm_with_fallback(prompt, trace)
     refined, questions = _parse_generation_output(raw, validate=False)
     for original, updated in zip(cases, refined):
         if isinstance(original, dict) and isinstance(updated, dict) and original.get("source_case_id"):
@@ -221,7 +221,7 @@ def generate_test_case_revision(
         "Return a JSON object with test_cases and clarification_questions. Ask concise questions if important requirements remain ambiguous; otherwise questions is empty. Every case must contain id, source_case_id, name, type, description, "
         "case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
     )
-    generated_text = _call_llm_with_fallback(prompt)
+    generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     cases, questions = _parse_generation_output(generated_text, validate=False)
@@ -427,7 +427,161 @@ def _build_prompt(
     )
 
 
-def _call_llm_with_fallback(prompt: str) -> str:
+_DEFAULT_PROVIDER_ORDER = ("amd", "openrouter", "groq", "cohere", "huggingface")
+_SUPPORTED_PROVIDERS = set(_DEFAULT_PROVIDER_ORDER)
+
+
+def _configured_provider_order() -> list[str]:
+    """Return the validated provider precedence from the environment."""
+    configured = os.getenv("LLM_PROVIDER_ORDER", ",".join(_DEFAULT_PROVIDER_ORDER))
+    providers = [item.strip().lower() for item in configured.split(",") if item.strip()]
+    unknown = sorted(set(providers) - _SUPPORTED_PROVIDERS)
+    if unknown:
+        raise RuntimeError(
+            "LLM_PROVIDER_ORDER contains unsupported provider(s): "
+            f"{', '.join(unknown)}. Supported providers: {', '.join(_DEFAULT_PROVIDER_ORDER)}."
+        )
+    if not providers:
+        raise RuntimeError("LLM_PROVIDER_ORDER must contain at least one provider name.")
+    return list(dict.fromkeys(providers))
+
+
+def _provider_api_key(provider: str) -> str | None:
+    """Read the API key for a provider without exposing it in errors or logs."""
+    variable = {
+        "amd": "AMD_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "cohere": "COHERE_API_KEY",
+        "huggingface": "HUGGINGFACE_API_KEY",
+    }[provider]
+    return os.getenv(variable) or None
+
+
+def _provider_model(provider: str) -> str:
+    """Read the configured model ID for a provider."""
+    defaults = {
+        "amd": "Gemma-4-31B-IT",
+        "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "cohere": "command-r",
+        "huggingface": "meta-llama/Llama-3.1-8B-Instruct",
+    }
+    variable = {
+        "amd": "AMD_MODEL",
+        "openrouter": "OPENROUTER_MODEL",
+        "cohere": "COHERE_MODEL",
+        "huggingface": "HUGGINGFACE_MODEL",
+    }.get(provider)
+    return ((os.getenv(variable) or defaults[provider]).strip() if variable else "")
+
+
+def _openai_compatible_call(
+    provider: str, messages: list[dict], api_key: str, max_tokens: int,
+) -> dict:
+    """Call AMD, OpenRouter, or Groq using their chat-completions interface."""
+    if provider == "amd":
+        url = "https://api.tokenlab.amd.com/v1/chat/completions"
+        model = _provider_model(provider)
+    elif provider == "openrouter":
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        model = _provider_model(provider)
+    else:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        model = _groq_get_best_model(api_key, url)
+
+    response = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": max_tokens,
+        },
+        timeout=600,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    choice = payload["choices"][0]
+    content = choice.get("message", {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"{provider} returned an empty assistant message.")
+    return {
+        "content": content.strip(),
+        "provider_metadata": {
+            "provider": provider,
+            "model": payload.get("model") or model,
+            "finish_reason": choice.get("finish_reason"),
+            "usage": payload.get("usage"),
+        },
+    }
+
+
+def _call_provider(provider: str, messages: list[dict], api_key: str, max_tokens: int) -> dict:
+    """Call one configured provider and normalize its response metadata."""
+    if provider in {"amd", "openrouter", "groq"}:
+        return _openai_compatible_call(provider, messages, api_key, max_tokens)
+
+    prompt = "\n\n".join(
+        f"{str(message.get('role', 'user')).capitalize()}: {message.get('content', '')}"
+        for message in messages
+    )
+    if provider == "cohere":
+        model = _provider_model(provider)
+        response = requests.post(
+            "https://api.cohere.ai/v1/generate",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": model, "prompt": prompt, "temperature": 0.3, "max_tokens": max_tokens},
+            timeout=600,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = payload["generations"][0]["text"] if payload.get("generations") else payload["text"]
+    else:
+        model = _provider_model(provider)
+        response = requests.post(
+            f"https://api-inference.huggingface.co/models/{model}",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"inputs": prompt, "parameters": {"max_new_tokens": max_tokens, "temperature": 0.3}},
+            timeout=600,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = payload[0]["generated_text"] if isinstance(payload, list) and payload else ""
+
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"{provider} returned an empty completion.")
+    return {
+        "content": content.strip(),
+        "provider_metadata": {
+            "provider": provider,
+            "model": model,
+            "finish_reason": None,
+            "usage": payload.get("meta") if isinstance(payload, dict) else None,
+        },
+    }
+
+
+def _chat_completion(
+    messages: list[dict], max_tokens: int | None = None,
+) -> dict:
+    """Try configured providers in order and return text plus provider metadata."""
+    output_limit = min(max_tokens or _output_token_limit(), _output_token_limit())
+    errors = []
+    for provider in _configured_provider_order():
+        api_key = _provider_api_key(provider)
+        if not api_key:
+            continue
+        try:
+            return _call_provider(provider, messages, api_key, output_limit)
+        except Exception as exc:
+            errors.append(f"{provider}: {exc}")
+    if errors:
+        raise RuntimeError("All configured LLM providers failed. " + " | ".join(errors))
+    raise RuntimeError("No LLM providers are configured. Set at least one provider API key in .env.")
+
+
+def _call_llm_with_fallback(prompt: str, trace: dict | None = None) -> str:
     """
     Call LLM providers in order with automatic fallback.
 
@@ -438,39 +592,12 @@ def _call_llm_with_fallback(prompt: str) -> str:
         str: Generated text from the first provider whose request succeeds.
 
     Raises:
-        RuntimeError: If all providers fail, with the first provider's error.
+        RuntimeError: If configuration is invalid or all configured providers fail.
     """
-    providers = [
-        ("openrouter", os.getenv("OPENROUTER_API_KEY"), "https://openrouter.ai/api/v1/chat/completions"),
-        ("groq", os.getenv("GROQ_API_KEY"), "https://api.groq.com/openai/v1/chat/completions"),
-        ("cohere", os.getenv("COHERE_API_KEY"), "https://api.cohere.ai/v1/generate"),
-        ("huggingface", os.getenv("HUGGINGFACE_API_KEY"), "https://api-inference.huggingface.co/models/meta-llama/Llama-3.1-8B-Instruct"),
-    ]
-
-    first_error = None
-    for name, api_key, url in providers:
-        if not api_key:
-            continue
-        try:
-            if name == "groq":
-                generated_text = _groq_call(prompt, api_key, url)
-            elif name == "openrouter":
-                generated_text = _openrouter_call(prompt, api_key, url)
-            elif name == "cohere":
-                generated_text = _cohere_call(prompt, api_key, url)
-            elif name == "huggingface":
-                generated_text = _huggingface_call(prompt, api_key, url)
-            else:
-                continue
-            return generated_text
-        except Exception as exc:
-            if first_error is None:
-                first_error = f"{name}: {exc!s}"
-            continue
-
-    if first_error:
-        raise RuntimeError(f"LLM generation failed. First provider error: {first_error}")
-    raise RuntimeError("No LLM providers are configured. Set at least one API key in .env")
+    result = _chat_completion([{"role": "user", "content": prompt}])
+    if trace is not None:
+        trace["provider_metadata"] = result["provider_metadata"]
+    return result["content"]
 
 
 def _groq_get_best_model(api_key: str, url: str) -> str:
@@ -557,38 +684,28 @@ def _openrouter_call(prompt: str, api_key: str, url: str) -> str:
     return response.json()["choices"][0]["message"]["content"]
 
 
-def openrouter_chat(messages: list[dict], model: str | None = None, max_tokens: int | None = None) -> str:
-    """Send a multi-message conversation to the configured OpenRouter model.
+def openrouter_chat(
+    messages: list[dict], model: str | None = None, max_tokens: int | None = None,
+    return_details: bool = False,
+) -> str | dict:
+    """Send messages through the shared provider order.
 
     Args:
         messages: Ordered system/user/assistant messages for this call.
-        model: Optional model override; defaults to ``OPENROUTER_MODEL``.
+        model: Legacy thread model metadata; provider/model selection comes from environment configuration.
         max_tokens: Optional completion limit, capped by the shared configured ceiling.
+        return_details: Return model, finish reason, and usage with the assistant text.
 
     Returns:
-        Assistant message text.
+        Assistant message text, or details when ``return_details`` is true.
     """
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError("Project Chat requires OPENROUTER_API_KEY to be configured.")
-    selected_model = model or os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": selected_model,
-            "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": min(max_tokens or _output_token_limit(), _output_token_limit()),
-        },
-        timeout=600,
-    )
-    response.raise_for_status()
-    result = response.json()
-    try:
-        return str(result["choices"][0]["message"]["content"] or "").strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError("OpenRouter returned no assistant message.") from exc
+    result = _chat_completion(messages, max_tokens=max_tokens)
+    details = {
+        "content": result["content"],
+        **result["provider_metadata"],
+        "provider_metadata": result["provider_metadata"],
+    }
+    return details if return_details else result["content"]
 
 
 def _cohere_call(prompt: str, api_key: str, url: str) -> str:
@@ -654,7 +771,7 @@ def generate_flow_test_cases(
     prompt = _build_flow_prompt(
         endpoints, business_requirements, example_test_cases=example_test_cases,
     )
-    generated_text = _call_llm_with_fallback(prompt)
+    generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     cases, questions = _parse_generation_output(generated_text, validate=False)
@@ -906,7 +1023,7 @@ def generate_discovered_flow_test_cases(
         "\"assertions\":{\"status\":[{\"enabled\":true,\"expected_status\":200}]},"
         "\"variable_mappings\":[{\"from\":\"$.cart_id\",\"to\":\"request.path.cart_id\"}]}"
     )
-    generated_text = _call_llm_with_fallback(prompt)
+    generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     cases, questions = _parse_generation_output(generated_text, validate=False)

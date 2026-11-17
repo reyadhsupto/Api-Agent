@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
@@ -89,6 +90,15 @@ class Database:
                     ordinal INTEGER NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS general_case_collections (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id,id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_general_case_collections_project
+                    ON general_case_collections(project_id,LOWER(name));
                 CREATE INDEX IF NOT EXISTS idx_test_cases_project_order
                     ON test_cases(project_id, ordinal);
                 CREATE TABLE IF NOT EXISTS test_runs (
@@ -147,6 +157,19 @@ class Database:
                     ON project_brief_scopes(project_id, scope_type, LOWER(name)) WHERE scope_type<>'legacy';
                 CREATE INDEX IF NOT EXISTS idx_brief_scopes_project_updated
                     ON project_brief_scopes(project_id, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS knowledge_hub_feature_services (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    feature_scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    microservice_scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(feature_scope_id, microservice_scope_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_hub_feature_services_project
+                    ON knowledge_hub_feature_services(project_id, feature_scope_id);
+                CREATE TABLE IF NOT EXISTS knowledge_hub_migrations (
+                    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                    migrated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS project_brief_versions (
                     id TEXT PRIMARY KEY,
                     scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
@@ -169,6 +192,7 @@ class Database:
                     content TEXT NOT NULL,
                     sources_json TEXT NOT NULL DEFAULT '[]',
                     endpoint_sources_json TEXT NOT NULL DEFAULT '[]',
+                    provider_metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     UNIQUE(thread_id, ordinal)
                 );
@@ -192,6 +216,70 @@ class Database:
                     ON project_knowledge_entries USING GIN (
                         to_tsvector('english', title || ' ' || category || ' ' || content)
                     );
+                CREATE TABLE IF NOT EXISTS project_knowledge_submissions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    source_type TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    thread_id TEXT REFERENCES project_chat_threads(id) ON DELETE SET NULL,
+                    message_id TEXT,
+                    question_id TEXT,
+                    gist TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending_review',
+                    proposal_json TEXT NOT NULL DEFAULT '[]',
+                    conflicts_json TEXT NOT NULL DEFAULT '[]',
+                    questions_json TEXT NOT NULL DEFAULT '[]',
+                    extraction_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    reviewed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_submissions_project
+                    ON project_knowledge_submissions(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS project_knowledge_facts (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'confirmed',
+                    active BOOLEAN NOT NULL DEFAULT TRUE,
+                    source_submission_id TEXT NOT NULL REFERENCES project_knowledge_submissions(id),
+                    source_proposal_id TEXT NOT NULL,
+                    supersedes_fact_id TEXT REFERENCES project_knowledge_facts(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_facts_project_scope
+                    ON project_knowledge_facts(project_id, scope_id, active, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_knowledge_facts_search
+                    ON project_knowledge_facts USING GIN (
+                        to_tsvector('english', title || ' ' || content)
+                    );
+                CREATE TABLE IF NOT EXISTS project_knowledge_questions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    scope_id TEXT NOT NULL REFERENCES project_brief_scopes(id) ON DELETE CASCADE,
+                    submission_id TEXT NOT NULL REFERENCES project_knowledge_submissions(id),
+                    question TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    answer_submission_id TEXT REFERENCES project_knowledge_submissions(id),
+                    answer_text TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_questions_project_scope
+                    ON project_knowledge_questions(project_id, scope_id, status, created_at DESC);
+                CREATE TABLE IF NOT EXISTS project_knowledge_events (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    submission_id TEXT REFERENCES project_knowledge_submissions(id) ON DELETE SET NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_knowledge_events_project
+                    ON project_knowledge_events(project_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS test_case_revisions (
                     id TEXT PRIMARY KEY,
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -221,6 +309,7 @@ class Database:
             _execute(connection, "ALTER TABLE test_case_revisions ADD COLUMN IF NOT EXISTS previous_release_notes TEXT NOT NULL DEFAULT ''")
             _execute(connection, "ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS sources_json TEXT NOT NULL DEFAULT '[]'")
             _execute(connection, "ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS endpoint_sources_json TEXT NOT NULL DEFAULT '[]'")
+            _execute(connection, "ALTER TABLE project_chat_messages ADD COLUMN IF NOT EXISTS provider_metadata_json TEXT NOT NULL DEFAULT '{}'")
             _execute(connection, "ALTER TABLE project_chat_threads ADD COLUMN IF NOT EXISTS summary_through_ordinal INTEGER NOT NULL DEFAULT -1")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_collections_project_order ON collections(project_id, ordinal)")
             _execute(connection, "CREATE INDEX IF NOT EXISTS idx_endpoints_collection_order ON endpoints(collection_id, ordinal)")
@@ -235,6 +324,283 @@ class Database:
         self.ensure_default_project()
         self.migrate_legacy_endpoints()
         self.migrate_legacy_chat_briefs()
+        self.migrate_approved_knowledge_to_hub()
+        self.migrate_general_case_collections()
+
+    def migrate_general_case_collections(self) -> None:
+        """Seed collection groups from saved General cases without changing cases."""
+        with self.session() as connection:
+            rows = _execute(connection,
+                "SELECT project_id,payload_json FROM test_cases ORDER BY project_id,ordinal,id",
+            ).fetchall()
+            for row in rows:
+                case = self._decode(row["payload_json"])
+                if not isinstance(case, dict) or case.get("case_kind") != "general":
+                    continue
+                collection_id = str(case.get("case_collection_id") or "__general_scenarios__")
+                collection_name = str(case.get("case_collection_name") or "General scenarios").strip()
+                if not collection_name:
+                    collection_name = "General scenarios"
+                _execute(connection,
+                    "INSERT INTO general_case_collections(project_id,id,name,created_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(project_id,id) DO NOTHING",
+                    (row["project_id"], collection_id, collection_name, _now()),
+                )
+
+    def list_general_case_collections(self, project_id: str) -> list[dict] | None:
+        """List saved General scenario groups for a project."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            rows = _execute(connection,
+                "SELECT id,name,created_at FROM general_case_collections WHERE project_id=? "
+                "ORDER BY LOWER(name),id", (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_general_case_collection(self, project_id: str, name: str) -> dict | None:
+        """Persist an empty or populated General scenario collection."""
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("Collection name is required.")
+        if len(name) > 100:
+            raise ValueError("Collection name must be 100 characters or fewer.")
+        collection = {"id": str(uuid.uuid4()), "name": name, "created_at": _now()}
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            _execute(connection,
+                "INSERT INTO general_case_collections(project_id,id,name,created_at) VALUES(?,?,?,?)",
+                (project_id, collection["id"], name, collection["created_at"]),
+            )
+        return collection
+
+    def migrate_approved_knowledge_to_hub(self) -> None:
+        """Seed legacy durable documents and approved facts into Hub versions once.
+
+        Existing brief versions and fact/submission rows remain untouched. The
+        migration appends source-labeled content to a new current document
+        version, making the Hub the active durable generation context.
+        """
+        with self.session() as connection:
+            projects = _execute(connection, "SELECT id FROM projects").fetchall()
+            for project in projects:
+                project_id = str(project["id"])
+                if _execute(connection, "SELECT 1 FROM knowledge_hub_migrations WHERE project_id=?", (project_id,)).fetchone():
+                    continue
+                scopes = _execute(connection,
+                    "SELECT id,scope_type,name FROM project_brief_scopes WHERE project_id=? ORDER BY created_at,id",
+                    (project_id,),
+                ).fetchall()
+                overview = next((row for row in scopes if row["scope_type"] == "project"), None)
+                if overview:
+                    legacy_versions = _execute(connection,
+                        "SELECT s.name,v.content,v.source_thread_id,v.version_number FROM project_brief_scopes s "
+                        "JOIN project_brief_versions v ON v.scope_id=s.id AND v.is_current=TRUE "
+                        "WHERE s.project_id=? AND s.scope_type='legacy' ORDER BY s.created_at,s.id",
+                        (project_id,),
+                    ).fetchall()
+                    facts_by_scope: dict[str, list[dict]] = {}
+                    facts = _execute(connection,
+                        "SELECT f.id,f.scope_id,f.title,f.content,f.status,f.source_submission_id,s.source_name "
+                        "FROM project_knowledge_facts f JOIN project_knowledge_submissions s ON s.id=f.source_submission_id "
+                        "WHERE f.project_id=? AND f.active=TRUE AND f.status IN ('confirmed','assumed') "
+                        "ORDER BY f.created_at,f.id", (project_id,),
+                    ).fetchall()
+                    for fact in facts:
+                        facts_by_scope.setdefault(str(fact["scope_id"]), []).append(dict(fact))
+                    for scope in scopes:
+                        scope_id = str(scope["id"])
+                        current = _execute(connection,
+                            "SELECT content FROM project_brief_versions WHERE scope_id=? AND is_current=TRUE",
+                            (scope_id,),
+                        ).fetchone()
+                        additions = []
+                        if scope["scope_type"] == "project":
+                            for legacy in legacy_versions:
+                                additions.append(
+                                    f"### Imported legacy knowledge: {legacy['name']}\n\n{legacy['content']}"
+                                )
+                        scoped_facts = facts_by_scope.get(scope_id, [])
+                        if scoped_facts:
+                            additions.append("## Migrated reviewed knowledge\n\n" + "\n".join(
+                                f"- **{fact['title']}** ({fact['status']}): {fact['content']} "
+                                f"[source: {fact['source_name']}; fact_id: {fact['id']}; submission_id: {fact['source_submission_id']}]"
+                                for fact in scoped_facts
+                            ))
+                        if not additions:
+                            continue
+                        content = str(current["content"] if current else "").strip()
+                        content = "\n\n".join(part for part in [content, *additions] if part)
+                        now = _now()
+                        version_number = _execute(connection,
+                            "SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM project_brief_versions WHERE scope_id=?",
+                            (scope_id,),
+                        ).fetchone()["next_version"]
+                        _execute(connection, "UPDATE project_brief_versions SET is_current=FALSE WHERE scope_id=?", (scope_id,))
+                        _execute(connection,
+                            "INSERT INTO project_brief_versions(id,scope_id,version_number,content,is_current,created_at) VALUES(?,?,?,?,TRUE,?)",
+                            (str(uuid.uuid4()), scope_id, version_number, content, now),
+                        )
+                        _execute(connection,
+                            "UPDATE project_brief_scopes SET updated_at=? WHERE id=?", (now, scope_id),
+                        )
+                _execute(connection,
+                    "INSERT INTO knowledge_hub_migrations(project_id,migrated_at) VALUES(?,?)",
+                    (project_id, _now()),
+                )
+
+    def list_knowledge_hub_scopes(self, project_id: str) -> list[dict] | None:
+        """List Hub pages with reusable microservice links for each feature."""
+        scopes = self.list_project_brief_scopes(project_id)
+        if scopes is None:
+            return None
+        with self.session() as connection:
+            links = _execute(connection,
+                "SELECT feature_scope_id,microservice_scope_id FROM knowledge_hub_feature_services WHERE project_id=?",
+                (project_id,),
+            ).fetchall()
+        by_feature: dict[str, list[str]] = {}
+        for link in links:
+            by_feature.setdefault(str(link["feature_scope_id"]), []).append(str(link["microservice_scope_id"]))
+        for scope in scopes:
+            scope["microservice_scope_ids"] = by_feature.get(str(scope["id"]), [])
+        return scopes
+
+    def set_knowledge_hub_feature_services(
+        self, project_id: str, feature_scope_id: str, microservice_scope_ids: list[str],
+    ) -> list[str] | None:
+        """Replace a feature's linked microservices after validating page types."""
+        selected = list(dict.fromkeys(str(value) for value in microservice_scope_ids))
+        with self.session() as connection:
+            feature = _execute(connection,
+                "SELECT id,name FROM project_brief_scopes WHERE project_id=? AND id=? AND scope_type='feature'",
+                (project_id, feature_scope_id),
+            ).fetchone()
+            if not feature:
+                return None
+            previous = [dict(row) for row in _execute(connection,
+                "SELECT s.id,s.name FROM knowledge_hub_feature_services h "
+                "JOIN project_brief_scopes s ON s.id=h.microservice_scope_id "
+                "WHERE h.project_id=? AND h.feature_scope_id=? ORDER BY s.name,s.id",
+                (project_id, feature_scope_id),
+            ).fetchall()]
+            if selected:
+                rows = _execute(connection,
+                    "SELECT id,name FROM project_brief_scopes WHERE project_id=? AND scope_type='microservice' AND id=ANY(?)",
+                    (project_id, selected),
+                ).fetchall()
+                if {str(row["id"]) for row in rows} != set(selected):
+                    raise ValueError("Every linked page must be a microservice in this project.")
+            _execute(connection,
+                "DELETE FROM knowledge_hub_feature_services WHERE project_id=? AND feature_scope_id=?",
+                (project_id, feature_scope_id),
+            )
+            for service_id in selected:
+                _execute(connection,
+                    "INSERT INTO knowledge_hub_feature_services(project_id,feature_scope_id,microservice_scope_id,created_at) VALUES(?,?,?,?)",
+                    (project_id, feature_scope_id, service_id, _now()),
+                )
+            selected_rows = [dict(row) for row in _execute(connection,
+                "SELECT id,name FROM project_brief_scopes WHERE project_id=? AND id=ANY(?) ORDER BY name,id",
+                (project_id, selected or ["__none__"]),
+            ).fetchall()] if selected else []
+            if {str(item["id"]) for item in previous} != set(selected):
+                self._insert_knowledge_hub_event(connection, project_id, "hub_feature_services_updated", {
+                    "feature_scope_id": feature_scope_id,
+                    "feature_name": feature["name"],
+                    "previous_microservices": previous,
+                    "microservices": selected_rows,
+                })
+        return selected
+
+    @staticmethod
+    def _insert_knowledge_hub_event(connection, project_id: str, event_type: str, payload: dict) -> dict:
+        """Append one Knowledge Hub event inside the caller's transaction."""
+        event = {
+            "id": str(uuid.uuid4()), "project_id": project_id,
+            "event_type": event_type, "payload": payload, "created_at": _now(),
+        }
+        _execute(connection,
+            "INSERT INTO project_knowledge_events(id,project_id,submission_id,event_type,payload_json,created_at) "
+            "VALUES(?,?,NULL,?,?,?)",
+            (event["id"], project_id, event_type, Database._encode(payload), event["created_at"]),
+        )
+        return event
+
+    def record_knowledge_hub_event(self, project_id: str, event_type: str, payload: dict) -> dict | None:
+        """Persist an append-only Hub operation or draft event for the project."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            return self._insert_knowledge_hub_event(connection, project_id, event_type, payload)
+
+    def save_knowledge_hub_update(
+        self, project_id: str, pages: list[dict], source_thread_id: str,
+        draft_event_id: str | None = None,
+    ) -> list[dict] | None:
+        """Append several reviewed page versions atomically as one Hub update."""
+        if not pages or len({str(item.get("scope_id")) for item in pages}) != len(pages):
+            raise ValueError("Choose one version per Hub page.")
+        now = _now()
+        saved = []
+        with self.session() as connection:
+            if not _execute(connection,
+                "SELECT 1 FROM project_chat_threads WHERE project_id=? AND id=? AND archived=FALSE",
+                (project_id, source_thread_id),
+            ).fetchone():
+                return None
+            ids = [str(item.get("scope_id") or "") for item in pages]
+            owned = _execute(connection,
+                "SELECT id,name,scope_type FROM project_brief_scopes WHERE project_id=? AND id=ANY(?) AND scope_type<>'legacy'",
+                (project_id, ids),
+            ).fetchall()
+            owned_by_id = {str(row["id"]): dict(row) for row in owned}
+            if set(owned_by_id) != set(ids):
+                return None
+            for item in pages:
+                scope_id = str(item["scope_id"])
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    raise ValueError("Hub page content cannot be empty.")
+                number = _execute(connection,
+                    "SELECT COALESCE(MAX(version_number),0)+1 AS next_version FROM project_brief_versions WHERE scope_id=?",
+                    (scope_id,),
+                ).fetchone()["next_version"]
+                _execute(connection, "UPDATE project_brief_versions SET is_current=FALSE WHERE scope_id=?", (scope_id,))
+                version = {"id": str(uuid.uuid4()), "scope_id": scope_id, "version_number": number,
+                           "content": content, "source_thread_id": source_thread_id, "created_at": now,
+                           "is_current": True}
+                _execute(connection,
+                    "INSERT INTO project_brief_versions(id,scope_id,version_number,content,is_current,source_thread_id,created_at) VALUES(?,?,?,?,TRUE,?,?)",
+                    (version["id"], scope_id, number, content, source_thread_id, now),
+                )
+                _execute(connection, "UPDATE project_brief_scopes SET updated_at=? WHERE id=?", (now, scope_id))
+                saved.append(version)
+            self._insert_knowledge_hub_event(connection, project_id, "hub_update_saved", {
+                "source_thread_id": source_thread_id,
+                "draft_event_id": draft_event_id,
+                "pages": [{
+                    **owned_by_id[str(version["scope_id"])],
+                    "scope_id": str(version["scope_id"]),
+                    "version_id": str(version["id"]),
+                    "version_number": int(version["version_number"]),
+                    "content": version["content"],
+                } for version in saved],
+            })
+        return saved
+
+    def restore_knowledge_hub_version(self, project_id: str, scope_id: str, version_id: str) -> dict | None:
+        """Restore old content by appending a new version rather than mutating history."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "SELECT v.content FROM project_brief_versions v JOIN project_brief_scopes s ON s.id=v.scope_id "
+                "WHERE s.project_id=? AND s.id=? AND v.id=? AND s.scope_type<>'legacy'",
+                (project_id, scope_id, version_id),
+            ).fetchone()
+        if not row:
+            return None
+        return self.save_project_brief_version(project_id, scope_id, str(row["content"]))
 
     def migrate_legacy_chat_briefs(self) -> None:
         """Preserve existing thread briefs as independent project brief scopes."""
@@ -812,6 +1178,11 @@ class Database:
                     (project_id,),
                 )
             ]
+            result["general_case_collections"] = [dict(row) for row in _execute(
+                connection,
+                "SELECT id,name,created_at FROM general_case_collections WHERE project_id=? ORDER BY LOWER(name),id",
+                (project_id,),
+            ).fetchall()]
             result["test_runs"] = [
                 self._decode_test_run(row)
                 for row in _execute(
@@ -1193,6 +1564,14 @@ class Database:
                     "ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, ordinal=excluded.ordinal, payload_json=excluded.payload_json",
                     (item["id"], project_id, ordinal, self._encode(item)),
                 )
+                if item.get("case_kind") == "general":
+                    collection_id = str(item.get("case_collection_id") or "__general_scenarios__")
+                    collection_name = str(item.get("case_collection_name") or "General scenarios").strip()
+                    _execute(connection,
+                        "INSERT INTO general_case_collections(project_id,id,name,created_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(project_id,id) DO UPDATE SET name=excluded.name",
+                        (project_id, collection_id, collection_name or "General scenarios", _now()),
+                    )
             _execute(connection, "UPDATE projects SET updated_at=? WHERE id=?", (_now(), project_id))
             return True
 
@@ -1471,7 +1850,7 @@ class Database:
                 return None
             thread = dict(row)
             thread["messages"] = [dict(message) for message in _execute(connection,
-                "SELECT id,ordinal,role,content,sources_json,endpoint_sources_json,created_at FROM project_chat_messages "
+                "SELECT id,ordinal,role,content,sources_json,endpoint_sources_json,provider_metadata_json,created_at FROM project_chat_messages "
                 "WHERE thread_id=? ORDER BY ordinal,id", (thread_id,),
             ).fetchall()]
             for message in thread["messages"]:
@@ -1483,11 +1862,16 @@ class Database:
                     message["endpoint_sources"] = json.loads(message.pop("endpoint_sources_json", "[]") or "[]")
                 except (TypeError, json.JSONDecodeError):
                     message["endpoint_sources"] = []
+                try:
+                    message["provider_metadata"] = json.loads(message.pop("provider_metadata_json", "{}") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    message["provider_metadata"] = {}
         return thread
 
     def append_chat_exchange(self, project_id: str, thread_id: str, user_text: str,
                              assistant_text: str, model: str, sources: list[dict] | None = None,
-                             endpoint_sources: list[dict] | None = None) -> dict | None:
+                             endpoint_sources: list[dict] | None = None,
+                             provider_metadata: dict | None = None) -> dict | None:
         """Atomically append a user/assistant exchange to a project-owned thread."""
         now = _now()
         with self.session() as connection:
@@ -1501,14 +1885,14 @@ class Database:
                 "SELECT COALESCE(MAX(ordinal)+1,0) AS ordinal FROM project_chat_messages WHERE thread_id=?",
                 (thread_id,),
             ).fetchone()["ordinal"]
-            for offset, (role, content, source_data, endpoint_data) in enumerate((
-                ("user", user_text, [], []),
-                ("assistant", assistant_text, sources or [], endpoint_sources or []),
+            for offset, (role, content, source_data, endpoint_data, provider_data) in enumerate((
+                ("user", user_text, [], [], {}),
+                ("assistant", assistant_text, sources or [], endpoint_sources or [], provider_metadata or {}),
             )):
                 _execute(connection,
-                    "INSERT INTO project_chat_messages(id,thread_id,ordinal,role,content,sources_json,endpoint_sources_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    "INSERT INTO project_chat_messages(id,thread_id,ordinal,role,content,sources_json,endpoint_sources_json,provider_metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                     (str(uuid.uuid4()), thread_id, ordinal + offset, role, content,
-                     self._encode(source_data), self._encode(endpoint_data), now),
+                     self._encode(source_data), self._encode(endpoint_data), self._encode(provider_data), now),
                 )
             _execute(connection,
                 "UPDATE project_chat_threads SET model=?,updated_at=? "
@@ -1532,6 +1916,28 @@ class Database:
             if not changed:
                 return None
         return self.get_chat_thread(project_id, thread_id)
+
+    def delete_chat_thread(self, project_id: str, thread_id: str) -> bool:
+        """Delete one project-owned thread and its messages permanently.
+
+        Related message rows cascade with the thread. Legacy brief references
+        detach through their foreign-key rules, and generation activity remains
+        intact as an independent audit record.
+
+        Args:
+            project_id (str): Project that owns the thread.
+            thread_id (str): Thread to delete.
+
+        Returns:
+            bool: Whether a matching project-owned thread was deleted.
+        """
+        with self.session() as connection:
+            deleted = _execute(
+                connection,
+                "DELETE FROM project_chat_threads WHERE id=? AND project_id=?",
+                (thread_id, project_id),
+            ).rowcount
+        return bool(deleted)
 
     def list_knowledge_entries(self, project_id: str, include_retired: bool = False) -> list[dict] | None:
         """List project knowledge entries in recently updated order."""
@@ -1594,6 +2000,329 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def create_knowledge_submission(
+        self, project_id: str, scope_id: str, source_type: str, source_name: str,
+        source_text: str, thread_id: str | None = None, message_id: str | None = None,
+        question_id: str | None = None,
+    ) -> dict | None:
+        """Persist original source text before extraction so failures are recoverable."""
+        now, submission_id = _now(), str(uuid.uuid4())
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM project_brief_scopes WHERE id=? AND project_id=?", (scope_id, project_id)).fetchone():
+                return None
+            if thread_id and not _execute(connection, "SELECT 1 FROM project_chat_threads WHERE id=? AND project_id=?", (thread_id, project_id)).fetchone():
+                return None
+            if question_id:
+                question = _execute(connection, "SELECT scope_id FROM project_knowledge_questions WHERE id=? AND project_id=? AND status='open'", (question_id, project_id)).fetchone()
+                if not question or str(question["scope_id"]) != str(scope_id):
+                    return None
+            _execute(connection,
+                "INSERT INTO project_knowledge_submissions(id,project_id,scope_id,source_type,source_name,source_text,thread_id,message_id,question_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (submission_id, project_id, scope_id, source_type, source_name, source_text, thread_id, message_id, question_id, now),
+            )
+            payload = {"id": submission_id, "project_id": project_id, "scope_id": scope_id,
+                "source_type": source_type, "source_name": source_name, "source_text": source_text,
+                "thread_id": thread_id, "message_id": message_id, "question_id": question_id,
+                "gist": "", "status": "pending_review", "proposals": [], "conflicts": [],
+                "questions": [], "extraction_error": "", "created_at": now}
+        return payload
+
+    def save_knowledge_extraction(
+        self, project_id: str, submission_id: str, extraction: dict | None,
+        error: str = "", prompt_messages: list[dict] | None = None,
+        raw_response: str = "", provider_metadata: dict | None = None,
+    ) -> dict | None:
+        """Append extraction output to its source submission without losing source text."""
+        extraction = extraction or {}
+        proposals = extraction.get("proposals") if isinstance(extraction.get("proposals"), list) else []
+        normalized = [{**item, "id": str(uuid.uuid4())} for item in proposals if isinstance(item, dict)]
+        questions = extraction.get("questions") if isinstance(extraction.get("questions"), list) else []
+        now = _now()
+        with self.session() as connection:
+            row = _execute(connection, "SELECT * FROM project_knowledge_submissions WHERE id=? AND project_id=?", (submission_id, project_id)).fetchone()
+            if not row:
+                return None
+            status = "failed" if error else ("pending_review" if normalized else "reviewed")
+            _execute(connection,
+                "UPDATE project_knowledge_submissions SET gist=?,status=?,proposal_json=?,conflicts_json=?,questions_json=?,extraction_error=? WHERE id=? AND project_id=?",
+                (str(extraction.get("gist") or ""), status, self._encode({"items": normalized}),
+                 self._encode({"items": extraction.get("conflicts", []) if isinstance(extraction.get("conflicts"), list) else []}),
+                 self._encode({"items": [str(q) for q in questions if str(q).strip()]}), error, submission_id, project_id),
+            )
+            for question in questions:
+                question = str(question).strip()
+                if question:
+                    exists = _execute(connection,
+                        "SELECT 1 FROM project_knowledge_questions WHERE project_id=? AND submission_id=? AND question=?",
+                        (project_id, submission_id, question),
+                    ).fetchone()
+                    if not exists:
+                        _execute(connection,
+                            "INSERT INTO project_knowledge_questions(id,project_id,scope_id,submission_id,question,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                            (str(uuid.uuid4()), project_id, row["scope_id"], submission_id, question, now, now),
+                        )
+            _execute(connection,
+                "INSERT INTO project_knowledge_events(id,project_id,submission_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                (str(uuid.uuid4()), project_id, submission_id, "extracted" if not error else "extraction_failed",
+                 self._encode({"gist": str(extraction.get("gist") or ""), "proposals": normalized,
+                    "conflicts": extraction.get("conflicts", []), "questions": questions, "error": error,
+                    "prompt_messages": prompt_messages or extraction.get("prompt_messages", []),
+                    "raw_response": raw_response or extraction.get("raw_response", ""),
+                    "provider_metadata": provider_metadata or extraction.get("provider_metadata", {})}), now),
+            )
+            result = dict(row)
+            result.update({"gist": str(extraction.get("gist") or ""), "status": status,
+                "proposal_json": self._encode({"items": normalized}), "conflicts_json": self._encode({"items": extraction.get("conflicts", [])}),
+                "questions_json": self._encode({"items": [str(q) for q in questions if str(q).strip()]}), "extraction_error": error})
+        return self._decode_knowledge_submission(result)
+
+    @staticmethod
+    def _decode_knowledge_submission(row: dict) -> dict:
+        """Decode the submission's JSON fields to API-friendly lists."""
+        item = dict(row)
+        for column, output in (("proposal_json", "proposals"), ("conflicts_json", "conflicts"), ("questions_json", "questions")):
+            try:
+                item[output] = json.loads(item.pop(column) or "{}" ).get("items", [])
+            except (TypeError, ValueError, AttributeError):
+                item[output] = []
+        return item
+
+    def list_knowledge_ledger(self, project_id: str) -> dict | None:
+        """Return project scopes, active/history facts, source submissions, questions, and events."""
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            scopes = [dict(row) for row in _execute(connection,
+                "SELECT id,scope_type,name FROM project_brief_scopes WHERE project_id=? ORDER BY scope_type,name", (project_id,)).fetchall()]
+            facts = [dict(row) for row in _execute(connection,
+                "SELECT f.*,s.source_name,s.source_type,s.source_text FROM project_knowledge_facts f JOIN project_knowledge_submissions s ON s.id=f.source_submission_id WHERE f.project_id=? ORDER BY f.created_at DESC", (project_id,)).fetchall()]
+            submissions = [self._decode_knowledge_submission(dict(row)) for row in _execute(connection,
+                "SELECT * FROM project_knowledge_submissions WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()]
+            questions = [dict(row) for row in _execute(connection,
+                "SELECT * FROM project_knowledge_questions WHERE project_id=? ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END,created_at DESC", (project_id,)).fetchall()]
+            events = [dict(row) for row in _execute(connection,
+                "SELECT * FROM project_knowledge_events WHERE project_id=? ORDER BY created_at DESC LIMIT 500", (project_id,)).fetchall()]
+            legacy = [dict(row) for row in _execute(connection,
+                "SELECT * FROM project_knowledge_entries WHERE project_id=? ORDER BY updated_at DESC", (project_id,)).fetchall()]
+        for event in events:
+            try: event["payload"] = json.loads(event.pop("payload_json") or "{}")
+            except (TypeError, ValueError): event["payload"] = {}
+        decisions_by_submission = {}
+        for event in events:
+            if event.get("event_type") in {"fact_approved", "proposal_rejected"}:
+                proposal_id = str((event.get("payload") or {}).get("proposal_id") or "")
+                if proposal_id:
+                    decisions_by_submission.setdefault(str(event.get("submission_id")), set()).add(proposal_id)
+        for submission in submissions:
+            submission["reviewed_proposal_ids"] = sorted(decisions_by_submission.get(str(submission["id"]), set()))
+        return {"scopes": scopes, "facts": facts, "submissions": submissions, "questions": questions, "events": events, "legacy_entries": legacy}
+
+    def list_knowledge_activity(self, project_id: str, limit: int = 25, offset: int = 0) -> dict | None:
+        """Return a paged event summary without large prompt and response bodies."""
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        activity_types = (
+            "extracted", "extraction_failed", "hub_page_created",
+            "hub_feature_services_updated", "hub_draft_prepared",
+            "hub_draft_failed", "hub_update_saved", "hub_version_restored",
+        )
+        placeholders = ",".join("?" for _ in activity_types)
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            total = _execute(connection,
+                f"SELECT COUNT(*) AS total FROM project_knowledge_events "
+                f"WHERE project_id=? AND event_type IN ({placeholders})",
+                (project_id, *activity_types),
+            ).fetchone()["total"]
+            rows = _execute(connection,
+                "SELECT e.id,e.submission_id,e.event_type,e.payload_json,e.created_at,"
+                "s.source_name,s.source_type FROM project_knowledge_events e "
+                "LEFT JOIN project_knowledge_submissions s ON s.id=e.submission_id "
+                f"WHERE e.project_id=? AND e.event_type IN ({placeholders}) "
+                "ORDER BY e.created_at DESC,e.id DESC LIMIT ? OFFSET ?",
+                (project_id, *activity_types, limit, offset),
+            ).fetchall()
+        events = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            pages = payload.get("pages") or []
+            page_names = [str(item.get("scope_name") or item.get("name")) for item in pages
+                          if isinstance(item, dict) and (item.get("scope_name") or item.get("name"))]
+            if not page_names and payload.get("scope_name"):
+                page_names = [str(payload["scope_name"])]
+            if not page_names and payload.get("feature_name"):
+                page_names = [str(payload["feature_name"])]
+            page_count = len(pages) or len(payload.get("microservices") or [])
+            if not page_count and payload.get("scope_id"):
+                page_count = 1
+            events.append({
+                "id": row["id"], "submission_id": row["submission_id"],
+                "event_type": row["event_type"], "created_at": row["created_at"],
+                "source_name": row["source_name"], "source_type": row["source_type"],
+                "summary": {
+                    "status": payload.get("status"), "error": payload.get("error"),
+                    "source_thread_id": payload.get("source_thread_id"),
+                    "draft_event_id": payload.get("draft_event_id"),
+                    "page_names": page_names,
+                    "page_count": page_count,
+                    "proposal_count": len(payload.get("proposals") or []),
+                },
+            })
+        return {"events": events, "total": int(total), "limit": limit, "offset": offset}
+
+    def get_knowledge_activity(self, project_id: str, event_id: str) -> dict | None:
+        """Return one full knowledge event and its retained source submission."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "SELECT * FROM project_knowledge_events WHERE project_id=? AND id=?",
+                (project_id, event_id),
+            ).fetchone()
+            if not row:
+                return None
+            event = dict(row)
+            submission_row = None
+            if event.get("submission_id"):
+                submission_row = _execute(connection,
+                    "SELECT * FROM project_knowledge_submissions WHERE project_id=? AND id=?",
+                    (project_id, event["submission_id"]),
+                ).fetchone()
+        try:
+            event["payload"] = json.loads(event.pop("payload_json") or "{}")
+        except (TypeError, ValueError):
+            event["payload"] = {}
+        event["submission"] = (
+            self._decode_knowledge_submission(dict(submission_row)) if submission_row else {}
+        )
+        return event
+
+    def review_knowledge_submission(self, project_id: str, submission_id: str, decisions: list[dict]) -> dict | None:
+        """Apply fact proposals atomically and append events for every decision."""
+        now = _now()
+        with self.session() as connection:
+            row = _execute(connection, "SELECT * FROM project_knowledge_submissions WHERE id=? AND project_id=?", (submission_id, project_id)).fetchone()
+            if not row:
+                return None
+            submission = self._decode_knowledge_submission(dict(row))
+            if submission["status"] not in {"pending_review", "reviewed"}:
+                raise ValueError("This submission has no reviewable extraction.")
+            proposals = {str(item.get("id")): item for item in submission["proposals"]}
+            prior_decisions = set()
+            for event in _execute(connection,
+                "SELECT payload_json FROM project_knowledge_events WHERE project_id=? AND submission_id=? AND event_type IN ('fact_approved','proposal_rejected')",
+                (project_id, submission_id),
+            ).fetchall():
+                try: prior_decisions.add(str(json.loads(event["payload_json"]).get("proposal_id")))
+                except (TypeError, ValueError): pass
+            scopes = {str(item["id"]) for item in _execute(connection, "SELECT id FROM project_brief_scopes WHERE project_id=?", (project_id,)).fetchall()}
+            submitted_ids = [str(item.get("proposal_id")) for item in decisions]
+            if len(submitted_ids) != len(set(submitted_ids)):
+                raise ValueError("A proposal can be reviewed only once per submission.")
+            for decision in decisions:
+                proposal = proposals.get(str(decision.get("proposal_id")))
+                if not proposal:
+                    raise ValueError("A selected proposal does not belong to this submission.")
+                if str(decision.get("proposal_id")) in prior_decisions:
+                    raise ValueError("A proposal in this submission has already been reviewed.")
+                operation = str(proposal.get("operation") or "add").lower()
+                target_id = ""
+                if decision.get("decision") == "approve":
+                    scope_id = str(decision.get("scope_id") or submission["scope_id"])
+                    target_id = str(proposal.get("target_fact_id") or "")
+                    if operation in {"update", "supersede"}:
+                        target = _execute(connection, "SELECT id,scope_id FROM project_knowledge_facts WHERE id=? AND project_id=? AND active=TRUE", (target_id, project_id)).fetchone()
+                        if not target:
+                            raise ValueError("The fact selected for correction is no longer active.")
+                        scope_id = str(target["scope_id"])
+                        _execute(connection, "UPDATE project_knowledge_facts SET active=FALSE WHERE id=?", (target_id,))
+                    if scope_id not in scopes:
+                        raise ValueError("Selected scope does not belong to this project.")
+                    fact_id = str(uuid.uuid4())
+                    _execute(connection,
+                        "INSERT INTO project_knowledge_facts(id,project_id,scope_id,title,content,status,source_submission_id,source_proposal_id,supersedes_fact_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (fact_id, project_id, scope_id, str(proposal.get("title") or "Product fact").strip(),
+                         str(proposal.get("content") or "").strip(), decision.get("status", "confirmed"), submission_id,
+                         proposal["id"], target_id or None, now),
+                    )
+                _execute(connection,
+                    "INSERT INTO project_knowledge_events(id,project_id,submission_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), project_id, submission_id, "fact_approved" if decision.get("decision") == "approve" else "proposal_rejected",
+                     self._encode({"proposal_id": proposal["id"], "decision": decision.get("decision"), "fact_id": fact_id if decision.get("decision") == "approve" else None}), now),
+                )
+                if decision.get("decision") == "approve" and target_id and operation in {"update", "supersede"}:
+                    _execute(connection,
+                        "INSERT INTO project_knowledge_events(id,project_id,submission_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                        (str(uuid.uuid4()), project_id, submission_id, "fact_superseded",
+                         self._encode({"old_fact_id": target_id, "new_fact_id": fact_id, "proposal_id": proposal["id"]}), now),
+                    )
+            if submission.get("question_id") and any(
+                item.get("decision") == "approve" and item.get("status", "confirmed") != "needs-clarification"
+                for item in decisions
+            ):
+                _execute(connection,
+                    "UPDATE project_knowledge_questions SET status='answered',answer_submission_id=?,answer_text=?,updated_at=? WHERE id=? AND project_id=? AND status='open'",
+                    (submission_id, submission["source_text"], now, submission["question_id"], project_id),
+                )
+            decided = prior_decisions | {str(item.get("proposal_id")) for item in decisions}
+            remaining = set(proposals) - decided
+            _execute(connection,
+                "UPDATE project_knowledge_submissions SET status=?,reviewed_at=? WHERE id=?",
+                ("pending_review" if remaining else "reviewed", None if remaining else now, submission_id),
+            )
+        return self.list_knowledge_ledger(project_id)
+
+    def dismiss_knowledge_question(self, project_id: str, question_id: str) -> dict | None:
+        """Dismiss an open question and retain that decision in the event log."""
+        now = _now()
+        with self.session() as connection:
+            row = _execute(connection, "SELECT * FROM project_knowledge_questions WHERE id=? AND project_id=? AND status='open'", (question_id, project_id)).fetchone()
+            if not row: return None
+            _execute(connection, "UPDATE project_knowledge_questions SET status='dismissed',updated_at=? WHERE id=?", (now, question_id))
+            _execute(connection, "INSERT INTO project_knowledge_events(id,project_id,submission_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+                (str(uuid.uuid4()), project_id, row["submission_id"], "question_dismissed", self._encode({"question_id": question_id}), now))
+        return dict(row)
+
+    def retrieve_knowledge_facts(self, project_id: str, scope_ids: list[str], query: str, coverage: str = "changed", limit: int = 40) -> list[dict]:
+        """Retrieve approved facts in selected scopes, ranked by full-text relevance."""
+        if not scope_ids: return []
+        terms = " ".join(word for word in re.findall(r"[a-zA-Z0-9]+", query) if len(word) > 1)[:1000]
+        with self.session() as connection:
+            if coverage == "full" or not terms:
+                rows = _execute(connection,
+                    "SELECT f.id,f.scope_id,f.title,f.content,f.status,f.source_submission_id,f.source_proposal_id,f.supersedes_fact_id,f.created_at,s.source_name,s.source_type FROM project_knowledge_facts f JOIN project_knowledge_submissions s ON s.id=f.source_submission_id WHERE f.project_id=? AND f.active=TRUE AND f.status IN ('confirmed','assumed') AND f.scope_id=ANY(?) ORDER BY f.created_at DESC LIMIT ?",
+                    (project_id, scope_ids, max(1, min(limit, 100)))).fetchall()
+            else:
+                rows = _execute(connection,
+                    "SELECT f.id,f.scope_id,f.title,f.content,f.status,f.source_submission_id,f.source_proposal_id,f.supersedes_fact_id,f.created_at,s.source_name,s.source_type,ts_rank(to_tsvector('english',f.title||' '||f.content),websearch_to_tsquery('english',?)) AS relevance FROM project_knowledge_facts f JOIN project_knowledge_submissions s ON s.id=f.source_submission_id WHERE f.project_id=? AND f.active=TRUE AND f.status IN ('confirmed','assumed') AND f.scope_id=ANY(?) AND to_tsvector('english',f.title||' '||f.content) @@ websearch_to_tsquery('english',?) ORDER BY relevance DESC,f.created_at DESC LIMIT ?",
+                    (terms, project_id, scope_ids, terms, max(1, min(limit, 100)))).fetchall()
+                recent = _execute(connection,
+                    "SELECT f.id,f.scope_id,f.title,f.content,f.status,f.source_submission_id,f.source_proposal_id,f.supersedes_fact_id,f.created_at,s.source_name,s.source_type FROM project_knowledge_facts f JOIN project_knowledge_submissions s ON s.id=f.source_submission_id WHERE f.project_id=? AND f.active=TRUE AND f.status IN ('confirmed','assumed') AND f.scope_id=ANY(?) ORDER BY f.created_at DESC LIMIT ?",
+                    (project_id, scope_ids, max(1, min(limit // 3 or 1, 20)))).fetchall()
+                ranked = [dict(row) for row in rows]
+                seen = {str(item["id"]) for item in ranked}
+                ranked.extend(dict(row) for row in recent if str(row["id"]) not in seen)
+                return ranked[:max(1, min(limit, 100))]
+        return [dict(row) for row in rows]
+
+    def list_open_knowledge_questions(self, project_id: str, scope_ids: list[str]) -> list[dict]:
+        """List unresolved questions that belong to selected brief scopes."""
+        if not scope_ids: return []
+        with self.session() as connection:
+            rows = _execute(connection, "SELECT id,scope_id,question,created_at FROM project_knowledge_questions WHERE project_id=? AND status='open' AND scope_id=ANY(?) ORDER BY created_at DESC LIMIT 30", (project_id, scope_ids)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_active_knowledge_facts(self, project_id: str, limit: int = 100) -> list[dict]:
+        """Return a bounded target set for extraction and fact review prompts."""
+        with self.session() as connection:
+            rows = _execute(connection,
+                "SELECT id,scope_id,title,content,status FROM project_knowledge_facts WHERE project_id=? AND active=TRUE ORDER BY created_at DESC LIMIT ?",
+                (project_id, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_generation_activity(self, project_id: str, limit: int = 100, offset: int = 0) -> list[dict] | None:
         """Return the newest generation records for one project.
 
@@ -1615,3 +2344,25 @@ class Database:
                 (project_id, max(1, min(int(limit), 500)), max(0, int(offset))),
             ).fetchall()
         return [self._decode(row["payload_json"]) for row in rows]
+
+    def count_generation_activity(self, project_id: str) -> int | None:
+        """Return how many generation records a project holds.
+
+        The list route is paged, so the page length cannot stand in for the total
+        number of records. This counts the rows with a parameterised query.
+
+        Args:
+            project_id: The project ID.
+
+        Returns:
+            int | None: Record count, or None when the project does not exist.
+        """
+        with self.session() as connection:
+            if not _execute(connection, "SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return None
+            row = _execute(
+                connection,
+                "SELECT COUNT(*) AS total FROM generation_activity WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+        return int(row["total"]) if row else 0

@@ -14,7 +14,7 @@ Mode: Act
 - PostgreSQL-backed unit and persistence tests pass (21/21)
 - Backend smoke test passed (health, curl parse, generate, execute endpoints)
 - Frontend syntax verified
-- LLM providers: Groq (dynamic model), OpenRouter, Cohere, HuggingFace
+- LLM providers: AMD Token Lab, OpenRouter, Groq (dynamic model), Cohere, Hugging Face; shared environment precedence defaults to AMD first
 - Frontend features: unified API Workspace with temporary request tabs, cURL parsing, saved collections, and generation selection
 - API Workspace editor uses Postman-like request tabs with horizontal scrolling and right-aligned close controls, a Method/URL/Send row, Params and Headers tables, and none/raw Body modes
 - URL input accepts multiline cURL and auto-parses recognized commands beginning with `curl` after three seconds of inactivity through an embedded Streamlit component; regular URLs are left alone
@@ -33,7 +33,7 @@ Mode: Act
 - Home header and request library use shared branded styling, compact collection/request rows, and contextual empty states
 - Sidebar remains collapsed by default and groups project selection, actions, counts, and saved-test-case fetch
 - Per-project generation order is persisted in PostgreSQL via `PUT /api/v1/projects/{project_id}/generation-order`; it is independent of collection request order
-- Generation actions persist project-scoped activity records in PostgreSQL with requirements, endpoint summaries, exact LLM prompt and raw response, status, error, and generated case IDs; the Generation Activity tab accepts paginated or legacy list responses and shows time, type, state, project, and a View details action
+- Generation actions persist project-scoped activity records in PostgreSQL with requirements, endpoint summaries, exact LLM prompt and raw response, status, error, and generated case IDs; Activity Logs → Generation accepts paginated or legacy list responses and shows time, type, state, project, and a View details action
 - Revision activity records retain prior requirements, prior release notes, new requirement changes, and cumulative case requirements; the detail modal displays these as separate labeled sections
 - Test case CSV export sends only checked case/flow IDs to the project export endpoint; exported rows contain case metadata, generation requirements, source endpoint fields, request JSON cells, assertions, and `steps_json` for flow steps or general manual steps, while execution results are omitted
 - Project summaries and collection exports use a short-lived cache that is invalidated after relevant writes
@@ -45,8 +45,8 @@ Mode: Act
 - Expanded contract import and flow discovery panels place an accessible × close action in the title row; closing clears the active panel
 - Test Cases generation combines per-run request selection and flow ordering in one list; all eligible request order persists through the project generation-order API
 - Single generation sends all selected endpoints in one `/api/v1/test-cases/generate` request; the LLM prompt returns independent cases tagged with their source endpoint ID
-- Generation supports General requirements-only scenarios alongside Single, Flow, contract-discovered Flow, and Release Revision modes. General cases store ordered `manual_steps` under `case_kind: general` and contain no HTTP request/assertion/mapping data; testers record Passed/Failed as append-only manual history, and HTTP batch execution skips these cases
-- General cases carry project-scoped `case_collection_id`/`case_collection_name` metadata. The General generation form can reuse or create a named collection for a product or business context; the existing Collections filter lists these groups without another filter. Legacy General cases use the default General scenarios collection
+- Generation supports General requirements-only scenarios alongside Single, Flow, contract-discovered Flow, and Release Revision modes. General cases store ordered `manual_steps` under `case_kind: general` and contain no HTTP request/assertion/mapping data; testers record Passed/Failed as append-only manual history. Failed marks accept an optional `failure_reason`, display it as the case's assertion result, and retain it in history. HTTP batch execution skips these cases
+- General cases carry project-scoped `case_collection_id`/`case_collection_name` metadata. `general_case_collections` persists named groups, including empty collections. The General generation form creates and selects a collection before generation or reuses an existing one; startup seeds groups from saved General cases. The existing Collections filter lists these groups without another filter. Legacy General cases use the default General scenarios collection
 - All generation prompts request an envelope containing `test_cases` and optional `clarification_questions`; legacy LLM arrays normalize to an empty question list. Users can answer questions through explicit project-scoped follow-up actions or dismiss a round; dismissal is persisted on the source activity and survives refresh. Successful non-revision follow-ups supersede source output in active workflows while retaining case records and execution history, and revision follow-ups create a new revision. Activities retain questions, answers, dismissal time, and replacement linkage
 - All newly generated single cases and flows receive backend-generated UUID IDs across generation routes; model-provided IDs are ignored, while existing and manual case IDs stay stable
 - Each generated case stores the submitted business requirements in its JSON payload; the case editor lets users revise them, and selected generation examples pass those requirements into later prompts
@@ -55,7 +55,7 @@ Mode: Act
 - Revision endpoint selection is optional; revisions can be generated from the saved baseline and requirement context alone, including General scenario suites
 - Release revision forms let users mark selected baseline cases as **Keep unchanged**. Those cases are copied unchanged with new IDs and source-case links, excluded from model input, and protected again during revision clarification rounds; all other selected baseline cases are sent to AI
 - Successful non-revision clarification follow-ups atomically save linked cases, mark source cases with `superseded_by_activity_id`, and record `supersedes_activity_id` plus archived IDs. Superseded cases are excluded from active Test Cases, generation examples, revision baselines, suites, and execution while case records and execution history remain available
-- Failed clarification follow-ups leave source cases active. Revision follow-ups create a distinct revision and never supersede prior revision cases. Generation Activity details show the replacement relationship, archived output IDs, and unchanged revision case links
+- Failed clarification follow-ups leave source cases active. Revision follow-ups create a distinct revision and never supersede prior revision cases. Activity Logs → Generation details show the replacement relationship, archived output IDs, and unchanged revision case links
 - Revised cases and revision activity store cumulative generation requirements: prior business requirements, prior release notes not already represented, and current requirement changes; case/flow editors show this in Generation requirements
 - Revision endpoint selection is a collection tree over all currently saved project endpoints regardless of ordinary generation eligibility; all start selected, collection checkboxes toggle child requests, and the API resolves selected IDs to current saved method, URL, headers, query parameters, and body
 - Generation activities and revisions retain full project endpoint snapshots with stable IDs and collection placement; comparison badges report added, unchanged, or modified fields (method, URL, headers, query parameters, body), ignore collection moves as request changes, and report unavailable for legacy actions without snapshots
@@ -91,16 +91,53 @@ Mode: Act
 - Test Cases cards, toolbars, and reusable-run controls reflow to available width when the sidebar is expanded; request-order drag uses animated layout transitions with reduced-motion support
 - Request-order dragging keeps the latest Streamlit callbacks, tracks the pointer through release, auto-scrolls at list edges, and cleans up listeners and styles on completion or unmount; Alt+Up/Down keyboard reordering updates the rank and screen-reader announcement
 - Execution latency is formatted as milliseconds through 1000 ms and seconds above 1000 ms
-- Test Cases collapses duplicate case IDs in session state to the latest payload before selection, grouping, or rendering to avoid duplicate cards and executions
+- Test Cases normalizes legacy API envelopes and JSON-encoded case payloads, ignores malformed non-dictionary entries, and collapses duplicate IDs to the latest payload before selection, grouping, or rendering
 - Generation accepts a separate project-scoped picker of existing case examples; the backend loads examples by ID, prompts use compact case context, and generated cases merge into the current list without replacing examples
 - Test Cases filters combine test suite, collection, endpoint, and result scopes; multi-collection flows appear once when a matching step qualifies and show all participating endpoint and collection provenance
-- Project Chat adds multiple PostgreSQL-persisted threads per project using OpenRouter chat completions; the app stores full ordered transcripts, thread model IDs, rolling summaries, and assistant-side endpoint source snapshots
+- Project Chat adds multiple PostgreSQL-persisted threads per project using shared LLM provider fallback; the app stores full ordered transcripts, latest model, per-assistant provider/model metadata, rolling summaries, and assistant-side endpoint source snapshots
 - Chat requests retrieve up to eight saved endpoint summaries matching meaningful name, URL, or collection tokens; context uses a configurable recent-message count and character budget, summarizing older transcript messages as they leave the recent window without deleting them
-- Project Chat has no Knowledge Hub UI; project context is stored as a project overview plus versioned feature/microservice briefs. Users draft from a chat discussion, review and edit explicitly, then save an immutable version; older versions remain viewable and can be restored. Existing per-thread briefs migrate to preserved legacy scopes.
-- Project Chat thread list and conversation history use independent scroll containers; user/assistant exchanges are individually collapsible and expanded by default, and the composer stays outside the history scroller. After a successful reply, the chat scrolls to the new exchange. Empty threads omit the history panel and show a brief prompt above the composer.
-- Project Chat tab sits beside Test Cases and Generation Activity; Chat uses a compact left thread list with rename/archive actions in a plain tertiary three-dot menu, archived threads read-only until restored, endpoint source references, and a separate Project briefs workspace with a scope library, current brief, draft review, save-version, history, and restore actions
-- Generation always includes the current project overview and accepts explicit current feature/microservice brief scope IDs plus run-specific Business requirements; run-specific text never updates durable briefs. Generation Activity records exact versions, contents, prompts, and run input; cases retain version references and generation requirements.
-- Persistent context architecture, process flow, diagram, tradeoffs, configuration, and API behavior are documented in `docs/persistent_context.md`
+- Project Chat stores durable context in a versioned Knowledge Hub: one project-wide page, feature pages, and reusable microservice pages. Chat turns do not extract facts. Users explicitly prepare separate page drafts and section diffs from a selected thread, review/edit them, then save selected pages together as immutable versions.
+- Project Chat keeps the thread rail compact while conversation history follows normal page scrolling, without a fixed-height transcript box. Assistant messages sit left in a muted bubble and user messages sit right in an accent-tinted bubble about two-thirds of the chat width, with a local timestamp above each and no role labels. Long messages are expanded by default and collapsible. The composer stays sticky near the bottom while scrolling. Empty threads show a brief prompt above the composer.
+- The Project Chat thread filter defaults to Active; archived threads remain available from the filter. The per-thread menu supports rename, archive/restore, and confirmed permanent deletion; deleting a thread removes its messages but preserves Hub pages and generation activity.
+- Project Chat tab sits beside Test Cases and Activity Logs; Chat uses a compact left thread list, endpoint/Hub sources, and Conversation / Knowledge Hub views. The Hub supports feature-to-microservice many-to-many links, scrollable current-page and draft-review panels, GitHub-style diffs, and an editable Markdown preview; version history invalidates after updates and restore appends a new version.
+- Generation always includes the current project page. Selecting feature pages automatically includes their linked microservice pages. Run-specific Business requirements remain separate and never update saved knowledge. Activity Logs and cases record the exact page versions and contents used.
+- `docs/persistent_context.md` documents the chat-to-Hub workflow, explicit draft/review/save process, migration, generation context, provenance, and tradeoffs.
+- `make docker-db-reset` requires typing `RESET`, deletes only the current Compose project's PostgreSQL volume, then rebuilds and starts the stack; backend initialization recreates the schema and built-in Default Project. `make docker-down` preserves the database volume
+- PostgreSQL still retains pre-Hub submissions, facts, questions, and append-only extraction events for history. Chat messages no longer create submissions or extraction events. Existing active approved/assumed facts and legacy thread briefs are copied once into current Hub page versions with source IDs; original records remain unchanged. Pending or unapproved legacy data is excluded from current context.
+- Hub drafting runs only after the explicit **Prepare knowledge update** action. It uses the selected thread and current destination pages to create one draft and section-level diff per page; it does not save automatically. Reviewers can retain uncertainty in a labeled **Open questions** section and save selected pages atomically.
+- The Hub uses the existing `project_brief_scopes` and `project_brief_versions` tables as logical page/version storage, plus `knowledge_hub_feature_services` for many-to-many feature/service links. Restore appends a new immutable version.
+- Single, Flow, General, contract-discovered Flow, Release Revision, and follow-ups carry exact Hub version references/content snapshots into case payloads and Activity Logs → Generation. Project-wide knowledge is always included; selected feature pages include linked microservices. Run-specific requirements remain separate from Hub content.
+- Chat answers should be direct and omit generic unsolicited “next steps” lists.
+- Frontend split into `frontend/core.py` (shared state, API clients, helpers), `frontend/views/*` (one module per workspace mode), and `frontend/styles/*` (design tokens plus CSS blocks); `frontend/app.py` is now a thin entry point
+- Postman-style light shell: `--aa-*` tokens injected once, left-rail mode switcher replacing top-level tabs, dense surfaces and typography, visible focus rings, and reduced-motion support
+- Fixed regressions from the extraction: restored `_toggle_session_state` (deleted with the CSS slice),
+  removed the stale `API_BASE` reference, and made the views import `frontend.core` absolutely so package
+  imports work under pytest
+- Test-case toolbar uses one merged Expand/Collapse toggle; Export CSV is a single `st.link_button` that
+  streams from the backend export route, because this Streamlit version does not accept a callable for
+  `st.download_button(data=...)` and a second widget was not wanted
+- Frontend test suite is green (20/20); remaining suite failures are the pre-existing PostgreSQL-backed storage, contract, and provenance tests
+- Collections rail: HTTP-method filter, `enabled of total` project counter, and honest collection state
+  (`total` when fully enabled, `enabled/total (partial)` when partly, `0/total` when none) because a checkbox
+  cannot express indeterminate selection
+- Removed the eager Postman-export prefetch from the collection kebab: popover bodies render on every rerun,
+  so it was one extra API call per collection per interaction. The action is now an on-demand download link
+- Request editor gains an Auth tab (Bearer token, Basic auth, API key) whose header is materialised at
+  send time and never overrides an explicit header row
+- Body mode is a segmented No body or Raw control with live Content-Type and JSON validity feedback
+- Unsaved edits are tracked from a canonical signature, so opening a saved request stays clean; the tab
+  strip shows a leading asterisk and the editor shows a caption until the draft is saved
+- Playground assertion results render as a compact Test Results table
+- Test-case card Delete moved from the footer into a per-card kebab in the header, away from Save
+  changes; the delete key is unchanged so saved selections and run references keep resolving
+- Frontend read timeouts are scoped (15/30/60 s) so a stalled backend cannot freeze a page for 300 s
+- The app uses one light palette; there is no sidebar theme control or persisted theme choice
+- Added `frontend/styles/theme.py` to re-point native surfaces (toolbar, popover, tooltip, toast,
+  segmented pill, slider, progress, spinner, tab highlight, notices) at the palette tokens
+- Sticky test-case toolbar, sticky-safe responsive breakpoints, and a
+  contrast-corrected muted text token
+- Generation now reports progress through `st.status` with a terminal state instead of a bare
+  spinner
 
 ## In Progress
 - None
@@ -121,12 +158,13 @@ Mode: Act
 - HTTP Client: python requests
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
-- Frontend: Streamlit (API Workspace, Test Cases, Project Chat, and Generation Activity tabs)
-- LLM: Multiple free-tier APIs with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
-- Project Chat: OpenRouter multi-message chat completion; `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `PROJECT_CHAT_RECENT_MESSAGES`, and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` configure model and bounded context
-- Brief drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` limits transcript characters considered alongside the rolling summary; the default is 48000
-- Legacy Knowledge Hub tables remain for compatibility but are not retrieved. Durable product context now uses project-owned overview and feature/microservice brief scopes with immutable versions.
-- Project chat is app-persistent rather than provider-thread-persistent: full messages are in PostgreSQL and older turns are summarized. Generation receives current versioned project briefs, selected feature/service briefs, run-specific requirements, and selected endpoints/baseline, not the full transcript; activity stores the exact context used
+- Frontend: Streamlit, single page with a left-rail mode switcher (API Workspace, Test Cases, Project Chat, Activity Logs); Activity Logs contains Generation and Knowledge Extraction subviews; styles in `frontend/styles`, views in `frontend/views`
+- Frontend theme: light only, configured in `.streamlit/config.toml`; native Streamlit surfaces are aligned with app tokens in `frontend/styles/light.py` and `frontend/styles/theme.py`
+- LLM: Shared fallback across AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face. `LLM_PROVIDER_ORDER` defaults to `amd,openrouter,groq,cohere,huggingface`; missing-key providers are skipped, API failures fall through, and malformed application output does not trigger another provider call. AMD uses `AMD_API_KEY` and reads `AMD_MODEL` per request (default `Gemma-4-31B-IT`); successful provider/model metadata is stored in activity and chat records
+- Project Chat: Multi-message completion uses the shared provider order on every call; the thread's stored model is descriptive metadata rather than a provider pin. `PROJECT_CHAT_RECENT_MESSAGES` and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` bound context
+- Knowledge Hub drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` bounds selected transcript, summary, and current-page content; default is 48000
+- Legacy Knowledge submissions/facts/events remain for compatibility and audit history. Current durable product context uses versioned project, feature, and microservice Hub pages.
+- Project chat is app-persistent rather than provider-thread-persistent: full messages are in PostgreSQL and older turns are summarized. Generation receives the current project page, selected features and linked services, run-specific requirements, and selected endpoints/baseline, not the full transcript; activity stores exact versions used
 - Export/import: Postman Collection v2.1 export and request import; environment, script, and authentication import remain out of scope
 - Contract discovery: maximal acyclic dependency paths are ranked by dependency-edge count descending, then endpoint method and path ascending
 - Code style: Minimal functions, flat structure, easy to read
@@ -155,11 +193,45 @@ Mode: Act
 - Flakiness is not persisted as a flag; calculate it from up to ten newest case/step outcomes, requiring at least three observations and a mix of pass and non-pass outcomes
 - Execution history is append-only for case updates and contains each executed configuration snapshot; flow step results carry stable `step_id` values
 - Manual general-case result marks use the same append-only execution history and count toward dynamic flaky status
-- Generation activity is append-only and project-scoped; its table loads in the dedicated tab and each row opens a modal containing the full record, including prompt and model response
+- Activity Logs is the top-level workspace with Generation and Knowledge Extraction subviews. Generation is append-only and project-scoped; each row opens a modal containing the full record, including prompt and model response. Knowledge Extraction combines append-only `extracted` and `extraction_failed` events joined to retained source submissions with Knowledge Hub page creation, feature-service link changes, draft preparation/failure, reviewed saves, and version restores. Extraction details include retained source and model output; Hub draft details include exact prompt messages, raw model response, provider/model metadata, thread, and page; save/restore details include page version/content. Chat turns do not automatically create extraction events. Older extraction events may lack prompt, response, or provider metadata snapshots.
+- Both Activity Logs views use paginated summary endpoints and load full event details on demand. Knowledge Extraction has dedicated `/knowledge/activity` and `/knowledge/activity/{event_id}` routes, so large prompts and responses are not loaded for every table row.
 - Case-list run, collection, and endpoint filters combine across categories and use alternative matching among multiple selected values; a flow step must satisfy active endpoint and collection facets together
 - Running a loaded test suite fetches the latest persisted case payloads before execution, while ordinary Run selected uses current in-session case content
 - Postman Collection v2.1 export is available for saved collections; legacy endpoint routes use Imported Endpoints
 - Existing endpoint rows migrate once into Imported Endpoints with IDs, fields, enabled state, inclusion choice, and order preserved
 - Existing SQLite data is not automatically migrated; PostgreSQL initializes a fresh schema
 - Local run: `make docker-db-up`, then `make run-local-backend` and `make run-local-frontend`
+- Fresh local Compose database: `make docker-db-reset` (destructive; requires typing `RESET`)
 - Full Docker run: `make docker-up`, `make docker-logs`, and `make docker-down`
+
+## UI revamp pass
+
+### Completed
+- Single light workspace enforced at both layers: native theme plus `--aa-canvas`.
+- Surface and edge tokens keep every card, input, expander, grid frame, and menu
+  visible on the pale canvas.
+- Native text, number, date, textarea, select, and upload controls use a stronger
+  always-visible edge, with an accent focus ring; inner text fields stay borderless
+  so each control reads as one clean surface in the light theme.
+- The sidebar project selector has an explicit rail-scoped outline, hover edge,
+  and focus ring so its boundary remains visible against the sidebar.
+- Project Chat composer and segmented controls use readable light-theme edges and ink.
+- `styles/surfaces.py`, `styles/layout.py`, `styles/rail.py` added; layout CSS left
+  the views, and a dangling CSS fragment from an earlier edit was removed.
+- Chat rebuilt: conversation rail with search and filter, asymmetric shaded
+  message bubbles with local timestamps, one Sources disclosure, status-reported send,
+  and a peer Knowledge Hub view with page history, diffs, links, and reviewed multi-page updates.
+- Project Chat scrolls to the newest assistant reply after send. Long messages are expanded by
+  default; their label is visually hidden and the disclosure caret remains the collapse control.
+- Release revision moved to a modal opened from Test Cases, so its project and
+  activity fetches no longer run on every rerun.
+- Generation activity reports a true total via `COUNT(*)` and has a pager with
+  boundary-safe offset.
+
+### Decisions
+- One native light theme is used across Streamlit widgets and app-owned surfaces.
+- Accent ink is dark; white measures 2.8:1 on the orange.
+
+### Known limitations
+- No true overlay drawer in Streamlit; chat and revision detail use columns and
+  modals. A docked drawer needs the React path.
