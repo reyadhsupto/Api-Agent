@@ -2,6 +2,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+COPY .streamlit ./.streamlit
 COPY frontend/requirements.txt ./frontend/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --disable-pip-version-check -r frontend/requirements.txt

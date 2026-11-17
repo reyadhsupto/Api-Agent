@@ -159,7 +159,7 @@ Mode: Act
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
 - Frontend: Streamlit, single page with a left-rail mode switcher (API Workspace, Test Cases, Project Chat, Activity Logs); Activity Logs contains Generation and Knowledge Extraction subviews; styles in `frontend/styles`, views in `frontend/views`
-- Frontend theme: light only, configured in `.streamlit/config.toml`; native Streamlit surfaces are aligned with app tokens in `frontend/styles/light.py` and `frontend/styles/theme.py`
+- Frontend theme: light only, configured in `.streamlit/config.toml`; `Dockerfile.frontend` copies that config into the image, and `frontend/styles/light.py` forces the browser color scheme to light so system dark preferences do not recolor native controls
 - LLM: Shared fallback across AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face. `LLM_PROVIDER_ORDER` defaults to `amd,openrouter,groq,cohere,huggingface`; missing-key providers are skipped, API failures fall through, and malformed application output does not trigger another provider call. AMD uses `AMD_API_KEY` and reads `AMD_MODEL` per request (default `Gemma-4-31B-IT`); successful provider/model metadata is stored in activity and chat records
 - Project Chat: Multi-message completion uses the shared provider order on every call; the thread's stored model is descriptive metadata rather than a provider pin. `PROJECT_CHAT_RECENT_MESSAGES` and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` bound context
 - Knowledge Hub drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` bounds selected transcript, summary, and current-page content; default is 48000

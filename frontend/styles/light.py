@@ -15,6 +15,7 @@ Injected for the app's single supported light theme.
 
 LIGHT_CSS = """
 <style>
+:root, html, body { color-scheme: light !important; }
 .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
 [data-testid="stMainBlockContainer"], [data-testid="stBottom"],
 [data-testid="stBottomBlockContainer"], [data-testid="stAppViewBlockContainer"],
