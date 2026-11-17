@@ -249,21 +249,41 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 ### Project structure
 
 ```text
+.streamlit/
+  config.toml          Streamlit's native light theme and server settings
 app/
-  main.py          FastAPI routes and application setup
-  storage.py       PostgreSQL persistence
-  parser.py        cURL parsing
-  contracts.py     Contract import and dependency discovery
-  generator.py     LLM test-case generation and provider fallback
-  executor.py      HTTP and assertion execution
-  schemas.py       API request and response models
+  main.py              FastAPI routes and application setup
+  storage.py           PostgreSQL persistence and history
+  parser.py            cURL parsing
+  contracts.py         Contract import and dependency discovery
+  generator.py         LLM prompts, provider routing, and case generation
+  executor.py          HTTP and assertion execution
+  schemas.py           API request and response models
 frontend/
-  app.py           Streamlit workspace and test-case UI
+  app.py               Streamlit entry point
+  core.py              Shared frontend state, API clients, and helpers
+  request_controls.py  Custom URL and request-order components
+  views/
+    api_workspace.py   Request editor and collection navigator
+    test_cases.py      Generation, test-case editing, and execution
+    chat.py            Project Chat and Knowledge Hub
+    activity.py        Generation and Knowledge Extraction activity logs
+  styles/              Design tokens and workspace styles
+docs/
+  persistent_context.md  Project Chat, Knowledge Hub, and generation workflow
+scripts/
+  reset_local_database.sh  Confirmed local Compose database reset
 tests/
-  test_parser.py
-  test_executor.py
-  test_frontend.py
-  test_storage.py
+  ...                  API, persistence, execution, generation, and UI tests
+Dockerfile.backend       Backend container image
+Dockerfile.frontend      Frontend image; includes Streamlit configuration
+docker-compose.yml       PostgreSQL, backend, and frontend services
+Makefile                 Local and Docker workflows
+README.md
+technical_documentation.md
+agent_context.md         Current implementation handoff notes
+agent_rules.md           Repository conventions
+requirement_document.md  Product requirements
 ```
 
 See [technical_documentation.md](technical_documentation.md) for architecture, data models, mapping behavior, and implementation details. See [agent_rules.md](agent_rules.md) for repository coding and documentation conventions.
