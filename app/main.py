@@ -42,6 +42,9 @@ from app.schemas import (
     ProjectBriefVersionRequest,
     ProjectBriefDraftRequest,
     ProjectKnowledgeEntryRequest,
+    ProjectKnowledgeSubmissionRequest,
+    ProjectKnowledgeReviewRequest,
+    ProjectKnowledgeQuestionAnswerRequest,
 )
 from app.parser import parse_curl
 from app.generator import (
@@ -67,12 +70,18 @@ GENERAL_CASE_COLLECTION_NAME = "General scenarios"
 
 def _resolve_project_briefs(
     project_id: str, scope_ids: list[str], thread_id: str | None = None,
-    legacy_brief: str | None = None,
+    legacy_brief: str | None = None, query: str = "", knowledge_coverage: str = "changed",
 ) -> dict:
     """Resolve the current project overview and selected current brief versions."""
-    if thread_id and not database.get_chat_thread(project_id, thread_id):
+    get_thread = getattr(database, "get_chat_thread", None)
+    if thread_id and callable(get_thread) and not get_thread(project_id, thread_id):
         raise HTTPException(status_code=404, detail="Project chat thread not found.")
-    scopes = database.list_project_brief_scopes(project_id)
+    list_scopes = getattr(database, "list_project_brief_scopes", None)
+    if not callable(list_scopes):
+        return {"thread_id": thread_id, "briefs": [], "versions": [],
+                "legacy_brief": str(legacy_brief or "").strip(), "knowledge_sources": [],
+                "knowledge_context": {"coverage": knowledge_coverage, "facts": [], "fact_ids": [], "open_questions": []}}
+    scopes = list_scopes(project_id)
     if scopes is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     scope_ids_available = {str(item["id"]) for item in scopes}
@@ -88,7 +97,7 @@ def _resolve_project_briefs(
     briefs = database.get_current_project_brief_context(project_id, scope_ids)
     if briefs is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    return {
+    context = {
         "thread_id": thread_id,
         "briefs": briefs,
         "versions": [{
@@ -99,6 +108,12 @@ def _resolve_project_briefs(
         "legacy_brief": str(legacy_brief or "").strip(),
         "knowledge_sources": [],
     }
+    retrieve_knowledge = getattr(database, "retrieve_knowledge_facts", None)
+    if callable(retrieve_knowledge):
+        context["knowledge_context"] = _selected_knowledge(project_id, context, query or legacy_brief or "", knowledge_coverage)
+    else:
+        context["knowledge_context"] = {"coverage": knowledge_coverage, "facts": [], "fact_ids": [], "open_questions": []}
+    return context
 
 
 def _format_project_briefs(context: dict) -> str:
@@ -114,14 +129,35 @@ def _format_project_briefs(context: dict) -> str:
     return "\n\n".join(sections)
 
 
+def _format_knowledge_context(knowledge_context: dict | None) -> str:
+    """Render exact reviewed fact snapshots and unresolved questions for prompts."""
+    context = knowledge_context or {}
+    blocks = []
+    if context.get("facts"):
+        blocks.append("Approved project knowledge (reviewed facts; use as sourced context):\n" + "\n".join(
+            f"- [{item.get('status')}] {item.get('title')}: {item.get('content')} [fact_id: {item.get('id')}]"
+            for item in context["facts"]
+        ))
+    if context.get("open_questions"):
+        blocks.append("Open project questions (unresolved; ask rather than assume):\n" + "\n".join(
+            f"- {item.get('question')}" for item in context["open_questions"]
+        ))
+    return "\n\n".join(blocks)
+
+
 def _compose_generation_requirements(run_requirements: str | None, context: dict) -> str | None:
     """Combine durable brief context and this action's requirements for the model."""
     parts = []
     briefs = _format_project_briefs(context)
     if briefs:
         parts.append("Current saved project briefs (durable context):\n" + briefs)
+    knowledge_text = _format_knowledge_context((context.get("knowledge_context") or {}))
+    if knowledge_text:
+        parts.append(knowledge_text)
     action_text = str(run_requirements or "").strip()
     if action_text:
+        if not briefs and not knowledge_text:
+            return action_text
         parts.append("Requirements for this generation action:\n" + action_text)
     if briefs and action_text:
         parts.append(
@@ -135,8 +171,11 @@ def _compose_generation_requirements(run_requirements: str | None, context: dict
 
 
 def _retrieved_project_context(project_id: str, query: str) -> tuple[list[dict], list[dict]]:
-    """Return project endpoint references with clear lexical matches."""
-    knowledge = []
+    """Return relevant reviewed facts and endpoint references with lexical matches."""
+    scopes = database.list_project_brief_scopes(project_id) or []
+    scope_ids = [str(item["id"]) for item in scopes]
+    knowledge = database.retrieve_knowledge_facts(project_id, scope_ids, query, "changed", 12)
+    knowledge.extend({"kind": "open_question", **item} for item in database.list_open_knowledge_questions(project_id, scope_ids)[:10])
     project = database.get_project(project_id) or {}
     stop_words = {
         "about", "after", "also", "and", "are", "can", "could", "does", "for", "from",
@@ -175,6 +214,96 @@ def _retrieved_project_context(project_id: str, query: str) -> tuple[list[dict],
         "matched_terms": matched_terms,
     } for _, item, matched_terms in endpoint_matches[:8]]
     return knowledge, endpoints
+
+
+def _extract_knowledge_submission(project_id: str, submission: dict, model: str | None = None, reference: str = "") -> dict:
+    """Extract reviewable fact proposals from source text without auto-approving them."""
+    scopes = database.list_project_brief_scopes(project_id) or []
+    scope_list = [{"id": item["id"], "type": item.get("scope_type"), "name": item.get("name")} for item in scopes]
+    active_facts, fact_chars = [], 0
+    for item in database.list_active_knowledge_facts(project_id, 100):
+        if fact_chars + len(str(item.get("content") or "")) > 12000:
+            continue
+        active_facts.append(item)
+        fact_chars += len(str(item.get("content") or ""))
+    prompt = {
+        "source_text": submission.get("source_text", ""),
+        "reference_context": reference[-6000:],
+        "default_scope_id": submission.get("scope_id"),
+        "available_scopes": scope_list,
+        "active_fact_targets": active_facts,
+    }
+    messages = [
+        {"role": "system", "content": (
+            "Extract durable product knowledge from the SOURCE TEXT only. Reference context may resolve pronouns "
+            "but is never evidence for a fact. Return only valid JSON with keys gist, proposals, conflicts, questions. "
+            "Each proposal has operation (add/update/supersede), target_fact_id (required only when correcting an "
+            "active fact; otherwise null), title, content, and evidence_quote copied from source text. Do not invent "
+            "fact IDs; use a target only when the exact active fact ID is supplied in reference context. Questions "
+            "must be concise and identify missing or conflicting details. proposals/conflicts/questions are arrays."
+        )},
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
+    raw = openrouter_chat(messages, model, max_tokens=2200)
+    try:
+        candidate = raw.strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE)
+        extracted = json.loads(candidate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Knowledge extraction did not return valid JSON.") from exc
+    if not isinstance(extracted, dict) or not isinstance(extracted.get("proposals", []), list):
+        raise ValueError("Knowledge extraction returned an invalid response shape.")
+    active_by_id = {str(item.get("id")): item for item in active_facts}
+    source_text = str(submission.get("source_text") or "")
+    for item in extracted.get("proposals", []):
+        if not isinstance(item, dict) or not str(item.get("content") or "").strip():
+            raise ValueError("Knowledge extraction returned an incomplete fact proposal.")
+        evidence = str(item.get("evidence_quote") or "").strip()
+        if not evidence or evidence.casefold() not in source_text.casefold():
+            raise ValueError("A proposed fact could not be tied to an exact quote from the submitted source.")
+        item["operation"] = str(item.get("operation") or "add").lower()
+        if item["operation"] not in {"add", "update", "supersede"}:
+            item["operation"] = "add"
+        target_id = str(item.get("target_fact_id") or "")
+        if item["operation"] in {"update", "supersede"} and target_id not in active_by_id:
+            raise ValueError("A correction proposal did not identify a current active fact.")
+        if item["operation"] not in {"update", "supersede"}:
+            item["target_fact_id"] = None
+    saved = database.save_knowledge_extraction(project_id, submission["id"], extracted)
+    if saved is None:
+        raise ValueError("Knowledge submission no longer exists.")
+    return saved
+
+
+def _selected_knowledge(project_id: str, brief_context: dict, query: str, coverage: str = "changed") -> dict:
+    """Resolve bounded fact and open-question context for one chat or generation action."""
+    scopes = brief_context.get("briefs", [])
+    scope_ids = list(dict.fromkeys(str(item.get("scope_id")) for item in scopes if item.get("scope_id")))
+    retrieve_facts = getattr(database, "retrieve_knowledge_facts", None)
+    retrieve_questions = getattr(database, "list_open_knowledge_questions", None)
+    facts = retrieve_facts(project_id, scope_ids, query, coverage) if callable(retrieve_facts) else []
+    questions = retrieve_questions(project_id, scope_ids) if callable(retrieve_questions) else []
+    budget = max(1000, min(int(os.getenv("PROJECT_KNOWLEDGE_CONTEXT_CHAR_BUDGET", "12000")), 40000))
+    selected, used = [], 0
+    for fact in facts:
+        block = json.dumps(fact, ensure_ascii=False)
+        if used + len(block) > budget:
+            continue
+        selected.append(fact)
+        used += len(block)
+    selected_questions = []
+    for question in questions:
+        block = json.dumps(question, ensure_ascii=False)
+        if used + len(block) > budget:
+            continue
+        selected_questions.append(question)
+        used += len(block)
+    snapshots = [{key: fact.get(key) for key in (
+        "id", "scope_id", "title", "content", "status", "source_submission_id",
+        "source_name", "source_type", "created_at",
+    )} for fact in selected]
+    return {"coverage": coverage, "facts": snapshots, "fact_ids": [str(item["id"]) for item in snapshots], "open_questions": selected_questions}
 
 def _generate_or_raise(generator, **kwargs):
     """Run an LLM generator and expose malformed output as a useful API error."""
@@ -265,6 +394,7 @@ def _record_generation_activity(
     project_chat_context: dict | None = None,
     project_brief_context: dict | None = None,
     effective_generation_context: str | None = None,
+    knowledge_context: dict | None = None,
 ) -> dict | None:
     """Persist the generation input, outcome, and a comparable project snapshot."""
     endpoint_snapshot = _project_endpoint_snapshot(database.get_project(project_id))
@@ -289,6 +419,7 @@ def _record_generation_activity(
         "error": error or "",
         "generated_case_ids": [str(item.get("id")) for item in (test_cases or []) if item.get("id")],
         "project_chat_context": project_chat_context or {},
+        "knowledge_context": copy.deepcopy(knowledge_context or (project_brief_context or {}).get("knowledge_context") or {}),
     })
 
 
@@ -486,6 +617,7 @@ def _attach_generation_requirements(
     test_cases: list[dict], business_requirements: str | None,
     project_brief_context: dict | None = None,
     effective_generation_context: str | None = None,
+    knowledge_context: dict | None = None,
 ) -> None:
     """Store run-specific requirements and durable brief-version links on cases."""
     requirements = business_requirements or ""
@@ -497,6 +629,9 @@ def _attach_generation_requirements(
         test_case["run_business_requirements"] = requirements
         test_case["generation_requirements"] = effective_generation_context or requirements
         test_case["project_brief_versions"] = copy.deepcopy(brief_versions)
+        fact_context = knowledge_context or (project_brief_context or {}).get("knowledge_context") or {}
+        test_case["knowledge_fact_ids"] = list(fact_context.get("fact_ids") or [])
+        test_case["knowledge_fact_snapshot"] = copy.deepcopy(fact_context.get("facts") or [])
 
 
 def _merge_revision_requirements(
@@ -552,7 +687,10 @@ def get_generation_activity(project_id: str, limit: int = 100, offset: int = 0) 
     all_records = database.list_generation_activity(project_id, limit, offset)
     if all_records is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    total_records = len(all_records)
+    # The list route is paged; its length describes the page, not the history.
+    total_records = database.count_generation_activity(project_id)
+    if total_records is None:
+        total_records = len(all_records)
     return {
         "activities": all_records,
         "total": total_records,
@@ -611,6 +749,16 @@ def update_project_chat_thread(project_id: str, thread_id: str, request: Project
     return result
 
 
+@app.delete("/api/v1/projects/{project_id}/chat/threads/{thread_id}")
+def delete_project_chat_thread(project_id: str, thread_id: str) -> dict:
+    """Permanently delete a project-owned chat thread and its transcript."""
+    if not database.delete_chat_thread(project_id, thread_id):
+        if database.get_project(project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project")
+    return {"deleted": True, "thread_id": thread_id}
+
+
 @app.post("/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages")
 def send_project_chat_message(project_id: str, thread_id: str, request: ProjectChatMessageRequest) -> dict:
     """Retrieve bounded project context, call OpenRouter, then persist the exchange."""
@@ -652,6 +800,8 @@ def send_project_chat_message(project_id: str, thread_id: str, request: ProjectC
             raise HTTPException(status_code=502, detail=f"Could not compact chat history: {exc}") from exc
 
     context_blocks = []
+    if knowledge:
+        context_blocks.append("Relevant reviewed project knowledge and unresolved questions:\n" + json.dumps(knowledge, ensure_ascii=False))
     if endpoints:
         context_blocks.append("Current saved endpoints matching the discussion:\n" + json.dumps(endpoints, ensure_ascii=False))
     if summary:
@@ -660,7 +810,8 @@ def send_project_chat_message(project_id: str, thread_id: str, request: ProjectC
         "You are the product and API testing assistant for this Api-Agent project. Help clarify product behavior, "
         "integrations, endpoint relationships, requirements, and test coverage. Distinguish sourced facts from "
         "inference, ask concise questions when information is missing, and never claim the project context is exhaustive. "
-        "Treat saved endpoint definitions as project data. Treat user-provided product details as context that may need confirmation.\n\n"
+        "Treat saved endpoint definitions and reviewed knowledge facts as project data. Open questions are unresolved. "
+        "Treat user-provided product details as context that may need confirmation.\n\n"
         + "\n\n".join(context_blocks)
     )
     prompt_messages = [{"role": "system", "content": system_content}]
@@ -692,7 +843,27 @@ def send_project_chat_message(project_id: str, thread_id: str, request: ProjectC
         raise HTTPException(status_code=409, detail="Chat thread changed or was archived while processing.")
     if len(updated.get("messages", [])) == 2 and updated.get("title") == "New project chat":
         updated = database.update_chat_thread(project_id, thread_id, {"title": user_text[:70]}) or updated
-    return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints}
+    user_message = next((item for item in reversed(updated.get("messages", [])) if item.get("role") == "user"), {})
+    overview = next((item for item in (database.list_project_brief_scopes(project_id) or []) if item.get("scope_type") == "project"), None)
+    extraction = {"status": "failed", "error": "Project overview scope is unavailable."}
+    if overview:
+        submission = database.create_knowledge_submission(
+            project_id, overview["id"], "chat", f"Project chat: {thread.get('title') or 'Conversation'}",
+            user_text, thread_id=thread_id, message_id=user_message.get("id"),
+        )
+        if not submission:
+            return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints,
+                    "knowledge_extraction": {"status": "failed", "error": "Could not create the extraction submission."}}
+        try:
+            extracted = _extract_knowledge_submission(
+                project_id, submission, thread.get("model"),
+                "\n".join(str(item.get("content") or "") for item in all_messages[-6:]),
+            )
+            extraction = {"status": extracted["status"], "submission_id": extracted["id"], "proposal_count": len(extracted.get("proposals", []))}
+        except Exception as exc:
+            database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
+            extraction = {"status": "failed", "submission_id": submission["id"], "error": str(exc)}
+    return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints, "knowledge_extraction": extraction}
 
 
 @app.get("/api/v1/projects/{project_id}/brief-scopes")
@@ -838,6 +1009,109 @@ def save_project_knowledge(project_id: str, request: ProjectKnowledgeEntryReques
     return result
 
 
+@app.get("/api/v1/projects/{project_id}/knowledge/ledger")
+def get_project_knowledge_ledger(project_id: str) -> dict:
+    """Return source-tracked facts and review queues for a project."""
+    ledger = database.list_knowledge_ledger(project_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return ledger
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge/submissions")
+def submit_project_knowledge(project_id: str, request: ProjectKnowledgeSubmissionRequest) -> dict:
+    """Save user-provided text, extract proposals, and leave them pending review."""
+    text = request.content.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Knowledge source text cannot be empty.")
+    if len(text) > 50000:
+        raise HTTPException(status_code=413, detail="Knowledge source text exceeds 50,000 characters.")
+    scopes = database.list_project_brief_scopes(project_id)
+    if scopes is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    overview = next((item for item in scopes if item.get("scope_type") == "project"), None)
+    scope_id = request.scope_id or (overview or {}).get("id")
+    submission = database.create_knowledge_submission(
+        project_id, scope_id, "upload" if request.source_name.casefold().endswith((".md", ".txt")) else "pasted",
+        request.source_name.strip() or "Pasted context", text, question_id=request.question_id,
+    )
+    if not submission:
+        raise HTTPException(status_code=404, detail="Project, scope, or open question not found.")
+    reference = ""
+    if request.question_id:
+        ledger = database.list_knowledge_ledger(project_id) or {}
+        question = next((item for item in ledger.get("questions", []) if item.get("id") == request.question_id), None)
+        reference = str((question or {}).get("question") or "")
+    try:
+        return _extract_knowledge_submission(project_id, submission, reference=reference)
+    except Exception as exc:
+        failed = database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
+        return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge/submissions/{submission_id}/retry")
+def retry_project_knowledge_extraction(project_id: str, submission_id: str) -> dict:
+    """Retry extraction from the retained original source text."""
+    ledger = database.list_knowledge_ledger(project_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    submission = next((item for item in ledger["submissions"] if item.get("id") == submission_id), None)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Knowledge submission not found")
+    if submission.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="Only failed knowledge extractions can be retried.")
+    try:
+        return _extract_knowledge_submission(project_id, submission, reference="")
+    except Exception as exc:
+        failed = database.save_knowledge_extraction(project_id, submission_id, {}, str(exc))
+        return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge/submissions/{submission_id}/review")
+def review_project_knowledge(project_id: str, submission_id: str, request: ProjectKnowledgeReviewRequest) -> dict:
+    """Apply per-proposal approve/reject decisions and return the refreshed ledger."""
+    try:
+        result = database.review_knowledge_submission(project_id, submission_id, [item.dict() for item in request.decisions])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge submission not found in this project")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge/questions/{question_id}/answer")
+def answer_project_knowledge_question(project_id: str, question_id: str, request: ProjectKnowledgeQuestionAnswerRequest) -> dict:
+    """Treat an answer as a new source submission; it resolves only after review."""
+    text = request.answer.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="An answer is required.")
+    ledger = database.list_knowledge_ledger(project_id)
+    if ledger is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    question = next((item for item in ledger["questions"] if item.get("id") == question_id and item.get("status") == "open"), None)
+    if not question:
+        raise HTTPException(status_code=404, detail="Open project question not found")
+    overview = next((item for item in ledger["scopes"] if item.get("scope_type") == "project"), None)
+    submission = database.create_knowledge_submission(
+        project_id, question.get("scope_id") or overview["id"], "question_answer", "Answer to project knowledge question",
+        text, question_id=question_id,
+    )
+    try:
+        return _extract_knowledge_submission(project_id, submission, reference=question.get("question", ""))
+    except Exception as exc:
+        failed = database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
+        return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge/questions/{question_id}/dismiss")
+def dismiss_project_knowledge_question(project_id: str, question_id: str) -> dict:
+    """Dismiss an unresolved project question while retaining its audit event."""
+    result = database.dismiss_knowledge_question(project_id, question_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Open project question not found")
+    return {"dismissed": True, "question_id": question_id}
+
+
 @app.post("/api/v1/projects/{project_id}/test-case-revisions")
 def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest) -> dict:
     """Generate and persist a complete new release suite without changing its baseline."""
@@ -845,14 +1119,24 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     brief_context = _resolve_project_briefs(
-        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
-        request.project_chat_brief,
+        project_id, getattr(request, "project_brief_scope_ids", []), getattr(request, "project_chat_thread_id", None),
+        getattr(request, "project_chat_brief", None),
+        query=f"{request.release_label}\n{request.release_notes}", knowledge_coverage=getattr(request, "knowledge_coverage", "changed"),
     )
     source = database.get_generation_activity(project_id, request.source_activity_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source generation action not found in this project")
     if source.get("status") != "succeeded" or source.get("business_requirements") is None:
         raise HTTPException(status_code=422, detail="Choose a successful generation action with saved requirements.")
+    prior_cases = {str(item.get("id")): item for item in project.get("test_cases", [])}
+    prior_baseline = [prior_cases[item] for item in request.baseline_case_ids if item in prior_cases]
+    revision_query = "\n".join([
+        str(source.get("business_requirements") or ""), request.release_notes,
+        *(str(item.get("name") or "") + " " + str(item.get("description") or "") for item in prior_baseline),
+    ])
+    brief_context["knowledge_context"] = _selected_knowledge(
+        project_id, brief_context, revision_query, getattr(request, "knowledge_coverage", "changed"),
+    )
     cases_by_id = {str(item.get("id")): item for item in project.get("test_cases", [])}
     baseline_ids = list(dict.fromkeys(request.baseline_case_ids))
     if not baseline_ids:
@@ -905,7 +1189,10 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     previous_requirements = str(source.get("business_requirements") or "")
     previous_release_notes = str(source.get("release_notes") or "")
     revision_notes_for_prompt = request.release_notes
-    project_brief_text = _format_project_briefs(brief_context)
+    project_brief_text = "\n\n".join(part for part in (
+        _format_project_briefs(brief_context),
+        _format_knowledge_context(brief_context.get("knowledge_context")),
+    ) if part)
     cumulative_requirements = _merge_revision_requirements(
         previous_requirements, previous_release_notes, revision_notes_for_prompt,
     )
@@ -914,11 +1201,13 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     trace = {}
     try:
         if revision_baseline or endpoints or revision_notes_for_prompt.strip() or project_brief_text:
-            revised = generate_test_case_revision(
-                revision_baseline, endpoints, previous_requirements, revision_notes_for_prompt, trace,
-                prior_release_notes=previous_release_notes,
-                project_brief_context=project_brief_text,
-            )
+                revision_kwargs = {"prior_release_notes": previous_release_notes}
+                if project_brief_text:
+                    revision_kwargs["project_brief_context"] = project_brief_text
+                revised = generate_test_case_revision(
+                    revision_baseline, endpoints, previous_requirements,
+                    revision_notes_for_prompt, trace, **revision_kwargs,
+                )
         else:
             revised = []
         expected_sources = {str(item.get("id")) for item in revision_baseline}
@@ -993,6 +1282,9 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
         for case in generated:
             case["run_business_requirements"] = request.release_notes
             case["project_brief_versions"] = copy.deepcopy(brief_refs)
+            if str(case.get("source_case_id") or "") not in keep_unchanged_set:
+                case["knowledge_fact_ids"] = list(brief_context.get("knowledge_context", {}).get("fact_ids") or [])
+                case["knowledge_fact_snapshot"] = copy.deepcopy(brief_context.get("knowledge_context", {}).get("facts") or [])
             case["generation_requirements"] = "\n\n".join(
                 part for part in [cumulative_requirements, project_brief_text] if part
             )
@@ -1014,6 +1306,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 part for part in [cumulative_requirements, project_brief_text] if part
             ),
             "project_brief_context": brief_context,
+            "knowledge_context": copy.deepcopy(brief_context.get("knowledge_context") or {}),
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
             "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
@@ -1045,6 +1338,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 part for part in [cumulative_requirements, project_brief_text] if part
             ),
             "project_brief_context": brief_context,
+            "knowledge_context": copy.deepcopy(brief_context.get("knowledge_context") or {}),
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
             "project_chat_context": {"thread_id": brief_context.get("thread_id")},
@@ -1067,6 +1361,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
     if source.get("status") != "succeeded":
         raise HTTPException(status_code=422, detail="Only successful generation actions can be refined.")
     source_brief_context = source.get("project_brief_context") or {"thread_id": None, "briefs": [], "versions": []}
+    source_knowledge_context = source.get("knowledge_context") or {}
     source_brief_refs = [{key: item.get(key) for key in (
         "scope_id", "scope_type", "scope_name", "version_id", "version_number",
     )} for item in source_brief_context.get("versions", [])]
@@ -1121,6 +1416,8 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
                 "effective_generation_context", source.get("business_requirements", ""),
             )
             case["project_brief_versions"] = copy.deepcopy(source_brief_refs)
+            case["knowledge_fact_ids"] = list(source_knowledge_context.get("fact_ids") or [])
+            case["knowledge_fact_snapshot"] = copy.deepcopy(source_knowledge_context.get("facts") or [])
             if source.get("business_requirements"):
                 case.setdefault("business_requirements", source["business_requirements"])
             if (
@@ -1194,6 +1491,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
             "run_business_requirements": source.get("run_business_requirements", source.get("business_requirements", "")),
             "effective_generation_context": source.get("effective_generation_context", source.get("business_requirements", "")),
             "project_brief_context": source_brief_context,
+            "knowledge_context": copy.deepcopy(source_knowledge_context),
             "previous_requirements": source.get("previous_requirements", ""),
             "previous_release_notes": source.get("previous_release_notes", ""),
             "release_notes": source.get("release_notes", ""),
@@ -1745,7 +2043,8 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     brief_context = _resolve_project_briefs(
-        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
+        project_id, getattr(request, "project_brief_scope_ids", []), getattr(request, "project_chat_thread_id", None),
+        query=request.business_requirements or "", knowledge_coverage=getattr(request, "knowledge_coverage", "changed"),
     )
     effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     endpoints = [
@@ -2007,11 +2306,12 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         list: Generated test cases.
     """
     project_id = request.project_id or database.current_project_id()
-    if request.project_chat_thread_id and not project_id:
+    if getattr(request, "project_chat_thread_id", None) and not project_id:
         raise HTTPException(status_code=422, detail="A project is required to use project chat context.")
     brief_context = _resolve_project_briefs(
-        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
-        request.project_chat_brief,
+        project_id, getattr(request, "project_brief_scope_ids", []), getattr(request, "project_chat_thread_id", None),
+        getattr(request, "project_chat_brief", None),
+        query=request.business_requirements or "", knowledge_coverage=getattr(request, "knowledge_coverage", "changed"),
     ) if project_id else {"thread_id": None, "briefs": [], "versions": [], "legacy_brief": ""}
     effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     if request.mode == "General":
@@ -2187,8 +2487,9 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
     endpoints = [_effective_request(item) for item in request.endpoints]
     project_id = request.project_id or database.current_project_id()
     brief_context = _resolve_project_briefs(
-        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
-        request.project_chat_brief,
+        project_id, getattr(request, "project_brief_scope_ids", []), getattr(request, "project_chat_thread_id", None),
+        getattr(request, "project_chat_brief", None),
+        query=request.business_requirements or "", knowledge_coverage=getattr(request, "knowledge_coverage", "changed"),
     ) if project_id else {"thread_id": None, "briefs": [], "versions": [], "legacy_brief": ""}
     effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
 
@@ -2260,8 +2561,9 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     brief_context = _resolve_project_briefs(
-        project_id, request.project_brief_scope_ids, request.project_chat_thread_id,
-        request.project_chat_brief,
+        project_id, getattr(request, "project_brief_scope_ids", []), getattr(request, "project_chat_thread_id", None),
+        getattr(request, "project_chat_brief", None),
+        query=request.business_requirements or "", knowledge_coverage=getattr(request, "knowledge_coverage", "changed"),
     )
     effective_context = _compose_generation_requirements(request.business_requirements, brief_context)
     examples = _load_generation_examples(project_id, request.example_test_case_ids, project)

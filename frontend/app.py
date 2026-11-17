@@ -36,6 +36,7 @@ from frontend.core import (  # noqa: E402
 
 import frontend.core as _core  # noqa: E402
 from frontend.styles import inject_styles  # noqa: E402
+from frontend.ui.theme_toggle import render_theme_control  # noqa: E402
 
 
 # The frontend used to live in this module. Mirror the shared core namespace,
@@ -161,6 +162,8 @@ def main() -> None:
                 st.session_state["executions"] = {}
                 _queue_toast(f"Fetched {len(tcs)} test case(s).")
                 st.rerun()
+
+    render_theme_control()
 
     mode = st.session_state.get("ui_mode") or modes[0]
 

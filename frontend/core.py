@@ -469,6 +469,7 @@ def initialize_session_state() -> None:
         "generation_order_ids": [],
         "selected_collection_id": None,
         "persisted_project_id": None,
+        "ui_theme": "Dark",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1705,8 +1706,8 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
     st.session_state.setdefault(snapshot_key, _test_case_request_snapshot(tc))
 
     with st.container(border=True, key=f"tc-card-{status}-{tc_id}"):
-        toggle_col, select_col, title_col, status_col, run_col = st.columns(
-            [0.4, 0.4, 4.8, 1.7, 2.0 if is_general else 1.1], vertical_alignment="center"
+        toggle_col, select_col, title_col, status_col, run_col, menu_col = st.columns(
+            [0.4, 0.4, 4.8, 1.7, 2.0 if is_general else 1.1, 0.45], vertical_alignment="center"
         )
         with toggle_col:
             st.button(
@@ -1741,6 +1742,25 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     "Run", icon=":material/play_arrow:", key=f"exec_{tc_id}",
                     type="primary", width="stretch",
                 )
+        with menu_col:
+            with st.popover(" ", icon=":material/more_vert:", help="Test case actions"):
+                if st.button(
+                    "Delete test case", key=f"delete_tc_{tc_id}",
+                    icon=":material/delete:", width="stretch",
+                ):
+                    current_project = st.session_state.get("current_project") or {}
+                    try:
+                        if current_project:
+                            api_delete(f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}")
+                        st.session_state["test_cases"] = [
+                            item for item in st.session_state["test_cases"]
+                            if item.get("id") != tc_id
+                        ]
+                        st.session_state.get("executions", {}).pop(tc_id, None)
+                        _queue_toast("Test case deleted.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not delete test case: {exc}")
 
         if tc.get("description"):
             st.caption(tc["description"])
@@ -1888,19 +1908,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                 with history_tab:
                     _render_test_case_history(tc, project.get("id", ""))
 
-            delete_col, save_col, save_hint_col = st.columns([1, 1.35, 4], vertical_alignment="center")
-            with delete_col:
-                if st.button("Delete", key=f"delete_tc_{tc_id}", icon=":material/delete:", help="Delete test case"):
-                    current_project = st.session_state.get("current_project") or {}
-                    try:
-                        if current_project:
-                            api_delete(f"/api/v1/projects/{current_project['id']}/test-cases/{tc_id}")
-                        st.session_state["test_cases"] = [item for item in st.session_state["test_cases"] if item.get("id") != tc_id]
-                        st.session_state.get("executions", {}).pop(tc_id, None)
-                        _queue_toast("Test case deleted.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not delete test case: {exc}")
+            save_col, save_hint_col = st.columns([1.35, 4], vertical_alignment="center")
             with save_col:
                 save_case_clicked = st.button(
                     "Save changes", key=f"save_tc_{tc_id}",
@@ -2293,6 +2301,7 @@ def _generate_selected_cases(
     case_collection_name: str | None = None,
     project_brief_scope_ids: list[str] | None = None,
     project_chat_thread_id: str | None = None,
+    knowledge_coverage: str = "changed",
 ) -> dict:
     """Call the matching generation route for selected requests.
 
@@ -2314,6 +2323,7 @@ def _generate_selected_cases(
             "case_collection_name": case_collection_name,
             "project_brief_scope_ids": project_brief_scope_ids or [],
             "project_chat_thread_id": project_chat_thread_id,
+            "knowledge_coverage": knowledge_coverage,
         })
     if mode == "Flow":
         payload = {
@@ -2323,6 +2333,7 @@ def _generate_selected_cases(
             "example_test_case_ids": example_test_case_ids or [],
             "project_brief_scope_ids": project_brief_scope_ids or [],
             "project_chat_thread_id": project_chat_thread_id,
+            "knowledge_coverage": knowledge_coverage,
         }
         route = (
             f"/api/v1/projects/{project['id']}/test-cases/generate-flow"
@@ -2338,6 +2349,7 @@ def _generate_selected_cases(
         "example_test_case_ids": example_test_case_ids or [],
         "project_brief_scope_ids": project_brief_scope_ids or [],
         "project_chat_thread_id": project_chat_thread_id,
+        "knowledge_coverage": knowledge_coverage,
     }
     return api_post("/api/v1/test-cases/generate", payload)
 
@@ -2487,13 +2499,27 @@ def render_generation_panel() -> None:
 
     project = st.session_state.get("current_project") or {}
     project_id = project.get("id")
-    with st.expander("Project context", expanded=False):
-        project_brief_scope_ids = _render_project_brief_picker(project_id, "generation")
-        st.caption(
-            "Business requirements below apply to this generation only. They are combined with the project overview "
-            "and selected briefs; saving durable product knowledge happens in Project Chat."
+    brief_key = f"generation_brief_scope_ids_{project_id}"
+    chosen_briefs = st.session_state.get(brief_key) or []
+    project_chat_thread_id = (
+        st.session_state.get(f"project_chat_selected_thread_{project_id}")
+        if project_id else None
+    )
+    brief_badge = ("blue" if chosen_briefs else "gray") + f"-badge[{len(chosen_briefs)} brief(s)]"
+    thread_badge = "violet-badge[Thread set]" if project_chat_thread_id else "gray-badge[No chat thread]"
+    context_col, context_edit_col = st.columns([4.6, 1.0], vertical_alignment="center")
+    with context_col:
+        st.markdown(
+            "**Context** :green-badge[Overview, always included] :"
+            + brief_badge + " :" + thread_badge
         )
-    project_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}") if project_id else None
+    with context_edit_col:
+        with st.popover("Edit", icon=":material/tune:", width="stretch"):
+            project_brief_scope_ids = _render_project_brief_picker(project_id, "generation")
+            st.caption(
+                "The overview is always included. Requirements below apply to this run "
+                "only; reviewed project knowledge is managed in Project Chat."
+            )
     requests_by_id = {endpoint["id"]: endpoint for endpoint in endpoints}
     eligible_ids = [endpoint["id"] for endpoint in endpoints]
     current_order = [
@@ -2654,6 +2680,12 @@ def render_generation_panel() -> None:
             label_visibility="collapsed",
             placeholder="Rules, edge cases, or expected behavior the tests should cover...",
         )
+        knowledge_coverage = st.radio(
+            "Project knowledge coverage", ["changed", "full"], horizontal=True,
+            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
+            key="generation_knowledge_coverage",
+            help="Changed areas is the default and prioritizes relevant recent reviewed facts. Full relevant context includes every current reviewed fact in selected brief scopes, within the context budget.",
+        )
 
     if mode == "Flow" and project_id:
         selected_by_id = {endpoint["id"]: endpoint for endpoint in selected}
@@ -2712,384 +2744,38 @@ def render_generation_panel() -> None:
             st.info("Generation was just submitted. Please wait before trying again.")
             return
         st.session_state[generation_submit_key] = now
-        with st.spinner("Generating with the configured LLM providers..."):
+        with st.status("Generating with the configured LLM providers...", expanded=False) as generation_status:
             try:
                 response = _generate_selected_cases(
                     mode, selected, business_req, example_ids,
                     general_collection_id, general_collection_name,
-                    project_brief_scope_ids, project_chat_thread_id,
+                    project_brief_scope_ids, project_chat_thread_id, knowledge_coverage,
                 )
                 result = _accept_generation_response(response, mode)
                 if result:
                     if mode == "General":
                         st.session_state[f"general_collection_choice_{project_id or 'default'}_pending"] = general_collection_id
                     _queue_toast(f"Generated {len(result)} additional test case(s). Existing cases were kept.")
+                    generation_status.update(
+                        label=f"Generated {len(result)} test case(s).", state="complete",
+                    )
                 else:
                     st.warning("The model returned no test cases. Try again or simplify the endpoint requirements.")
+                    generation_status.update(label="The model returned no test cases.", state="error")
             except Exception as exc:
                 st.error(f"Failed to generate test cases: {exc}")
+                generation_status.update(label="Generation failed.", state="error")
             finally:
                 st.session_state[generation_submit_key] = time.time()
 
     _render_generation_clarifications(str(project_id or ""))
 
-    if project_id:
-        with st.expander("Create a release revision", expanded=False):
-            try:
-                saved_project = api_get(f"/api/v1/projects/{project_id}")
-                source_payload = api_get(f"/api/v1/projects/{project_id}/generation-activity?limit=500")
-                source_actions = [
-                    item for item in _normalise_generation_activity_records(source_payload)
-                    if item.get("status") == "succeeded" and item.get("business_requirements") is not None
-                ]
-                source_actions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-            except Exception as exc:
-                saved_project = None
-                source_actions = []
-                st.error(f"Could not load saved revision context: {exc}")
-            if not source_actions:
-                st.info("A successful generation action with saved requirements is needed to start a revision.")
-            elif saved_project is None:
-                st.warning("Revision selection is unavailable until the latest saved project data can be loaded.")
-            else:
-                action_by_id = {str(item["id"]): item for item in source_actions if item.get("id")}
-                source_key = f"revision_source_{project_id}"
-                source_options = list(action_by_id)
-                default_source = next(
-                    (item_id for item_id in source_options
-                     if action_by_id[item_id].get("revision_id") or action_by_id[item_id].get("mode") == "Release revision"),
-                    source_options[0],
-                )
-                pending_source = st.session_state.pop(f"{source_key}_pending", None)
-                if pending_source in action_by_id:
-                    st.session_state[source_key] = pending_source
-                if st.session_state.get(source_key) not in action_by_id:
-                    st.session_state[source_key] = default_source
-                source_id = st.selectbox(
-                    "Prior generation action", source_options, key=source_key,
-                    format_func=lambda value: (
-                        f"{action_by_id[value].get('created_at', 'Unknown')} · "
-                        f"{action_by_id[value].get('mode', 'Generation')} · "
-                        f"{len(action_by_id[value].get('generated_case_ids', []))} cases"
-                    ),
-                )
-                source_action = action_by_id[source_id]
-                saved_cases = [
-                    item for item in saved_project.get("test_cases", [])
-                    if item.get("id") and not item.get("superseded_by_activity_id")
-                ]
-                saved_cases_by_id = {str(item["id"]): item for item in saved_cases}
-                session_cases_by_id = {
-                    str(item.get("id")): item
-                    for item in st.session_state.get("test_cases", []) if item.get("id")
-                }
-                current_endpoints = [item for item in saved_project.get("endpoints", []) if item.get("id")]
-                endpoints_by_id = {str(item["id"]): item for item in current_endpoints}
-                collections = saved_project.get("collections", [])
-                collections_by_id = {str(item.get("id")): item for item in collections if item.get("id")}
-                revisions = sorted(
-                    saved_project.get("test_case_revisions", []),
-                    key=lambda item: int(item.get("ordinal", 0)),
-                )
-                baseline_key = f"revision_baseline_{project_id}"
-                pending_baseline = st.session_state.pop(f"{baseline_key}_pending", None)
-                if isinstance(pending_baseline, list):
-                    st.session_state[baseline_key] = [
-                        str(case_id) for case_id in pending_baseline
-                        if str(case_id) in saved_cases_by_id
-                    ]
-                if baseline_key not in st.session_state:
-                    if revisions:
-                        suggested = [str(value) for value in revisions[-1].get("case_ids", [])]
-                    else:
-                        suggested = [str(value) for value in source_action.get("generated_case_ids", [])]
-                    st.session_state[baseline_key] = [
-                        case_id for case_id in suggested if case_id in saved_cases_by_id
-                    ]
-                else:
-                    st.session_state[baseline_key] = [
-                        str(case_id) for case_id in st.session_state[baseline_key]
-                        if str(case_id) in saved_cases_by_id
-                    ]
-                case_options = list(saved_cases_by_id)
-                baseline_ids = st.multiselect(
-                    "Cases and flows to carry forward", case_options, key=baseline_key,
-                    format_func=lambda case_id: (
-                        f"{saved_cases_by_id[case_id].get('name') or 'Untitled case'} · "
-                        f"{_revision_case_details(saved_cases_by_id[case_id], endpoints_by_id, collections_by_id)}"
-                    ),
-                    help=(
-                        "The baseline is the saved suite context the model will revise. Selected cases are carried "
-                        "into the complete new suite; unchecked cases are omitted. Add manual cases that should "
-                        "remain in the release. Deleted cases are excluded. Save or revert selected case and flow "
-                        "edits before generating; only saved configurations are used."
-                    ),
-                )
-                st.caption(f"{len(baseline_ids)} saved baseline case(s) selected.")
-                with st.expander("View selected case details", expanded=False):
-                    if baseline_ids:
-                        for case_id in baseline_ids:
-                            case = saved_cases_by_id[case_id]
-                            st.caption(
-                                f"{case.get('name') or 'Untitled case'}: "
-                                f"{_revision_case_details(case, endpoints_by_id, collections_by_id)}"
-                            )
-                    else:
-                        st.caption("No baseline cases selected.")
-                unchanged_key = f"revision_keep_unchanged_{project_id}"
-                pending_unchanged = st.session_state.pop(f"{unchanged_key}_pending", None)
-                if isinstance(pending_unchanged, list):
-                    st.session_state[unchanged_key] = [
-                        str(case_id) for case_id in pending_unchanged if str(case_id) in baseline_ids
-                    ]
-                if unchanged_key not in st.session_state:
-                    st.session_state[unchanged_key] = []
-                else:
-                    st.session_state[unchanged_key] = [
-                        str(case_id) for case_id in st.session_state[unchanged_key]
-                        if str(case_id) in baseline_ids
-                    ]
-                keep_unchanged_ids = st.multiselect(
-                    "Keep unchanged",
-                    options=baseline_ids,
-                    key=unchanged_key,
-                    format_func=lambda case_id: saved_cases_by_id[case_id].get("name") or "Untitled case",
-                    help="Selected cases are copied exactly into the new revision and skipped by AI. Other baseline cases are revised by AI.",
-                    placeholder="AI revision for every selected case",
-                )
-                st.caption(
-                    f"{len(baseline_ids) - len(keep_unchanged_ids)} sent to AI · "
-                    f"{len(keep_unchanged_ids)} kept unchanged"
-                )
-                unsaved_case_ids = [
-                    case_id for case_id in baseline_ids
-                    if case_id in session_cases_by_id
-                    and _revision_case_signature(session_cases_by_id[case_id])
-                    != _revision_case_signature(saved_cases_by_id[case_id])
-                ]
-                if unsaved_case_ids:
-                    names = [saved_cases_by_id[item].get("name") or item for item in unsaved_case_ids]
-                    st.warning("Save or revert these selected case edits before generating: " + ", ".join(names))
-                st.text_area(
-                    "Previous business requirements (read only)",
-                    value=str(source_action.get("business_requirements") or ""),
-                    disabled=True, height=100,
-                )
-                if source_action.get("release_notes"):
-                    st.text_area(
-                        "Previous release notes (read only)",
-                        value=str(source_action["release_notes"]),
-                        disabled=True, height=80,
-                    )
-                revision_brief_scope_ids = _render_project_brief_picker(project_id, "revision")
-                revision_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
-                revision_notes = st.text_area(
-                    "New requirement changes", key=f"revision_notes_{project_id}", height=95,
-                    placeholder="Describe changed endpoint behavior, new rules, and additional release coverage.",
-                )
-                source_snapshot = source_action.get("endpoint_snapshot")
-                source_endpoints_by_id = {
-                    str(item.get("id")): item for item in source_snapshot or []
-                    if isinstance(item, dict) and item.get("id")
-                }
-                snapshot_available = isinstance(source_snapshot, list)
-                selected_endpoint_ids = []
-                endpoint_ids_by_collection = {
-                    str(collection.get("id")): [
-                        str(item["id"]) for item in current_endpoints
-                        if str(item.get("collection_id")) == str(collection.get("id"))
-                    ] for collection in collections if collection.get("id")
-                }
-                for endpoint in current_endpoints:
-                    endpoint_key = f"revision_endpoint_{project_id}_{endpoint['id']}"
-                    st.session_state.setdefault(endpoint_key, True)
-                ungrouped_ids = [
-                    str(item["id"]) for item in current_endpoints
-                    if not any(str(item.get("collection_id")) == collection_id
-                               for collection_id in endpoint_ids_by_collection)
-                ]
-                selected_endpoint_ids = [
-                    str(item["id"]) for item in current_endpoints
-                    if st.session_state.get(f"revision_endpoint_{project_id}_{item['id']}", True)
-                ]
-                selected_collection_ids = {
-                    str(endpoints_by_id[item_id].get("collection_id"))
-                    for item_id in selected_endpoint_ids
-                    if endpoints_by_id[item_id].get("collection_id")
-                }
-                if any(item_id in ungrouped_ids for item_id in selected_endpoint_ids):
-                    selected_collection_ids.add("unassigned")
-                endpoint_help = (
-                    "Choose saved requests across project collections. All current requests start selected; "
-                    "collection checkboxes select or clear every request in that collection. Change status "
-                    "compares method, URL, headers, query parameters, and body with the source snapshot."
-                )
-                if not snapshot_available:
-                    endpoint_help += (
-                        " This source action predates endpoint snapshots, so request change badges cannot be compared."
-                    )
-                with st.popover(
-                    f"Choose endpoints · {len(selected_endpoint_ids)} selected",
-                    icon=":material/api:",
-                    help=endpoint_help,
-                    key=f"revision_endpoint_picker_{project_id}",
-                    disabled=not current_endpoints,
-                ):
-                    st.caption("Search by collection, request name, method, or URL.")
-                    search_text = st.text_input(
-                        "Search endpoints", key=f"revision_endpoint_search_{project_id}",
-                        placeholder="Search saved requests",
-                        label_visibility="collapsed",
-                    ).strip().lower()
-                    for collection in collections:
-                        collection_id = str(collection.get("id"))
-                        child_ids = endpoint_ids_by_collection.get(collection_id, [])
-                        if not child_ids:
-                            continue
-                        collection_name = str(collection.get("name") or "Untitled collection")
-                        collection_matches = bool(search_text and search_text in collection_name.lower())
-                        visible_ids = [
-                            endpoint_id for endpoint_id in child_ids
-                            if collection_matches or not search_text or search_text in " ".join((
-                                collection_name,
-                                str(endpoints_by_id[endpoint_id].get("name") or ""),
-                                str(endpoints_by_id[endpoint_id].get("url") or ""),
-                                str(endpoints_by_id[endpoint_id].get("method") or "GET"),
-                            )).lower()
-                        ]
-                        if search_text and not visible_ids:
-                            continue
-                        collection_key = f"revision_collection_{project_id}_{collection_id}"
-                        st.session_state[collection_key] = all(
-                            st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
-                            for item in child_ids
-                        )
-                        st.checkbox(
-                            f"{collection_name} · "
-                            f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in child_ids)}/{len(child_ids)} selected",
-                            key=collection_key,
-                            on_change=_select_revision_collection,
-                            args=(project_id, collection_id, child_ids),
-                            help="Select or clear every saved request in this collection.",
-                        )
-                        with st.expander(
-                            f"Requests · {len(visible_ids)} shown",
-                            expanded=bool(search_text),
-                            key=f"revision_collection_group_{project_id}_{collection_id}",
-                        ):
-                            for endpoint_id in visible_ids:
-                                endpoint = endpoints_by_id[endpoint_id]
-                                previous = source_endpoints_by_id.get(endpoint_id)
-                                request_col, status_col = st.columns([4, 2], vertical_alignment="center")
-                                with request_col:
-                                    st.checkbox(
-                                        f"{str(endpoint.get('method') or 'GET').upper()} · "
-                                        f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
-                                        key=f"revision_endpoint_{project_id}_{endpoint_id}",
-                                        help=f"URL: {endpoint.get('url') or 'No URL saved'}",
-                                    )
-                                with status_col:
-                                    st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
-                    if ungrouped_ids:
-                        group_id = "unassigned"
-                        group_name = "Outside collections"
-                        collection_matches = bool(search_text and search_text in group_name.lower())
-                        visible_ids = [
-                            endpoint_id for endpoint_id in ungrouped_ids
-                            if collection_matches or not search_text or search_text in " ".join((
-                                str(endpoints_by_id[endpoint_id].get("name") or ""),
-                                str(endpoints_by_id[endpoint_id].get("url") or ""),
-                                str(endpoints_by_id[endpoint_id].get("method") or "GET"),
-                            )).lower()
-                        ]
-                        if visible_ids:
-                            collection_key = f"revision_collection_{project_id}_{group_id}"
-                            st.session_state[collection_key] = all(
-                                st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
-                                for item in ungrouped_ids
-                            )
-                            st.checkbox(
-                                f"{group_name} · "
-                                f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in ungrouped_ids)}/{len(ungrouped_ids)} selected",
-                                key=collection_key,
-                                on_change=_select_revision_collection,
-                                args=(project_id, group_id, ungrouped_ids),
-                                help="Select or clear every saved request outside a collection.",
-                            )
-                            with st.expander(
-                                f"Requests · {len(visible_ids)} shown",
-                                expanded=bool(search_text),
-                                key=f"revision_collection_group_{project_id}_{group_id}",
-                            ):
-                                for endpoint_id in visible_ids:
-                                    endpoint = endpoints_by_id[endpoint_id]
-                                    previous = source_endpoints_by_id.get(endpoint_id)
-                                    request_col, status_col = st.columns([4, 2], vertical_alignment="center")
-                                    with request_col:
-                                        st.checkbox(
-                                            f"{str(endpoint.get('method') or 'GET').upper()} · "
-                                            f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
-                                            key=f"revision_endpoint_{project_id}_{endpoint_id}",
-                                            help=f"URL: {endpoint.get('url') or 'No URL saved'}",
-                                        )
-                                    with status_col:
-                                        st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
-                    if not current_endpoints:
-                        st.caption("No saved endpoints are available in this project.")
-                revision_options = saved_project.get("test_case_revisions", [])
-                label_key = f"revision_label_{project_id}"
-                pending_label = st.session_state.pop(f"{label_key}_pending", None)
-                if pending_label is not None:
-                    st.session_state[label_key] = pending_label
-                revision_label = st.text_input(
-                    "Release label", key=label_key,
-                    value=f"Revision {max([int(item.get('ordinal', 0)) for item in revision_options] + [0]) + 1}",
-                )
-                st.caption(
-                    f"Selected {len(baseline_ids)} saved baseline case(s) and {len(selected_endpoint_ids)} "
-                    f"current endpoint(s) across {len(selected_collection_ids)} collection(s). "
-                    "Endpoint selection is optional; the saved baseline can provide the revision context. "
-                    "The previous revision remains unchanged."
-                )
-                revision_clicked = st.button(
-                    "Generate release revision", key=f"generate_revision_{project_id}",
-                    type="primary", icon=":material/rebase_edit:",
-                    disabled=not baseline_ids or not revision_label.strip() or bool(unsaved_case_ids),
-                )
-                if revision_clicked:
-                    with st.spinner("Generating the complete revised suite..."):
-                        try:
-                            response = api_post(
-                                f"/api/v1/projects/{project_id}/test-case-revisions",
-                                {
-                                    "source_activity_id": source_id,
-                                    "baseline_case_ids": baseline_ids,
-                                    "release_label": revision_label.strip(),
-                                    "release_notes": revision_notes,
-                                    "endpoint_ids": selected_endpoint_ids,
-                                    "keep_unchanged_case_ids": keep_unchanged_ids,
-                                    "project_brief_scope_ids": revision_brief_scope_ids,
-                                    "project_chat_thread_id": revision_chat_thread_id,
-                                },
-                            )
-                            project.setdefault("test_case_revisions", []).append(response["revision"])
-                            project.setdefault("test_cases", []).extend(response["test_cases"])
-                            st.session_state["test_cases"] = project["test_cases"]
-                            st.session_state[f"{source_key}_pending"] = response["activity"]["id"]
-                            st.session_state[f"{baseline_key}_pending"] = [
-                                str(item.get("id")) for item in response["test_cases"] if item.get("id")
-                            ]
-                            st.session_state[f"{unchanged_key}_pending"] = []
-                            st.session_state[f"{label_key}_pending"] = f"Revision {response['revision'].get('ordinal', 1) + 1}"
-                            for warning in response.get("warnings", []):
-                                _queue_toast(warning, "warning")
-                            _queue_toast(f"{revision_label} created with {len(response['test_cases'])} cases.")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not generate release revision: {exc}")
-
-
-
+    if project_id and st.button(
+        "Create release revision", key=f"revision_open_{project_id}",
+        icon=":material/new_releases:", width="stretch",
+        help="Revise generated cases against a saved baseline and record a release label.",
+    ):
+        _render_revision_dialog(str(project_id), project)
 def render_test_case_list(loaded_run_id: str | None = None) -> None:
     """Render status counts, filters, batch execution, and test-case cards.
 
@@ -3623,6 +3309,22 @@ def _show_generation_activity_details(record: dict) -> None:
     chat_thread_id = record.get("project_chat_thread_id") or brief_context.get("thread_id")
     if chat_thread_id:
         st.caption(f"Project Chat thread: {chat_thread_id}")
+    knowledge_context = record.get("knowledge_context") or {}
+    if knowledge_context:
+        coverage_label = "Full relevant context" if knowledge_context.get("coverage") == "full" else "Changed areas"
+        st.markdown(f"**Project knowledge used** · {coverage_label}")
+        facts = knowledge_context.get("facts") or []
+        if facts:
+            with st.expander(f"{len(facts)} reviewed fact(s)", expanded=False):
+                for fact in facts:
+                    st.markdown(f"**{fact.get('title')}** · {fact.get('status')} · `{fact.get('id')}`")
+                    st.write(fact.get("content") or "")
+                    st.caption(f"Scope {fact.get('scope_id')} · source {fact.get('source_name') or fact.get('source_submission_id')} · submission {fact.get('source_submission_id')}")
+        questions = knowledge_context.get("open_questions") or []
+        if questions:
+            with st.expander(f"{len(questions)} unresolved question(s) included", expanded=False):
+                for question in questions:
+                    st.write(question.get("question") or "")
     if record.get("effective_generation_context"):
         with st.expander("Complete context sent for generation", expanded=False):
             st.markdown(str(record["effective_generation_context"]))
@@ -4179,6 +3881,11 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
             key=f"contract_flow_requirements_{project_id}_{source_id}",
             placeholder="For example, describe what makes a checkout complete or which outcomes should be asserted.",
         )
+        knowledge_coverage = st.radio(
+            "Project knowledge coverage", ["changed", "full"], horizontal=True,
+            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
+            key=f"contract_knowledge_coverage_{project_id}_{source_id}",
+        )
         with st.expander("Project context", expanded=False):
             project_brief_scope_ids = _render_project_brief_picker(project_id, "contract_flow")
             st.caption("The project overview is included automatically. Selected saved briefs add durable context.")
@@ -4194,7 +3901,9 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
                         {"source_id": source_id, "candidate_ids": selected_candidates,
                          "business_requirements": business_requirements or None,
                          "project_brief_scope_ids": project_brief_scope_ids,
-                         "project_chat_thread_id": st.session_state.get(f"project_chat_selected_thread_{project_id}")},
+                         "project_chat_thread_id": st.session_state.get(f"project_chat_selected_thread_{project_id}"),
+                         "knowledge_coverage": knowledge_coverage,
+                        },
                     )
                 generated = _accept_generation_response(generated_response, "Discovered Flow")
                 st.session_state["executions"] = {}
@@ -4576,14 +4285,17 @@ def _render_collection_navigator(project: dict, project_id: str) -> str | None:
 
     with st.container(key="collection-browser-header"):
         project_name = html.escape(str(project.get("name") or "Workspace"), quote=True)
-        st.markdown(
-            f"<div class='aa-navigator-title'>{project_name}</div>"
-            "<div class='aa-navigator-subtitle'>API Workspace</div>",
-            unsafe_allow_html=True,
+        # The title and the actions share one row: stacked siblings overlapped
+        # once the panel density changed, and a row cannot overlap itself.
+        title_col, import_col, discover_col = st.columns(
+            [3.4, 1, 1], vertical_alignment="center",
         )
-        import_col, discover_col = st.columns(
-            [1, 1], vertical_alignment="center",
-        )
+        with title_col:
+            st.markdown(
+                f"<div class='aa-navigator-title'>{project_name}</div>"
+                "<div class='aa-navigator-subtitle'>API Workspace</div>",
+                unsafe_allow_html=True,
+            )
         if import_col.button(
             "Import", key=f"navigator_import_contract_{project_id}",
             icon=":material/file_upload:", type="primary", width="stretch",
@@ -5573,3 +5285,377 @@ def _render_request_draft(draft: dict, collections: list[dict], project_id: str)
 
 
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
+
+
+@st.dialog("Create release revision", width="large")
+def _render_revision_dialog(project_id: str, project: dict) -> None:
+    """Render the release revision workflow in a modal.
+
+    The saved project and its generation history are read once, when the dialog
+    opens, so browsing the generation panel no longer fetches them every rerun.
+
+    Args:
+        project_id (str): Project whose cases and activity are revised.
+        project (dict): Current project record, updated after a successful run.
+
+    Returns:
+        None: Writes the workflow. A successful run reruns, closing the modal.
+    """
+    try:
+        saved_project = api_get(f"/api/v1/projects/{project_id}")
+        source_payload = api_get(f"/api/v1/projects/{project_id}/generation-activity?limit=500")
+        source_actions = [
+            item for item in _normalise_generation_activity_records(source_payload)
+            if item.get("status") == "succeeded" and item.get("business_requirements") is not None
+        ]
+        source_actions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    except Exception as exc:
+        saved_project = None
+        source_actions = []
+        st.error(f"Could not load saved revision context: {exc}")
+    if not source_actions:
+        st.info("A successful generation action with saved requirements is needed to start a revision.")
+    elif saved_project is None:
+        st.warning("Revision selection is unavailable until the latest saved project data can be loaded.")
+    else:
+        action_by_id = {str(item["id"]): item for item in source_actions if item.get("id")}
+        source_key = f"revision_source_{project_id}"
+        source_options = list(action_by_id)
+        default_source = next(
+            (item_id for item_id in source_options
+             if action_by_id[item_id].get("revision_id") or action_by_id[item_id].get("mode") == "Release revision"),
+            source_options[0],
+        )
+        pending_source = st.session_state.pop(f"{source_key}_pending", None)
+        if pending_source in action_by_id:
+            st.session_state[source_key] = pending_source
+        if st.session_state.get(source_key) not in action_by_id:
+            st.session_state[source_key] = default_source
+        source_id = st.selectbox(
+            "Prior generation action", source_options, key=source_key,
+            format_func=lambda value: (
+                f"{action_by_id[value].get('created_at', 'Unknown')} · "
+                f"{action_by_id[value].get('mode', 'Generation')} · "
+                f"{len(action_by_id[value].get('generated_case_ids', []))} cases"
+            ),
+        )
+        source_action = action_by_id[source_id]
+        saved_cases = [
+            item for item in saved_project.get("test_cases", [])
+            if item.get("id") and not item.get("superseded_by_activity_id")
+        ]
+        saved_cases_by_id = {str(item["id"]): item for item in saved_cases}
+        session_cases_by_id = {
+            str(item.get("id")): item
+            for item in st.session_state.get("test_cases", []) if item.get("id")
+        }
+        current_endpoints = [item for item in saved_project.get("endpoints", []) if item.get("id")]
+        endpoints_by_id = {str(item["id"]): item for item in current_endpoints}
+        collections = saved_project.get("collections", [])
+        collections_by_id = {str(item.get("id")): item for item in collections if item.get("id")}
+        revisions = sorted(
+            saved_project.get("test_case_revisions", []),
+            key=lambda item: int(item.get("ordinal", 0)),
+        )
+        baseline_key = f"revision_baseline_{project_id}"
+        pending_baseline = st.session_state.pop(f"{baseline_key}_pending", None)
+        if isinstance(pending_baseline, list):
+            st.session_state[baseline_key] = [
+                str(case_id) for case_id in pending_baseline
+                if str(case_id) in saved_cases_by_id
+            ]
+        if baseline_key not in st.session_state:
+            if revisions:
+                suggested = [str(value) for value in revisions[-1].get("case_ids", [])]
+            else:
+                suggested = [str(value) for value in source_action.get("generated_case_ids", [])]
+            st.session_state[baseline_key] = [
+                case_id for case_id in suggested if case_id in saved_cases_by_id
+            ]
+        else:
+            st.session_state[baseline_key] = [
+                str(case_id) for case_id in st.session_state[baseline_key]
+                if str(case_id) in saved_cases_by_id
+            ]
+        case_options = list(saved_cases_by_id)
+        baseline_ids = st.multiselect(
+            "Cases and flows to carry forward", case_options, key=baseline_key,
+            format_func=lambda case_id: (
+                f"{saved_cases_by_id[case_id].get('name') or 'Untitled case'} · "
+                f"{_revision_case_details(saved_cases_by_id[case_id], endpoints_by_id, collections_by_id)}"
+            ),
+            help=(
+                "The baseline is the saved suite context the model will revise. Selected cases are carried "
+                "into the complete new suite; unchecked cases are omitted. Add manual cases that should "
+                "remain in the release. Deleted cases are excluded. Save or revert selected case and flow "
+                "edits before generating; only saved configurations are used."
+            ),
+        )
+        st.caption(f"{len(baseline_ids)} saved baseline case(s) selected.")
+        with st.expander("View selected case details", expanded=False):
+            if baseline_ids:
+                for case_id in baseline_ids:
+                    case = saved_cases_by_id[case_id]
+                    st.caption(
+                        f"{case.get('name') or 'Untitled case'}: "
+                        f"{_revision_case_details(case, endpoints_by_id, collections_by_id)}"
+                    )
+            else:
+                st.caption("No baseline cases selected.")
+        unchanged_key = f"revision_keep_unchanged_{project_id}"
+        pending_unchanged = st.session_state.pop(f"{unchanged_key}_pending", None)
+        if isinstance(pending_unchanged, list):
+            st.session_state[unchanged_key] = [
+                str(case_id) for case_id in pending_unchanged if str(case_id) in baseline_ids
+            ]
+        if unchanged_key not in st.session_state:
+            st.session_state[unchanged_key] = []
+        else:
+            st.session_state[unchanged_key] = [
+                str(case_id) for case_id in st.session_state[unchanged_key]
+                if str(case_id) in baseline_ids
+            ]
+        keep_unchanged_ids = st.multiselect(
+            "Keep unchanged",
+            options=baseline_ids,
+            key=unchanged_key,
+            format_func=lambda case_id: saved_cases_by_id[case_id].get("name") or "Untitled case",
+            help="Selected cases are copied exactly into the new revision and skipped by AI. Other baseline cases are revised by AI.",
+            placeholder="AI revision for every selected case",
+        )
+        st.caption(
+            f"{len(baseline_ids) - len(keep_unchanged_ids)} sent to AI · "
+            f"{len(keep_unchanged_ids)} kept unchanged"
+        )
+        unsaved_case_ids = [
+            case_id for case_id in baseline_ids
+            if case_id in session_cases_by_id
+            and _revision_case_signature(session_cases_by_id[case_id])
+            != _revision_case_signature(saved_cases_by_id[case_id])
+        ]
+        if unsaved_case_ids:
+            names = [saved_cases_by_id[item].get("name") or item for item in unsaved_case_ids]
+            st.warning("Save or revert these selected case edits before generating: " + ", ".join(names))
+        st.text_area(
+            "Previous business requirements (read only)",
+            value=str(source_action.get("business_requirements") or ""),
+            disabled=True, height=100,
+        )
+        if source_action.get("release_notes"):
+            st.text_area(
+                "Previous release notes (read only)",
+                value=str(source_action["release_notes"]),
+                disabled=True, height=80,
+            )
+        revision_brief_scope_ids = _render_project_brief_picker(project_id, "revision")
+        revision_knowledge_coverage = st.radio(
+            "Project knowledge coverage", ["changed", "full"], horizontal=True,
+            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
+            key=f"revision_knowledge_coverage_{project_id}",
+        )
+        revision_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
+        revision_notes = st.text_area(
+            "New requirement changes", key=f"revision_notes_{project_id}", height=95,
+            placeholder="Describe changed endpoint behavior, new rules, and additional release coverage.",
+        )
+        source_snapshot = source_action.get("endpoint_snapshot")
+        source_endpoints_by_id = {
+            str(item.get("id")): item for item in source_snapshot or []
+            if isinstance(item, dict) and item.get("id")
+        }
+        snapshot_available = isinstance(source_snapshot, list)
+        selected_endpoint_ids = []
+        endpoint_ids_by_collection = {
+            str(collection.get("id")): [
+                str(item["id"]) for item in current_endpoints
+                if str(item.get("collection_id")) == str(collection.get("id"))
+            ] for collection in collections if collection.get("id")
+        }
+        for endpoint in current_endpoints:
+            endpoint_key = f"revision_endpoint_{project_id}_{endpoint['id']}"
+            st.session_state.setdefault(endpoint_key, True)
+        ungrouped_ids = [
+            str(item["id"]) for item in current_endpoints
+            if not any(str(item.get("collection_id")) == collection_id
+                       for collection_id in endpoint_ids_by_collection)
+        ]
+        selected_endpoint_ids = [
+            str(item["id"]) for item in current_endpoints
+            if st.session_state.get(f"revision_endpoint_{project_id}_{item['id']}", True)
+        ]
+        selected_collection_ids = {
+            str(endpoints_by_id[item_id].get("collection_id"))
+            for item_id in selected_endpoint_ids
+            if endpoints_by_id[item_id].get("collection_id")
+        }
+        if any(item_id in ungrouped_ids for item_id in selected_endpoint_ids):
+            selected_collection_ids.add("unassigned")
+        endpoint_help = (
+            "Choose saved requests across project collections. All current requests start selected; "
+            "collection checkboxes select or clear every request in that collection. Change status "
+            "compares method, URL, headers, query parameters, and body with the source snapshot."
+        )
+        if not snapshot_available:
+            endpoint_help += (
+                " This source action predates endpoint snapshots, so request change badges cannot be compared."
+            )
+        with st.popover(
+            f"Choose endpoints · {len(selected_endpoint_ids)} selected",
+            icon=":material/api:",
+            help=endpoint_help,
+            key=f"revision_endpoint_picker_{project_id}",
+            disabled=not current_endpoints,
+        ):
+            st.caption("Search by collection, request name, method, or URL.")
+            search_text = st.text_input(
+                "Search endpoints", key=f"revision_endpoint_search_{project_id}",
+                placeholder="Search saved requests",
+                label_visibility="collapsed",
+            ).strip().lower()
+            for collection in collections:
+                collection_id = str(collection.get("id"))
+                child_ids = endpoint_ids_by_collection.get(collection_id, [])
+                if not child_ids:
+                    continue
+                collection_name = str(collection.get("name") or "Untitled collection")
+                collection_matches = bool(search_text and search_text in collection_name.lower())
+                visible_ids = [
+                    endpoint_id for endpoint_id in child_ids
+                    if collection_matches or not search_text or search_text in " ".join((
+                        collection_name,
+                        str(endpoints_by_id[endpoint_id].get("name") or ""),
+                        str(endpoints_by_id[endpoint_id].get("url") or ""),
+                        str(endpoints_by_id[endpoint_id].get("method") or "GET"),
+                    )).lower()
+                ]
+                if search_text and not visible_ids:
+                    continue
+                collection_key = f"revision_collection_{project_id}_{collection_id}"
+                st.session_state[collection_key] = all(
+                    st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
+                    for item in child_ids
+                )
+                st.checkbox(
+                    f"{collection_name} · "
+                    f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in child_ids)}/{len(child_ids)} selected",
+                    key=collection_key,
+                    on_change=_select_revision_collection,
+                    args=(project_id, collection_id, child_ids),
+                    help="Select or clear every saved request in this collection.",
+                )
+                with st.expander(
+                    f"Requests · {len(visible_ids)} shown",
+                    expanded=bool(search_text),
+                    key=f"revision_collection_group_{project_id}_{collection_id}",
+                ):
+                    for endpoint_id in visible_ids:
+                        endpoint = endpoints_by_id[endpoint_id]
+                        previous = source_endpoints_by_id.get(endpoint_id)
+                        request_col, status_col = st.columns([4, 2], vertical_alignment="center")
+                        with request_col:
+                            st.checkbox(
+                                f"{str(endpoint.get('method') or 'GET').upper()} · "
+                                f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
+                                key=f"revision_endpoint_{project_id}_{endpoint_id}",
+                                help=f"URL: {endpoint.get('url') or 'No URL saved'}",
+                            )
+                        with status_col:
+                            st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
+            if ungrouped_ids:
+                group_id = "unassigned"
+                group_name = "Outside collections"
+                collection_matches = bool(search_text and search_text in group_name.lower())
+                visible_ids = [
+                    endpoint_id for endpoint_id in ungrouped_ids
+                    if collection_matches or not search_text or search_text in " ".join((
+                        str(endpoints_by_id[endpoint_id].get("name") or ""),
+                        str(endpoints_by_id[endpoint_id].get("url") or ""),
+                        str(endpoints_by_id[endpoint_id].get("method") or "GET"),
+                    )).lower()
+                ]
+                if visible_ids:
+                    collection_key = f"revision_collection_{project_id}_{group_id}"
+                    st.session_state[collection_key] = all(
+                        st.session_state.get(f"revision_endpoint_{project_id}_{item}", False)
+                        for item in ungrouped_ids
+                    )
+                    st.checkbox(
+                        f"{group_name} · "
+                        f"{sum(st.session_state.get(f'revision_endpoint_{project_id}_{item}', False) for item in ungrouped_ids)}/{len(ungrouped_ids)} selected",
+                        key=collection_key,
+                        on_change=_select_revision_collection,
+                        args=(project_id, group_id, ungrouped_ids),
+                        help="Select or clear every saved request outside a collection.",
+                    )
+                    with st.expander(
+                        f"Requests · {len(visible_ids)} shown",
+                        expanded=bool(search_text),
+                        key=f"revision_collection_group_{project_id}_{group_id}",
+                    ):
+                        for endpoint_id in visible_ids:
+                            endpoint = endpoints_by_id[endpoint_id]
+                            previous = source_endpoints_by_id.get(endpoint_id)
+                            request_col, status_col = st.columns([4, 2], vertical_alignment="center")
+                            with request_col:
+                                st.checkbox(
+                                    f"{str(endpoint.get('method') or 'GET').upper()} · "
+                                    f"{_truncate(endpoint.get('name') or endpoint.get('url') or 'Unnamed endpoint', 42)}",
+                                    key=f"revision_endpoint_{project_id}_{endpoint_id}",
+                                    help=f"URL: {endpoint.get('url') or 'No URL saved'}",
+                                )
+                            with status_col:
+                                st.caption(_revision_endpoint_status(endpoint, previous, snapshot_available))
+            if not current_endpoints:
+                st.caption("No saved endpoints are available in this project.")
+        revision_options = saved_project.get("test_case_revisions", [])
+        label_key = f"revision_label_{project_id}"
+        pending_label = st.session_state.pop(f"{label_key}_pending", None)
+        if pending_label is not None:
+            st.session_state[label_key] = pending_label
+        revision_label = st.text_input(
+            "Release label", key=label_key,
+            value=f"Revision {max([int(item.get('ordinal', 0)) for item in revision_options] + [0]) + 1}",
+        )
+        st.caption(
+            f"Selected {len(baseline_ids)} saved baseline case(s) and {len(selected_endpoint_ids)} "
+            f"current endpoint(s) across {len(selected_collection_ids)} collection(s). "
+            "Endpoint selection is optional; the saved baseline can provide the revision context. "
+            "The previous revision remains unchanged."
+        )
+        revision_clicked = st.button(
+            "Generate release revision", key=f"generate_revision_{project_id}",
+            type="primary", icon=":material/rebase_edit:",
+            disabled=not baseline_ids or not revision_label.strip() or bool(unsaved_case_ids),
+        )
+        if revision_clicked:
+            with st.spinner("Generating the complete revised suite..."):
+                try:
+                    response = api_post(
+                        f"/api/v1/projects/{project_id}/test-case-revisions",
+                        {
+                            "source_activity_id": source_id,
+                            "baseline_case_ids": baseline_ids,
+                            "release_label": revision_label.strip(),
+                            "release_notes": revision_notes,
+                            "endpoint_ids": selected_endpoint_ids,
+                            "keep_unchanged_case_ids": keep_unchanged_ids,
+                            "project_brief_scope_ids": revision_brief_scope_ids,
+                            "project_chat_thread_id": revision_chat_thread_id,
+                            "knowledge_coverage": revision_knowledge_coverage,
+                        },
+                    )
+                    project.setdefault("test_case_revisions", []).append(response["revision"])
+                    project.setdefault("test_cases", []).extend(response["test_cases"])
+                    st.session_state["test_cases"] = project["test_cases"]
+                    st.session_state[f"{source_key}_pending"] = response["activity"]["id"]
+                    st.session_state[f"{baseline_key}_pending"] = [
+                        str(item.get("id")) for item in response["test_cases"] if item.get("id")
+                    ]
+                    st.session_state[f"{unchanged_key}_pending"] = []
+                    st.session_state[f"{label_key}_pending"] = f"Revision {response['revision'].get('ordinal', 1) + 1}"
+                    for warning in response.get("warnings", []):
+                        _queue_toast(warning, "warning")
+                    _queue_toast(f"{revision_label} created with {len(response['test_cases'])} cases.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not generate release revision: {exc}")

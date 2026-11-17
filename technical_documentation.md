@@ -57,8 +57,11 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 - `frontend/app.py` is a thin entry point: sys.path bootstrap, explicit imports, and `main()`
 - `frontend/core.py` holds shared state, API clients, CSS constants, and render helpers
 - `frontend/views/{api_workspace,test_cases,chat,activity}.py` render one workspace mode each
-- `frontend/styles/{tokens,base,shell,request_tabs,test_cases}.py` own the design tokens and CSS blocks
+- `frontend/styles/{tokens,base,shell,theme,light,request_tabs,test_cases}.py` own the design tokens and CSS blocks
 - `.streamlit/config.toml` sets the black-first native theme (base dark, background #000000, accent #ff6c37)
+- `frontend/styles/theme.py` re-points the native widgets Streamlit paints outside its theme
+  variables (toolbar buttons, popover, tooltip, toast, segmented pill, slider, progress, spinner,
+  tab highlight, notice) at the `--aa-*` tokens, so both palettes stay coherent
 - The left rail switches modes (API Workspace, Test Cases, Project Chat, Generation Activity); the selection is stored in `st.session_state["ui_mode"]` and only the active mode renders
 - Design tokens are emitted once as CSS custom properties on `:root` by `frontend.styles.inject_styles`; components consume `--aa-*` variables instead of hard-coded colours
 - Import contract: modules use absolute `frontend.*` imports, so the same files load under `streamlit run` and package imports from tests
@@ -67,15 +70,16 @@ PostgreSQL (port 5432) <--> FastAPI Backend
 - Saved requests can be selected and explicitly ordered for generation
 - Test Cases supports single and flow generation/execution with editable assertions
 - Generation controls use a Single/Flow selector, selected saved-request list, optional business requirements, and a primary generation action; no scenario count is requested for flows
+- Project Chat Knowledge view retains source submissions and append-only fact history; chat and uploaded text create proposals that require explicit review before retrieval
+- Generation uses PostgreSQL full-text retrieval from approved fact scopes, with Changed areas and Full relevant context modes; exact fact snapshots are attached to generated cases and activity records
 - Results use status counts, result filters, select/expand controls, per-case execution, batch execution with progress, and explicit project save
 - Each test case card: compact status summary, repeatable status/body-contains/JSONPath/JSON Schema assertions, separate request/result views for single cases, and expandable per-step flow details
 - Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
 - Calls FastAPI endpoints via python requests
-- Scripts use `requests.get` for reads; reads that trigger LLM work inherit the 300 second timeout
+- The frontend uses `requests` only; read timeouts are scoped by call type (see the timeout bullet below)
 - The test-case toolbar keeps one merged Expand/Collapse control and one Export CSV control
 - Export CSV is a `st.link_button` to `/api/v1/projects/{id}/test-cases/export` with repeated
-  `selected_case_ids` parameters, so the backend streams the file on click instead of the frontend
-  pre-fetching bytes on every rerun
+  `selected_case_ids` parameters, so the backend streams the file only on click
 - The collections rail filters by HTTP method with a segmented control and shows an
   `enabled of total` counter for the project
 - Collection rows show real selection state: `name · total` when every request is enabled and
@@ -93,10 +97,11 @@ PostgreSQL (port 5432) <--> FastAPI Backend
   body type, so opening a saved request never reports unsaved changes. A leading asterisk marks a
   request tab with unsaved edits, and the editor shows a caption until the draft is saved
 - Playground assertion runs render a Test Results table (Result, Assertion, Detail)
+- Each test-case card header carries the Run action for the card type (Run, or Passed/Failed for a
+  general scenario) plus a kebab holding Delete; the footer keeps Save changes and its unsaved-edits
+  hint, so the destructive action is not adjacent to the save action
 - Read timeouts are scoped: 15 s for raw project summaries, 30 s for GET and DELETE, 60 s for PUT, and
   300 s only for POST routes that call an LLM or execute requests
-  `selected_case_ids` parameters, so the backend streams the file on click instead of the frontend
-  pre-fetching bytes on every rerun
 - Queues five-second success and error toasts for meaningful completed actions; success and error messages use green and red accents, queued messages survive Streamlit reruns, and batch execution reports one aggregate toast
 - Running a single test opens its Result tab; running a flow opens its Scenario result tab. Batch execution opens the first failed or errored case, or the last executed case when all pass
 - Contract import UI accepts pasted text, JSON/YAML/Markdown/text files, and public anonymous documentation URLs; previews all endpoint proposals before import
@@ -305,4 +310,104 @@ Set `OPENROUTER_API_KEY` in `.env` and optionally `OPENROUTER_MODEL` to choose a
 - Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions
 - Clean caches: `make clean-cache` (keeps the virtual environment)
 - Native Streamlit widget colours come from `.streamlit/config.toml`; the app palette lives in `frontend/styles/tokens.py`
-- The light palette ships in `tokens.py` but is not wired to a control: Streamlit cannot retheme its own widgets at runtime, so a half-applied dark mode is avoided
+- The sidebar Appearance control switches palettes at runtime: Dark (pure black) or Light. `active_theme` reads `ui_theme` and `inject_styles` re-emits the token block on every run, so the switch needs no reload.
+- Streamlit 1.66 publishes no theme custom properties (no `--text-color`, no `--st-*`), so a light palette cannot inherit; `frontend/styles/light.py` restates the native surfaces it would otherwise keep dark and is injected only for Light.
+- Canvas-painted widgets (data grids, charts) keep their dark internals under Light; the surrounding panel, border, and caption follow the palette, and the contrast stays legible
+- The entry point owns its own chrome: the Appearance switch is defined in `app.py`, because
+  Streamlit re-executes the main script on every run but keeps imported modules cached until the
+  server restarts. A helper added to `core.py` during a live session otherwise surfaces as an
+  ImportError until a restart
+- `.st-key-test-case-toolbar` is sticky; breakpoints at
+  1440, 1024, and 768 px reflow the workspace without hiding actions
+- Vertical and horizontal gaps are tightened for fine pointers only, so coarse pointers keep
+  44 px touch targets
+- Muted text uses #8a919c, which clears 4.5:1 on black and on the panel surfaces
+- Test-case generation runs inside a `st.status` block that settles to running, complete, no
+  cases, or failed, instead of leaving a spinner of unknown weight
+
+## Frontend theme and surface system
+
+### Palettes and the appearance switch
+
+`frontend/styles/tokens.py` declares two palettes, `DARK` and `LIGHT`, with an
+identical key set (enforced by `tests/test_theme_tokens.py`). `DEFAULT_THEME` is
+`dark`, so the product opens on the black workspace.
+
+The sidebar control lives in `frontend/ui/theme_toggle.py` and writes
+`st.session_state["ui_theme"]`. `frontend.styles.active_theme()` prefers that
+explicit selection and only falls back to `st.context.theme.type`, because
+Streamlit documents that the native value is inferred from the background colour
+and can lag a change made in the settings menu. `inject_styles()` runs on every
+rerun, so switching repaints immediately without a restart.
+
+`.streamlit/config.toml` keeps a forced dark native theme (`base = "dark"`,
+`backgroundColor = "#000000"`). Forcing one native theme avoids a second,
+competing theme switch in the app menu that could disagree with our control.
+Consequence: while Light is active, `styles/light.py` repaints the chrome
+Streamlit draws itself. It covers containers, the sidebar, widget fills, menus,
+dialogs, tooltips, toasts, code, alerts, chat bubbles, tabs, checkbox and radio
+glyphs, progress, sliders, and the frame around canvas grids. The grid interior
+and charts stay dark: they paint from the native theme, which Python cannot
+change at runtime.
+
+### The box system
+
+`frontend/styles/surfaces.py` owns one card recipe (`.aa-box` plus quiet, inset,
+raised, and selected variants) and the explicit edges of native containers.
+Every value is a token, so the recipe needs no theme branch.
+
+Dark mode gets its separation from a *lift ladder*, not from a single border:
+canvas `#000000`, rail `#040506`, panel `#0d0f12`, panel-alt `#121519`,
+elevated `#191c21`, overlay `#20242a`. Borders come from the alpha ladder
+`--aa-line-soft .14`, `--aa-line .20`, `--aa-line-strong .30`,
+`--aa-line-contrast .42`. The `.20` step is the floor at which a 1px line still
+reads on pure black (about 1.66:1); `.42` is reserved for interactive controls
+that must be identifiable without hover. Cards add an inset top highlight so
+their upper edge catches light the way a raised surface would.
+
+Nested boxes drop to `--aa-line-soft` and `--aa-panel-alt`, so a card inside a
+card reads as a child rather than a second frame.
+
+### Collection rail
+
+`frontend/styles/layout.py` holds the workspace grid (rail pinned, editor
+fluid, single column below 760px). `frontend/styles/rail.py` turns each
+collection into a filled card with a declared border, joins its requests with a
+vertical guide line, and marks the active request with an accent bar. Selection
+is carried by the accent edge, never by fill alone, so it survives both
+palettes. The three-dot triggers rest at reduced opacity and resolve to the
+accent on row hover, row focus, or their own focus.
+
+### Chat workspace
+
+`frontend/views/chat.py` renders a conversation rail (search, All/Active/Archived
+filter, per-thread action menu) beside a flat transcript. Each message has a
+local timestamp above it; assistant bubbles align left with a muted surface and
+user bubbles align right with an accent tint, without role labels. Long messages
+start expanded and can collapse. Bubbles use two-thirds of the transcript width
+on desktop and expand on narrow screens. The transcript uses normal page
+scrolling, and the composer has a palette-aware outline and focus ring. The
+thread rail defaults to Active and supports archive, restore, and confirmed
+permanent deletion; thread deletion cascades to its messages while preserving
+briefs and generation activity. Grounded answers include one `Sources`
+disclosure instead of a code block per endpoint. Sending a message reports
+through `st.status` with terminal states. Briefs are a peer view
+rather than a tab, so the composer is never displaced, and the brief editor opens
+as a modal with the version history and restore action beside it.
+
+### Release revisions
+
+The revision workflow moved out of a collapsed expander at the foot of the
+generation panel into `_render_revision_dialog`, opened from a `Create release
+revision` button in Test Cases. Because a dialog body runs only while the dialog
+is open, the saved project and the generation history are now read once per
+session instead of on every rerun of the panel.
+
+### Generation activity paging
+
+`GET /api/v1/projects/{id}/generation-activity` returns
+`{"activities", "total", "limit", "offset"}`. `total` is a `COUNT(*)`
+(`Database.count_generation_activity`), not the page length, so a pager can state
+the real number of pages. The view keeps the page size and offset in session
+state, clamps the offset when records are deleted, and disables Previous
+and Next at the boundaries.

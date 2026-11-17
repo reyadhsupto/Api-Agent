@@ -96,11 +96,16 @@ Mode: Act
 - Test Cases filters combine test suite, collection, endpoint, and result scopes; multi-collection flows appear once when a matching step qualifies and show all participating endpoint and collection provenance
 - Project Chat adds multiple PostgreSQL-persisted threads per project using OpenRouter chat completions; the app stores full ordered transcripts, thread model IDs, rolling summaries, and assistant-side endpoint source snapshots
 - Chat requests retrieve up to eight saved endpoint summaries matching meaningful name, URL, or collection tokens; context uses a configurable recent-message count and character budget, summarizing older transcript messages as they leave the recent window without deleting them
-- Project Chat has no Knowledge Hub UI; project context is stored as a project overview plus versioned feature/microservice briefs. Users draft from a chat discussion, review and edit explicitly, then save an immutable version; older versions remain viewable and can be restored. Existing per-thread briefs migrate to preserved legacy scopes.
-- Project Chat thread list and conversation history use independent scroll containers; user/assistant exchanges are individually collapsible and expanded by default, and the composer stays outside the history scroller. After a successful reply, the chat scrolls to the new exchange. Empty threads omit the history panel and show a brief prompt above the composer.
+- Project Chat stores durable context in a project overview plus versioned feature/microservice briefs, and provides a **Knowledge** view for reviewing source-tracked facts. Users draft briefs from a chat discussion, review and edit explicitly, then save an immutable version; older versions remain viewable and can be restored. Existing per-thread briefs migrate to preserved legacy scopes.
+- Project Chat keeps the thread rail compact while conversation history follows normal page scrolling, without a fixed-height transcript box. Assistant messages sit left in a muted bubble and user messages sit right in an accent-tinted bubble about two-thirds of the chat width, with a local timestamp above each and no role labels. Long messages are expanded by default and collapsible. The composer remains available below the conversation. Empty threads show a brief prompt above the composer.
+- The Project Chat thread filter defaults to Active; archived threads remain available from the filter. The per-thread menu supports rename, archive/restore, and confirmed permanent deletion; deleting a thread removes its messages but preserves project briefs and generation activity.
 - Project Chat tab sits beside Test Cases and Generation Activity; Chat uses a compact left thread list with rename/archive actions in a plain tertiary three-dot menu, archived threads read-only until restored, endpoint source references, and a separate Project briefs workspace with a scope library, current brief, draft review, save-version, history, and restore actions
 - Generation always includes the current project overview and accepts explicit current feature/microservice brief scope IDs plus run-specific Business requirements; run-specific text never updates durable briefs. Generation Activity records exact versions, contents, prompts, and run input; cases retain version references and generation requirements.
 - Persistent context architecture, process flow, diagram, tradeoffs, configuration, and API behavior are documented in `docs/persistent_context.md`
+- Project Chat includes a PostgreSQL source-tracked Knowledge ledger alongside versioned briefs. User turns and pasted/Markdown/text submissions retain original source, gist, proposals, conflicts, questions, and append-only events; only explicitly approved facts enter retrieval. Legacy mutable knowledge entries remain preserved and are shown for import/review, never treated as confirmed
+- Knowledge extraction runs as a separate OpenRouter call after every user chat turn. Only the user's message is fact evidence; nearby transcript is reference context. Failed extraction leaves the chat exchange intact and can be retried from Knowledge
+- Knowledge facts have stable UUIDs and belong to project/feature/microservice brief scopes. Corrections deactivate but do not delete the old fact, then append a superseding fact and event. Assumed facts are labeled; needs-clarification facts stay out of active retrieval. Open questions can be answered as new source submissions or dismissed
+- Single, Flow, General, contract-discovered Flow, Release Revision, and follow-ups carry reviewed fact IDs/snapshots into case payloads and Generation Activity. The default **Changed areas** coverage uses relevant full-text matches; **Full relevant context** includes current confirmed/assumed facts from the overview and selected scopes, bounded by `PROJECT_KNOWLEDGE_CONTEXT_CHAR_BUDGET` (default 12,000). Open questions are labeled unresolved
 - Frontend split into `frontend/core.py` (shared state, API clients, helpers), `frontend/views/*` (one module per workspace mode), and `frontend/styles/*` (design tokens plus CSS blocks); `frontend/app.py` is now a thin entry point
 - Postman-style black-first shell: `--aa-*` tokens injected once, left-rail mode switcher replacing top-level tabs, dense surfaces and typography, visible focus rings, and reduced-motion support
 - Fixed regressions from the extraction: restored `_toggle_session_state` (deleted with the CSS slice),
@@ -121,7 +126,17 @@ Mode: Act
 - Unsaved edits are tracked from a canonical signature, so opening a saved request stays clean; the tab
   strip shows a leading asterisk and the editor shows a caption until the draft is saved
 - Playground assertion results render as a compact Test Results table
+- Test-case card Delete moved from the footer into a per-card kebab in the header, away from Save
+  changes; the delete key is unchanged so saved selections and run references keep resolving
 - Frontend read timeouts are scoped (15/30/60 s) so a stalled backend cannot freeze a page for 300 s
+- Light and dark palettes are user-switchable from the sidebar Appearance control; the choice
+  persists in session state and applies on the next run without a reload
+- Added `frontend/styles/theme.py` to re-point native surfaces (toolbar, popover, tooltip, toast,
+  segmented pill, slider, progress, spinner, tab highlight, notices) at the palette tokens
+- Sticky test-case toolbar, sticky-safe responsive breakpoints, and a
+  contrast-corrected muted text token
+- Generation now reports progress through `st.status` with a terminal state instead of a bare
+  spinner
 
 ## In Progress
 - None
@@ -143,7 +158,7 @@ Mode: Act
 - Database: PostgreSQL via psycopg; `DATABASE_URL` configuration and Docker volume `api_agent_pgdata`
 - Auth: None (single-user, local)
 - Frontend: Streamlit, single page with a left-rail mode switcher (API Workspace, Test Cases, Project Chat, Generation Activity); styles in `frontend/styles`, views in `frontend/views`
-- Frontend theme: black-first via `.streamlit/config.toml` plus `--aa-*` CSS tokens; a light palette is available in `tokens.py` but not exposed until native widget colours can switch with it
+- Frontend theme: black by default, with a sidebar Appearance switch (Dark or Light) that re-emits the `--aa-*` CSS tokens at runtime; native widgets that Streamlit paints outside its theme variables are re-pointed at the same tokens in `frontend/styles/theme.py`
 - LLM: Multiple free-tier APIs with automatic fallback (Groq, OpenRouter, Cohere, HuggingFace)
 - Project Chat: OpenRouter multi-message chat completion; `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `PROJECT_CHAT_RECENT_MESSAGES`, and `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` configure model and bounded context
 - Brief drafting: `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` limits transcript characters considered alongside the rolling summary; the default is 48000
@@ -185,3 +200,40 @@ Mode: Act
 - Existing SQLite data is not automatically migrated; PostgreSQL initializes a fresh schema
 - Local run: `make docker-db-up`, then `make run-local-backend` and `make run-local-frontend`
 - Full Docker run: `make docker-up`, `make docker-logs`, and `make docker-down`
+
+## UI revamp pass
+
+### Completed
+- Black workspace enforced at both layers: native theme plus `--aa-canvas`.
+- Edge and lift ladders so every card, input, expander, grid frame, and menu is
+  visible on black. `aa-line-soft` raised from .12 to .16 after a test measured it
+  below the perceptible floor.
+- Native text, number, date, textarea, select, and upload controls use a stronger
+  always-visible edge, with an accent focus ring; inner text fields stay borderless
+  so each control reads as one clean surface in both themes.
+- The sidebar project selector has an explicit rail-scoped outline, hover edge,
+  and focus ring so its boundary remains visible against the dark sidebar.
+- Project Chat composer has a palette-aware outline and focus ring; Light-mode
+  segmented controls explicitly set readable label ink on selected and idle states.
+- `styles/surfaces.py`, `styles/layout.py`, `styles/rail.py` added; layout CSS left
+  the views, and a dangling CSS fragment from an earlier edit was removed.
+- Accessibility theme control in `ui/theme_toggle.py`; default is Dark.
+- `ui_theme` initializes to Dark before token injection; Light remains an explicit user choice.
+- Chat rebuilt: conversation rail with search and filter, asymmetric shaded
+  message bubbles with local timestamps, one Sources disclosure, status-reported send, briefs as a
+  peer view with a modal editor and version restore.
+- Release revision moved to a modal opened from Test Cases, so its project and
+  activity fetches no longer run on every rerun.
+- Generation activity reports a true total via `COUNT(*)` and has a pager with
+  boundary-safe offset.
+
+### Decisions
+- One forced native theme (dark) plus a Python repaint for Light, rather than two
+  native themes with an internal reload. Instant switching, no lost drafts.
+- Accent ink is dark in both palettes; white measures 2.8:1 on the orange.
+
+### Known limitations
+- Canvas-painted interiors (data grid, charts) stay dark in Light mode; their
+  frames follow the palette.
+- No true overlay drawer in Streamlit; chat and revision detail use columns and
+  modals. A docked drawer needs the React path.

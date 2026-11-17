@@ -29,6 +29,7 @@ class TestCaseGenerateRequest(BaseModel):
     project_chat_thread_id: Optional[str] = None
     project_chat_brief: Optional[str] = None
     project_brief_scope_ids: list[str] = Field(default_factory=list)
+    knowledge_coverage: Literal["changed", "full"] = "changed"
 
 
 class GenerationFollowUpRequest(BaseModel):
@@ -36,6 +37,36 @@ class GenerationFollowUpRequest(BaseModel):
 
     source_activity_id: str
     answers: dict[str, str] = Field(default_factory=dict)
+
+
+class KnowledgeProposalDecision(BaseModel):
+    """Review decision for one proposed fact operation."""
+
+    proposal_id: str
+    decision: Literal["approve", "reject"]
+    scope_id: Optional[str] = None
+    status: Literal["confirmed", "assumed", "needs-clarification"] = "confirmed"
+
+
+class ProjectKnowledgeSubmissionRequest(BaseModel):
+    """User-authored text submitted for fact extraction and review."""
+
+    content: str
+    source_name: str = "Pasted context"
+    scope_id: Optional[str] = None
+    question_id: Optional[str] = None
+
+
+class ProjectKnowledgeReviewRequest(BaseModel):
+    """Apply explicit decisions to proposed fact operations."""
+
+    decisions: list[KnowledgeProposalDecision] = Field(default_factory=list)
+
+
+class ProjectKnowledgeQuestionAnswerRequest(BaseModel):
+    """Submit an answer as a new source for an open knowledge question."""
+
+    answer: str
 
 
 class ManualTestResultRequest(BaseModel):
@@ -106,6 +137,7 @@ class FlowGenerateRequest(BaseModel):
     project_chat_thread_id: Optional[str] = None
     project_chat_brief: Optional[str] = None
     project_brief_scope_ids: list[str] = Field(default_factory=list)
+    knowledge_coverage: Literal["changed", "full"] = "changed"
 
 
 class TestCaseRevisionRequest(BaseModel):
@@ -120,6 +152,7 @@ class TestCaseRevisionRequest(BaseModel):
     project_chat_thread_id: Optional[str] = None
     project_chat_brief: Optional[str] = None
     project_brief_scope_ids: list[str] = Field(default_factory=list)
+    knowledge_coverage: Literal["changed", "full"] = "changed"
 
 
 class ContractPreviewRequest(BaseModel):
@@ -178,6 +211,7 @@ class DiscoveredFlowGenerateRequest(BaseModel):
     business_requirements: Optional[str] = None
     project_brief_scope_ids: list[str] = Field(default_factory=list)
     project_chat_thread_id: Optional[str] = None
+    knowledge_coverage: Literal["changed", "full"] = "changed"
 
 
 class ApiRequest(BaseModel):
