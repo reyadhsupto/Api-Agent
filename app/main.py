@@ -437,6 +437,7 @@ def _record_generation_activity(
     knowledge_context: dict | None = None,
 ) -> dict | None:
     """Persist the generation input, outcome, and a comparable project snapshot."""
+    coverage_summary = _finalize_coverage_summary(test_cases, trace)
     endpoint_snapshot = _project_endpoint_snapshot(database.get_project(project_id))
     record = getattr(database, "record_generation_activity", None)
     if not callable(record):
@@ -457,12 +458,81 @@ def _record_generation_activity(
         "llm_response": trace.get("llm_response", ""),
         "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
         "clarification_questions": trace.get("clarification_questions", []),
+        "coverage_summary": coverage_summary,
         "status": status,
         "error": error or "",
         "generated_case_ids": [str(item.get("id")) for item in (test_cases or []) if item.get("id")],
         "project_chat_context": project_chat_context or {},
         "knowledge_context": copy.deepcopy(knowledge_context or (project_brief_context or {}).get("knowledge_context") or {}),
     })
+
+
+def _finalize_coverage_summary(test_cases: list[dict] | None, trace: dict) -> dict:
+    """Attach stable case IDs to model-reported requirement coverage and normalize metadata."""
+    cases = [item for item in (test_cases or []) if isinstance(item, dict)]
+    by_ref: dict[str, list[str]] = {}
+    for case in cases:
+        for key in ("technique_tags", "requirement_refs"):
+            values = case.get(key)
+            if not isinstance(values, list):
+                values = []
+            normalized = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+            case[key] = normalized
+        for ref in case["requirement_refs"]:
+            by_ref.setdefault(ref, []).append(str(case.get("id") or ""))
+
+    raw_summary = trace.get("coverage_summary")
+    if not isinstance(raw_summary, dict):
+        raw_summary = {}
+    requirements = raw_summary.get("requirements")
+    if not isinstance(requirements, list):
+        requirements = []
+    normalized_requirements = []
+    seen = set()
+    for item in requirements:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref") or item.get("id") or "").strip()
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        case_ids = by_ref.get(ref, [])
+        status = str(item.get("status") or ("referenced" if case_ids else "uncovered")).lower()
+        if status not in {"covered", "partial", "uncovered", "ambiguous", "referenced"}:
+            status = "uncovered"
+        if status == "covered" and not case_ids:
+            status = "uncovered"
+        normalized_requirements.append({
+            "ref": ref,
+            "statement": str(item.get("statement") or ""),
+            "status": status,
+            "note": str(item.get("note") or ""),
+            "case_ids": case_ids,
+            "case_names": [str(case.get("name") or "Untitled case") for case in cases
+                           if str(case.get("id") or "") in case_ids],
+        })
+    for ref, case_ids in by_ref.items():
+        if ref not in seen:
+            normalized_requirements.append({
+                "ref": ref, "statement": "", "status": "referenced",
+                "note": "Linked from saved case metadata.", "case_ids": case_ids,
+                "case_names": [str(case.get("name") or "Untitled case") for case in cases
+                               if str(case.get("id") or "") in case_ids],
+            })
+    unsupported = raw_summary.get("unsupported_coverage")
+    if not isinstance(unsupported, list):
+        unsupported = []
+    summary = {
+        "available": bool(raw_summary),
+        "requirements": normalized_requirements,
+        "unsupported_coverage": list(dict.fromkeys(
+            str(value).strip() for value in unsupported if str(value).strip()
+        )),
+    }
+    if not raw_summary:
+        summary["note"] = "The model did not return a structured coverage summary for this action."
+    trace["coverage_summary"] = summary
+    return summary
 
 
 def _load_generation_examples(
@@ -1511,7 +1581,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
     )
     keep_unchanged_set = set(keep_unchanged_ids)
     revision_baseline = [item for item in baseline if str(item.get("id")) not in keep_unchanged_set]
-    trace = {}
+    trace = {"coverage_summary": copy.deepcopy(source.get("coverage_summary"))}
     try:
         if revision_baseline or endpoints or revision_notes_for_prompt.strip() or project_brief_text:
                 revision_kwargs = {"prior_release_notes": previous_release_notes}
@@ -1550,6 +1620,11 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             source_case_id = item.get("source_case_id")
             if source_case_id is not None and str(source_case_id) not in expected_sources:
                 raise ValueError(f"Unknown source_case_id: {source_case_id}")
+            source_case = cases_by_id.get(str(source_case_id)) if source_case_id else None
+            for metadata_field in ("technique_tags", "requirement_refs"):
+                if not item.get(metadata_field) and source_case:
+                    item[metadata_field] = copy.deepcopy(source_case.get(metadata_field) or [])
+                item.setdefault(metadata_field, [])
             item.update({
                 "id": str(uuid.uuid4()), "revision_id": revision_id,
                 "source_case_id": str(source_case_id) if source_case_id is not None else None,
@@ -1588,6 +1663,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             else:
                 generated.append(revised_by_source[source_case_id])
         generated.extend(new_cases)
+        coverage_summary = _finalize_coverage_summary(generated, trace)
         new_case_ids = [str(item["id"]) for item in new_cases]
         brief_refs = [{key: item.get(key) for key in (
             "scope_id", "scope_type", "scope_name", "version_id", "version_number",
@@ -1637,12 +1713,14 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             "new_case_ids": new_case_ids,
             "warnings": normalization_warnings,
             "clarification_questions": trace.get("clarification_questions", []),
+            "coverage_summary": coverage_summary,
             "project_chat_context": {"thread_id": brief_context.get("thread_id")},
         })
         return {
             "revision": revision, "test_cases": generated, "activity": activity,
             "warnings": normalization_warnings,
             "clarification_questions": trace.get("clarification_questions", []),
+            "coverage_summary": coverage_summary,
         }
     except HTTPException:
         raise
@@ -1704,7 +1782,10 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
         next(iter(source_general_collections)) if len(source_general_collections) == 1
         else (GENERAL_CASE_COLLECTION_ID, GENERAL_CASE_COLLECTION_NAME)
     )
-    trace = {}
+    trace = {
+        "coverage_summary": copy.deepcopy(source.get("coverage_summary"))
+        if not source_cases_to_refine else None
+    }
     try:
         refined_output = (
             refine_generated_cases(source_cases_to_refine, answers, trace)
@@ -1723,8 +1804,13 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
             if original:
                 case["source_case_id"] = original.get("id")
                 represented_sources.append(str(original.get("id")))
+                for metadata_field in ("technique_tags", "requirement_refs"):
+                    if not case.get(metadata_field):
+                        case[metadata_field] = copy.deepcopy(original.get(metadata_field) or [])
             elif raw_source_ref:
                 raise ValueError(f"Refined output references an unknown source case: {raw_source_ref}")
+            for metadata_field in ("technique_tags", "requirement_refs"):
+                case.setdefault(metadata_field, [])
             case["id"] = str(uuid.uuid4())
             case["follow_up_of"] = request.source_activity_id
             case["run_business_requirements"] = source.get(
@@ -1791,6 +1877,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
                 refined.append(refined_by_source[original_id])
         refined.extend(new_cases)
         _assign_test_case_ids(project_id, refined)
+        coverage_summary = _finalize_coverage_summary(refined, trace)
         revision = None
         if source.get("mode") == "Release revision":
             for case in refined:
@@ -1821,6 +1908,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
             "status": "succeeded", "error": "",
             "generated_case_ids": [case["id"] for case in refined],
             "clarification_questions": trace.get("clarification_questions", []),
+            "coverage_summary": coverage_summary,
             "questions_answered": source.get("clarification_questions", []),
             "clarification_answers": answers,
             "follow_up_of": request.source_activity_id,
@@ -1854,6 +1942,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
         return {
             "test_cases": refined,
             "clarification_questions": trace.get("clarification_questions", []),
+            "coverage_summary": coverage_summary,
             "activity": activity,
             "revision": revision,
             "archived_case_ids": activity_payload["archived_case_ids"],
@@ -2444,7 +2533,7 @@ def generate_contract_flows(project_id: str, request: DiscoveredFlowGenerateRequ
         trace, "succeeded", test_cases=test_cases, project_brief_context=brief_context,
         effective_generation_context=effective_context,
     )
-    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "coverage_summary": trace.get("coverage_summary"), "activity": activity}
 
 
 @app.post("/api/v1/http/send")
@@ -2676,7 +2765,7 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
             project_brief_context=brief_context,
             effective_generation_context=effective_context,
         ) if project_id else None
-        return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+        return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "coverage_summary": trace.get("coverage_summary"), "activity": activity}
 
     supplied_endpoints = request.endpoints or (
         [request.parsed_curl] if request.parsed_curl is not None else []
@@ -2792,7 +2881,7 @@ def generate_test_cases_endpoint(request: TestCaseGenerateRequest) -> dict:
         project_brief_context=brief_context,
         effective_generation_context=effective_context,
     )
-    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "coverage_summary": trace.get("coverage_summary"), "activity": activity}
 
 
 @app.post("/api/v1/test-cases/generate-flow")
@@ -2861,7 +2950,7 @@ def generate_flow_test_cases_standalone(request: FlowGenerateRequest) -> dict:
         project_brief_context=brief_context,
         effective_generation_context=effective_context,
     )
-    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "coverage_summary": trace.get("coverage_summary"), "activity": activity}
 
 
 @app.post("/api/v1/projects/{project_id}/test-cases/generate-flow")
@@ -2948,7 +3037,7 @@ def generate_flow_test_cases_project(project_id: str, request: FlowGenerateReque
         project_brief_context=brief_context,
         effective_generation_context=effective_context,
     )
-    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "activity": activity}
+    return {"test_cases": test_cases, "clarification_questions": trace.get("clarification_questions", []), "coverage_summary": trace.get("coverage_summary"), "activity": activity}
 
 
 @app.post("/api/v1/projects/{project_id}/test-cases/save")
@@ -3070,6 +3159,7 @@ def export_test_cases(
 
     writer.writerow([
         "test_case_id", "name", "type", "description", "business_requirements",
+        "technique_tags_json", "requirement_refs_json",
         "is_flow", "source_endpoint_id", "source_endpoint_name",
         "request_method", "request_url", "request_headers_json",
         "request_query_params_json", "request_body_json", "assertions_json", "steps_json",
@@ -3091,6 +3181,8 @@ def export_test_cases(
             tc.get("type", ""),
             tc.get("description", ""),
             tc.get("business_requirements", ""),
+            json_cell(tc.get("technique_tags") or []),
+            json_cell(tc.get("requirement_refs") or []),
             is_flow,
             tc.get("source_endpoint_id", ""),
             tc.get("source_endpoint_name", ""),
