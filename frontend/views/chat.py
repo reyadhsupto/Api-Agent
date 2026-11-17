@@ -1,18 +1,20 @@
 # frontend/views/chat.py
 
 """
-Project Chat view: a conversation rail, a transcript pane, and the brief workspace.
+Project Chat view: persistent conversations and the versioned Knowledge Hub.
 
 The rail keeps every persisted conversation in reach: search, an active/archived
 filter, and one action menu per thread. The transcript aligns muted assistant
 bubbles left and accent-tinted user bubbles right, with local timestamps above
 each message. Long content can collapse, and sources stay attached to their
-answer. Briefs are a peer view rather than a tab, so the composer is never
-displaced by them.
+answer. Knowledge updates are explicit drafts reviewed before saving.
 """
 
 from datetime import datetime
+import difflib
+import html
 import json
+import re
 
 import streamlit as st
 
@@ -64,112 +66,37 @@ def _local_message_time(value: str | None) -> str:
     except (TypeError, ValueError):
         return _short_time(raw)
 
-def _render_brief_cards(project_id: str, scopes: list) -> None:
-    """Render one card per feature or service brief, each opening in a dialog.
+
+def _scroll_to_chat_message(target_key: str) -> None:
+    """Bring a newly rendered assistant reply into the viewport.
 
     Args:
-        project_id (str): Project that owns the briefs.
-        scopes (list): Brief scopes other than the project overview.
+        target_key (str): Streamlit container key for the assistant bubble.
 
     Returns:
-        None: Writes the cards and their dialogs.
+        None: Emits a small same-page script that scrolls the bubble into view.
     """
-    if not scopes:
-        st.caption("No feature or service briefs yet. Add one to give generation focused context.")
-        return
-    columns = st.columns(2, gap="small")
-    for index, scope in enumerate(scopes):
-        scope_id = str(scope.get("id") or "")
-        version = scope.get("current_version_number") or 1
-        excerpt = " ".join(str(scope.get("current_content") or "").split())[:180]
-        with columns[index % 2], st.container(border=True):
-            st.markdown(f"**{scope.get('name') or 'Untitled brief'}**")
-            st.markdown(
-                f":gray-badge[{str(scope.get('scope_type') or 'feature').title()}] "
-                f":gray-badge[v{version}]"
-            )
-            st.caption(excerpt or "No saved version yet.")
-            opened = st.button(
-                "Open", key=f"brief_open_{project_id}_{scope_id}",
-                icon=":material/open_in_new:", width="stretch",
-            )
-        if opened:
-            _brief_dialog(project_id, scope)
-
-@st.dialog("Project brief", width="large")
-def _brief_dialog(project_id: str, scope: dict) -> None:
-    """Edit one brief and manage its version history in a modal.
-
-    Args:
-        project_id (str): Project that owns the brief.
-        scope (dict): Brief scope record shown in the editor.
-
-    Returns:
-        None: Writes the editor: and the history.
-    """
-    scope_id = str(scope.get("id") or "")
-    version = scope.get("current_version_number") or 1
-    stored = str(scope.get("current_content") or "")
-    st.caption(
-        f"{str(scope.get('scope_type') or 'feature').title()} brief, current v{version}. "
-        "Saving adds a version and keeps the earlier ones restorable."
+    target_class = json.dumps(f"st-key-{target_key}")
+    st.html(
+        f"""<script>
+        (() => {{
+            const targetClass = {target_class};
+            let attempts = 0;
+            const revealReply = () => {{
+                const target = document.getElementsByClassName(targetClass)[0];
+                if (target) {{
+                    target.scrollIntoView({{ behavior: "smooth", block: "center" }});
+                }} else if (attempts++ < 12) {{
+                    window.setTimeout(revealReply, 80);
+                }}
+            }};
+            window.requestAnimationFrame(revealReply);
+        }})();
+        </script>""",
+        unsafe_allow_javascript=True,
+        width="stretch",
     )
-    content = st.text_area(
-        "Content", value=stored, height=300,
-        key=f"brief_edit_{project_id}_{scope_id}",
-    )
-    dirty = content.strip() != stored.strip()
-    if not content.strip():
-        st.caption(":orange[The brief is empty, so there is nothing to save.]")
-    elif not dirty:
-        st.caption(":gray[No changes yet.]")
-    saved = st.button(
-        f"Save as v{version + 1}", type="primary", icon=":material/save:",
-        width="stretch", disabled=not dirty,
-        key=f"brief_save_{project_id}_{scope_id}",
-    )
-    if saved:
-        try:
-            api_post(
-                f"/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions",
-                {"content": content},
-            )
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Could not save the brief: {exc}")
 
-    st.divider()
-    st.markdown("**Version history**")
-    try:
-        versions = api_get(
-            f"/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions"
-        ) or []
-    except Exception as exc:
-        st.error(f"Could not load versions: {exc}")
-        return
-    if not versions:
-        st.caption("No versions saved yet.")
-        return
-    for item in versions:
-        current = bool(item.get("is_current"))
-        label = f"v{item.get('version_number', '?')} - {_short_time(item.get('created_at'))}"
-        with st.expander(label + (" - current" if current else ""), expanded=False):
-            st.markdown(str(item.get("content") or ""))
-            restore = st.button(
-                "Make current",
-                key=f"brief_restore_{project_id}_{scope_id}_{item.get('id')}",
-                icon=":material/history:", disabled=current,
-            )
-            if restore:
-                try:
-                    api_post(
-                        f"/api/v1/projects/{project_id}/brief-scopes/{scope_id}"
-                        f"/versions/{item.get('id')}/restore",
-                        {},
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not restore that version: {exc}")
 
 def _render_sources(sources: list) -> None:
     """Render the endpoints an assistant answer was grounded in.
@@ -194,7 +121,7 @@ def _render_sources(sources: list) -> None:
 
 
 def _render_knowledge_sources(sources: list) -> None:
-    """Show reviewed fact and unresolved-question citations attached to a reply."""
+    """Show current Knowledge Hub pages attached to an assistant reply."""
     usable = [item for item in sources if isinstance(item, dict)]
     if not usable:
         return
@@ -202,9 +129,84 @@ def _render_knowledge_sources(sources: list) -> None:
         for item in usable:
             if item.get("kind") == "open_question":
                 st.markdown(f"**Open question:** {item.get('question')}")
+            elif item.get("kind") == "knowledge_hub_page":
+                st.markdown(f"**{item.get('title') or 'Knowledge Hub page'}** · {item.get('status') or 'current'}")
+                st.caption(str(item.get("content") or "")[:500])
             else:
                 st.markdown(f"**{item.get('title') or 'Reviewed fact'}** · {item.get('status', 'reviewed')}")
                 st.caption(f"{item.get('content') or ''} · Fact ID {item.get('id')}")
+
+
+def _render_github_diff(diff_text: str) -> None:
+    """Render a unified diff with GitHub-like line colors and gutters.
+
+    Args:
+        diff_text (str): Unified diff text for one Markdown section.
+
+    Returns:
+        None: Writes escaped diff markup with separate added and removed rows.
+    """
+    rows = []
+    old_line = new_line = None
+    for line in str(diff_text or "").splitlines():
+        if line.startswith("@@"):
+            match = re.search(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            old_line = int(match.group(1)) if match else None
+            new_line = int(match.group(2)) if match else None
+            rows.append(("hunk", "", "", line))
+            continue
+        if line.startswith(("---", "+++")):
+            continue
+        if line.startswith("\\ No newline"):
+            continue
+        if line.startswith("+"):
+            rows.append(("add", "", str(new_line) if new_line is not None else "", line[1:]))
+            if new_line is not None:
+                new_line += 1
+        elif line.startswith("-"):
+            rows.append(("remove", str(old_line) if old_line is not None else "", "", line[1:]))
+            if old_line is not None:
+                old_line += 1
+        else:
+            content = line[1:] if line.startswith(" ") else line
+            rows.append(("context", str(old_line) if old_line is not None else "",
+                         str(new_line) if new_line is not None else "", content))
+            if old_line is not None:
+                old_line += 1
+            if new_line is not None:
+                new_line += 1
+
+    if not rows:
+        st.caption("No changes in this section.")
+        return
+
+    rendered = []
+    for kind, old_number, new_number, text in rows:
+        escaped = html.escape(text)
+        if kind == "hunk":
+            rendered.append(
+                '<div style="padding:4px 10px;background:#ddf4ff;color:#59636e;'
+                'border-top:1px solid #b6e3ff;border-bottom:1px solid #b6e3ff;">'
+                f"{escaped}</div>"
+            )
+            continue
+        background = {"add": "#e6ffec", "remove": "#ffebe9", "context": "#ffffff"}[kind]
+        marker_color = {"add": "#1a7f37", "remove": "#cf222e", "context": "#6e7781"}[kind]
+        marker = "+" if kind == "add" else "−" if kind == "remove" else " "
+        rendered.append(
+            f'<div style="display:grid;grid-template-columns:3.5em 3.5em 1.5em minmax(0,1fr);'
+            f'background:{background};font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;">'
+            f'<span style="padding:0 7px;text-align:right;color:#8c959f;border-right:1px solid #d0d7de;">{old_number}</span>'
+            f'<span style="padding:0 7px;text-align:right;color:#8c959f;border-right:1px solid #d0d7de;">{new_number}</span>'
+            f'<span style="padding:0 5px;color:{marker_color};font-weight:700;">{marker}</span>'
+            f'<span style="padding:0 8px;white-space:pre-wrap;overflow-wrap:anywhere;">{escaped}</span>'
+            '</div>'
+        )
+    st.markdown(
+        '<div style="overflow-x:auto;border:1px solid #d0d7de;border-radius:6px;">'
+        + "".join(rendered) + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 @st.dialog("Delete conversation?")
@@ -220,7 +222,7 @@ def _delete_chat_thread_dialog(project_id: str, thread_id: str, title: str) -> N
         None: Deletes the thread after explicit confirmation.
     """
     st.write(f"Delete **{title or 'Untitled conversation'}** and its messages permanently?")
-    st.caption("This does not delete project briefs or generation activity records.")
+    st.caption("This does not delete Knowledge Hub pages or generation activity records.")
     cancel_col, delete_col = st.columns(2)
     if cancel_col.button("Cancel", key=f"chat_delete_cancel_{project_id}_{thread_id}", width="stretch"):
         return
@@ -251,15 +253,8 @@ def _render_conversation(project_id: str, thread: dict) -> None:
     """
     thread_id = str(thread.get("id") or "")
     messages = thread.get("messages") or []
-    notice = st.session_state.get(f"knowledge_extraction_notice_{project_id}")
-    if notice:
-        if notice.get("status") == "failed":
-            st.warning("Chat reply is saved, but knowledge extraction needs attention. Open Knowledge to retry.")
-        elif notice.get("proposal_count"):
-            st.info(f"{notice['proposal_count']} knowledge proposal(s) are ready for review.")
-        if st.button("Review in Knowledge", key=f"chat_review_knowledge_{project_id}", icon=":material/rate_review:"):
-            st.session_state[f"chat_view_{project_id}"] = "Knowledge"
-            st.rerun()
+    scroll_state_key = f"chat_scroll_target_{project_id}_{thread_id}"
+    scroll_target_key = st.session_state.get(scroll_state_key)
     with st.container(key="project-chat-transcript"):
         if not messages:
             st.caption(
@@ -276,34 +271,51 @@ def _render_conversation(project_id: str, thread: dict) -> None:
             with st.container(key=f"chat-bubble-{role}-{thread_id}-{index}"):
                 if len(content) > COLLAPSIBLE_MESSAGE_CHARS:
                     with st.expander(
-                        "Message content", expanded=True,
+                        "Expand or collapse message", expanded=True,
                         key=f"chat-message-content-{thread_id}-{index}",
                     ):
                         st.markdown(content)
                 else:
                     st.markdown(content)
+                provider_metadata = message.get("provider_metadata") or {}
+                if role == "assistant" and provider_metadata:
+                    st.caption(
+                        f"{provider_metadata.get('provider') or 'LLM'} · "
+                        f"{provider_metadata.get('model') or 'unknown model'}"
+                    )
                 _render_knowledge_sources(message.get("knowledge_sources") or [])
                 _render_sources(message.get("endpoint_sources") or [])
+
+    if scroll_target_key:
+        _scroll_to_chat_message(str(scroll_target_key))
+        st.session_state.pop(scroll_state_key, None)
 
     if thread.get("archived"):
         st.info("This conversation is archived. Restore it from the rail to continue.")
         return
 
-    prompt = st.chat_input(
-        "Message about this project",
-        key=f"chat_composer_{project_id}_{thread_id}",
-    )
+    with st.container(key=f"project-chat-composer-{project_id}"):
+        prompt = st.chat_input(
+            "Message about this project",
+            key=f"chat_composer_{project_id}_{thread_id}",
+        )
     if not prompt:
         return
-    with st.status("Thinking with project context and extracting knowledge proposals", expanded=False) as status:
+    with st.status("Thinking with project context", expanded=False) as status:
         try:
             response = api_post(
                 f"/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages",
                 {"content": prompt},
             )
-            st.session_state[f"project_chat_thread_data_{project_id}"] = response.get("thread")
+            updated_thread = response.get("thread") or {}
+            st.session_state[f"project_chat_thread_data_{project_id}"] = updated_thread
             st.session_state[f"project_chat_selected_thread_{project_id}"] = thread_id
-            st.session_state[f"knowledge_extraction_notice_{project_id}"] = response.get("knowledge_extraction") or {}
+            updated_messages = updated_thread.get("messages") or []
+            if updated_messages and updated_messages[-1].get("role") == "assistant":
+                assistant_index = len(updated_messages)
+                st.session_state[scroll_state_key] = (
+                    f"chat-bubble-assistant-{thread_id}-{assistant_index}"
+                )
             status.update(label="Reply received.", state="complete")
         except Exception as exc:
             status.update(label="Could not send the message.", state="error")
@@ -312,143 +324,221 @@ def _render_conversation(project_id: str, thread: dict) -> None:
     st.rerun()
 
 
-def _render_knowledge_ledger(project_id: str) -> None:
-    """Render source submissions, fact proposals, approved facts, and open questions."""
+def _render_knowledge_hub(project_id: str, thread: dict | None) -> None:
+    """Manage versioned knowledge pages and review explicit chat-based updates."""
     try:
-        ledger = api_get(f"/api/v1/projects/{project_id}/knowledge/ledger") or {}
-        scopes = ledger.get("scopes", [])
+        pages = api_get(f"/api/v1/projects/{project_id}/knowledge-hub/pages") or []
     except Exception as exc:
-        st.error(f"Could not load project knowledge: {exc}")
+        st.error(f"Could not load the Knowledge Hub: {exc}")
         return
-    scope_names = {str(item.get("id")): f"{item.get('scope_type', '').title()} · {item.get('name')}" for item in scopes}
-    fact_by_id = {str(item.get("id")): item for item in ledger.get("facts", [])}
-    scope_ids = list(scope_names)
-    overview_scope = next((item for item in scopes if item.get("scope_type") == "project"), None)
-    if not scope_ids:
-        st.info("Create a project brief scope before adding knowledge.")
+    if not pages:
+        st.info("The project Knowledge Hub is not available yet.")
         return
-    with st.expander("Add source text", expanded=False):
-        selected_scope = st.selectbox("Store under", scope_ids, format_func=lambda value: scope_names.get(value, value), key=f"knowledge_scope_{project_id}")
-        source_name = st.text_input("Source name", value="Pasted context", key=f"knowledge_source_name_{project_id}")
-        source_text = st.text_area("Paste product knowledge", height=180, key=f"knowledge_source_text_{project_id}", placeholder="Paste a requirement, workflow, integration note, or product document.")
-        uploaded = st.file_uploader("Or import Markdown or text", type=["md", "txt"], key=f"knowledge_upload_{project_id}")
-        if st.button("Extract proposals for review", type="primary", disabled=not (source_text.strip() or uploaded), key=f"knowledge_submit_{project_id}"):
-            try:
-                content = uploaded.getvalue().decode("utf-8", errors="replace") if uploaded else source_text
-                name = uploaded.name if uploaded else source_name
-                with st.spinner("Extracting source-linked knowledge proposals…"):
-                    result = api_post(f"/api/v1/projects/{project_id}/knowledge/submissions", {"content": content, "source_name": name, "scope_id": selected_scope})
-                if result.get("status") == "failed":
-                    st.error(f"Extraction failed; source text is retained. {result.get('extraction_error', '')}")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Could not submit knowledge source: {exc}")
+    page_by_id = {str(item["id"]): item for item in pages if item.get("id")}
+    page_ids = list(page_by_id)
+    overview = next((item for item in pages if item.get("scope_type") == "project"), None)
+    selection_key = f"hub_page_{project_id}"
+    pending = st.session_state.pop(f"{selection_key}_pending", None)
+    if pending in page_by_id:
+        st.session_state[selection_key] = pending
+    if st.session_state.get(selection_key) not in page_by_id:
+        st.session_state[selection_key] = str((overview or pages[0])["id"])
 
-    notice_key = f"knowledge_extraction_notice_{project_id}"
-    notice = st.session_state.get(notice_key)
-    if notice:
-        if notice.get("status") == "failed":
-            st.warning(f"Chat was saved, but knowledge extraction failed: {notice.get('error', 'Unknown error')}")
-            if notice.get("submission_id") and st.button("Retry extraction", key=f"knowledge_retry_chat_{project_id}_{notice['submission_id']}"):
+    left, right = st.columns([1, 3], gap="large")
+    with left:
+        st.markdown("#### Knowledge pages")
+        with st.popover("Add feature or microservice", icon=":material/add:", width="stretch"):
+            new_type = st.selectbox("Page type", ["feature", "microservice"], key=f"hub_new_type_{project_id}")
+            new_name = st.text_input("Name", key=f"hub_new_name_{project_id}", placeholder="e.g. Restaurant billing")
+            if st.button("Create page", key=f"hub_create_{project_id}", type="primary", disabled=not new_name.strip()):
                 try:
-                    api_post(f"/api/v1/projects/{project_id}/knowledge/submissions/{notice['submission_id']}/retry", {})
+                    created = api_post(f"/api/v1/projects/{project_id}/knowledge-hub/pages", {
+                        "scope_type": new_type, "name": new_name.strip(),
+                    })
+                    st.session_state[f"{selection_key}_pending"] = created["id"]
                     st.rerun()
-                except Exception as exc: st.error(f"Retry failed: {exc}")
-        elif notice.get("proposal_count"):
-            st.success(f"Chat saved. {notice['proposal_count']} knowledge proposal(s) are ready for review below.")
-        else:
-            st.caption("Chat saved. No durable fact proposals were extracted from that turn.")
-        if st.button("Dismiss extraction notice", key=f"knowledge_notice_dismiss_{project_id}"):
-            st.session_state.pop(notice_key, None)
-            st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create page: {exc}")
+        st.radio(
+            "Project, features, and microservices", page_ids, key=selection_key,
+            format_func=lambda value: (
+                f"{page_by_id[value].get('name') or 'Untitled'} · "
+                f"{str(page_by_id[value].get('scope_type') or 'feature').title()}"
+            ),
+            label_visibility="collapsed",
+        )
 
-    st.subheader("Review queue")
-    submissions = [item for item in ledger.get("submissions", []) if item.get("status") in {"pending_review", "failed"}]
-    if not submissions:
-        st.caption("No submissions are waiting for review.")
-    for submission in submissions:
-        label = f"{submission.get('source_name') or 'Source'} · {submission.get('status')} · {_short_time(submission.get('created_at'))}"
-        with st.expander(label, expanded=submission.get("status") == "pending_review"):
-            st.caption(f"Scope: {scope_names.get(str(submission.get('scope_id')), 'Unknown scope')}")
-            if submission.get("gist"):
-                st.markdown(f"**Summary:** {submission['gist']}")
-            with st.expander("Original source", expanded=False): st.text(submission.get("source_text") or "")
-            if submission.get("extraction_error"):
-                st.warning(submission["extraction_error"])
-                if st.button("Retry extraction", key=f"knowledge_retry_{project_id}_{submission['id']}"):
-                    try: api_post(f"/api/v1/projects/{project_id}/knowledge/submissions/{submission['id']}/retry", {}); st.rerun()
-                    except Exception as exc: st.error(f"Retry failed: {exc}")
-            for conflict in submission.get("conflicts", []): st.warning(str(conflict))
-            decisions = []
-            reviewed_proposal_ids = set(submission.get("reviewed_proposal_ids") or [])
-            for proposal in submission.get("proposals", []):
-                proposal_id = str(proposal.get("id") or "")
-                with st.container(border=True):
-                    reviewed = proposal_id in reviewed_proposal_ids
-                    st.markdown(f"**{proposal.get('title') or 'Proposed fact'}** · {proposal.get('operation', 'add')}" + (" · reviewed" if reviewed else ""))
-                    st.write(proposal.get("content") or "")
-                    if proposal.get("evidence_quote"): st.caption(f"Source: “{proposal['evidence_quote']}”")
-                    target_fact = fact_by_id.get(str(proposal.get("target_fact_id") or ""), {})
-                    suggested_scope = str(target_fact.get("scope_id") or submission.get("scope_id") or "")
-                    scope_id = st.selectbox("Fact scope", scope_ids, index=scope_ids.index(suggested_scope) if suggested_scope in scope_ids else 0, format_func=lambda value: scope_names.get(value, value), key=f"knowledge_proposal_scope_{project_id}_{proposal_id}", disabled=reviewed or proposal.get("operation") in {"update", "supersede"})
-                    fact_status = st.selectbox("Confidence", ["confirmed", "assumed", "needs-clarification"], key=f"knowledge_proposal_status_{project_id}_{proposal_id}", disabled=reviewed)
-                    decision = st.radio("Decision", ["leave pending", "approve", "reject"], horizontal=True, key=f"knowledge_proposal_decision_{project_id}_{proposal_id}", label_visibility="collapsed", disabled=reviewed)
-                    if decision != "leave pending" and not reviewed: decisions.append({"proposal_id": proposal_id, "decision": decision, "scope_id": scope_id, "status": fact_status})
-            for question in submission.get("questions", []): st.info(f"Open question: {question}")
-            if decisions and st.button("Save review decisions", type="primary", key=f"knowledge_review_{project_id}_{submission['id']}"):
-                try:
-                    api_post(f"/api/v1/projects/{project_id}/knowledge/submissions/{submission['id']}/review", {"decisions": decisions})
-                    st.rerun()
-                except Exception as exc: st.error(f"Could not save review: {exc}")
-
-    st.subheader("Current approved knowledge")
-    active_facts = [item for item in ledger.get("facts", []) if item.get("active")]
-    if not active_facts: st.caption("No facts are active yet. Approve proposals to use them in chat and generation context.")
-    for fact in active_facts:
-        with st.expander(f"{fact.get('title')} · {fact.get('status')} · {scope_names.get(str(fact.get('scope_id')), 'Scope')}", expanded=False):
-            st.write(fact.get("content") or "")
-            st.caption(f"Fact ID {fact.get('id')} · source {fact.get('source_name') or fact.get('source_submission_id')} · {_short_time(fact.get('created_at'))}")
-            if fact.get("supersedes_fact_id"): st.caption(f"Supersedes fact {fact['supersedes_fact_id']}")
-
-    st.subheader("Open questions")
-    open_questions = [item for item in ledger.get("questions", []) if item.get("status") == "open"]
-    for question in open_questions:
-        st.markdown(f"**{question.get('question')}**")
-        answer = st.text_input("Answer", key=f"knowledge_question_answer_{project_id}_{question['id']}")
-        answer_col, dismiss_col = st.columns([3, 1])
-        if answer_col.button("Submit answer for review", key=f"knowledge_question_submit_{project_id}_{question['id']}", disabled=not answer.strip()):
-            try: api_post(f"/api/v1/projects/{project_id}/knowledge/questions/{question['id']}/answer", {"answer": answer}); st.rerun()
-            except Exception as exc: st.error(f"Could not submit answer: {exc}")
-        if dismiss_col.button("Dismiss", key=f"knowledge_question_dismiss_{project_id}_{question['id']}"):
-            try: api_post(f"/api/v1/projects/{project_id}/knowledge/questions/{question['id']}/dismiss", {}); st.rerun()
-            except Exception as exc: st.error(f"Could not dismiss question: {exc}")
-
-    legacy = [item for item in ledger.get("legacy_entries", []) if not item.get("retired")]
-    if legacy:
-        with st.expander(f"Legacy entries to review ({len(legacy)})", expanded=False):
-            st.caption("These older mutable entries are not used as confirmed context. Import each into the source review queue before relying on it.")
-            for entry in legacy:
-                st.markdown(f"**{entry.get('title')}** · {entry.get('source_name')}")
-                st.caption(str(entry.get("content") or "")[:300])
-                if st.button("Import for review", key=f"knowledge_legacy_{project_id}_{entry['id']}"):
+    selected_id = str(st.session_state[selection_key])
+    page = page_by_id[selected_id]
+    with right:
+        st.markdown(f"### {page.get('name') or 'Knowledge page'}")
+        version_number = page.get("current_version_number") or 0
+        page_type = str(page.get("scope_type") or "feature")
+        st.caption(
+            "Project-wide context · included in every generation" if page_type == "project"
+            else f"{page_type.title()} knowledge · current version v{version_number}"
+        )
+        if page_type == "feature":
+            services = [item for item in pages if item.get("scope_type") == "microservice"]
+            if services:
+                service_ids = [str(item["id"]) for item in services]
+                link_key = f"hub_services_{project_id}_{selected_id}"
+                st.session_state.setdefault(link_key, [
+                    value for value in page.get("microservice_scope_ids", []) if value in service_ids
+                ])
+                selected_services = st.multiselect(
+                    "Microservices used by this feature", service_ids, key=link_key,
+                    format_func=lambda value: page_by_id[value].get("name") or "Microservice",
+                    help="A feature may use several microservices. A microservice can be shared by multiple features.",
+                )
+                if st.button("Save service links", key=f"hub_service_save_{project_id}_{selected_id}"):
                     try:
-                        api_post(f"/api/v1/projects/{project_id}/knowledge/submissions", {"content": entry.get("content", ""), "source_name": f"Legacy: {entry.get('title')}", "scope_id": (overview_scope or {}).get("id", scope_ids[0])})
+                        api_put(
+                            f"/api/v1/projects/{project_id}/knowledge-hub/features/{selected_id}/microservices",
+                            {"microservice_scope_ids": selected_services},
+                        )
                         st.rerun()
-                    except Exception as exc: st.error(f"Could not import legacy entry: {exc}")
+                    except Exception as exc:
+                        st.error(f"Could not save service links: {exc}")
 
-    with st.expander(f"Source and change history ({len(ledger.get('submissions', []))} submissions, {len(ledger.get('events', []))} events)", expanded=False):
-        for submission in ledger.get("submissions", []):
-            with st.expander(f"{submission.get('source_name')} · {submission.get('status')} · {_short_time(submission.get('created_at'))}", expanded=False):
-                st.caption(f"Scope: {scope_names.get(str(submission.get('scope_id')), 'Unknown scope')}")
-                if submission.get("gist"): st.markdown(f"**Gist:** {submission['gist']}")
-                st.text(submission.get("source_text") or "")
-        st.markdown("**Append-only change events**")
-        for event in ledger.get("events", []):
-            payload = event.get("payload") or {}
-            st.caption(f"{_short_time(event.get('created_at'))} · {event.get('event_type')} · {json.dumps(payload, ensure_ascii=False)}")
+        content = str(page.get("current_content") or "")
+        st.markdown("#### Current page")
+        with st.container(height=320, border=True):
+            if content:
+                st.markdown(content)
+            else:
+                st.caption("This page has no saved knowledge yet. Discuss the topic in chat, then prepare an update for this page.")
+
+        if thread and not thread.get("archived"):
+            targets_key = f"hub_draft_targets_{project_id}_{thread.get('id')}"
+            st.multiselect(
+                "Pages to update from this conversation", page_ids, key=targets_key,
+                default=[selected_id],
+                format_func=lambda value: f"{page_by_id[value].get('name')} · {page_by_id[value].get('scope_type')}",
+                help="Each page gets a separate draft and change comparison. Nothing is saved until you review and confirm.",
+            )
+            if st.button(
+                "Prepare knowledge update", key=f"hub_prepare_{project_id}_{thread.get('id')}",
+                type="primary", disabled=not st.session_state.get(targets_key),
+            ):
+                try:
+                    with st.spinner("Preparing Knowledge Hub changes from this conversation…"):
+                        response = api_post(
+                            f"/api/v1/projects/{project_id}/chat/threads/{thread['id']}/knowledge-draft",
+                            {"scope_ids": st.session_state[targets_key]},
+                        )
+                    previous_drafts = st.session_state.get(f"hub_draft_{project_id}") or {}
+                    for previous in previous_drafts.get("pages", []):
+                        previous_id = str(previous.get("scope_id") or "")
+                        st.session_state.pop(f"hub_draft_editor_{project_id}_{previous_id}", None)
+                        st.session_state.pop(f"hub_draft_include_{project_id}_{previous_id}", None)
+                    st.session_state[f"hub_draft_{project_id}"] = response
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not prepare the update: {exc}")
+        else:
+            st.caption("Select an active chat thread to prepare a knowledge update from its discussion.")
+
+        draft_key = f"hub_draft_{project_id}"
+        draft_set = st.session_state.get(draft_key)
+        if draft_set:
+            drafts = [item for item in draft_set.get("pages", []) if item.get("scope_id") in page_by_id]
+            if drafts:
+                st.divider()
+                st.markdown("#### Review proposed changes")
+                st.caption("Review each page and its section changes. Confirmed knowledge can be saved with uncertain details under Open questions.")
+                with st.container(height=560, border=True):
+                    for draft in drafts:
+                        scope_id = str(draft["scope_id"])
+                        title = f"{page_by_id[scope_id].get('name')} · {str(page_by_id[scope_id].get('scope_type')).title()}"
+                        with st.expander(title, expanded=True):
+                            save_key = f"hub_draft_include_{project_id}_{scope_id}"
+                            st.checkbox("Include this page in the update", value=True, key=save_key)
+                            for section in draft.get("section_diffs", []):
+                                st.markdown(f"**{section.get('section') or 'Section'}**")
+                                _render_github_diff(section.get("diff") or "")
+                            editor_key = f"hub_draft_editor_{project_id}_{scope_id}"
+                            edit_tab, preview_tab = st.tabs(["Edit", "Preview"])
+                            with edit_tab:
+                                st.text_area("Edit proposed page content", draft.get("draft", ""), height=260, key=editor_key)
+                            with preview_tab:
+                                preview_content = st.session_state.get(editor_key, draft.get("draft", ""))
+                                if preview_content.strip():
+                                    st.markdown(preview_content)
+                                else:
+                                    st.caption("Markdown preview will appear here as you edit the page.")
+                            st.caption("Keep uncertain or conflicting details in a clearly labeled Open questions section.")
+                to_save = [
+                    {"scope_id": str(item["scope_id"]),
+                     "content": st.session_state.get(f"hub_draft_editor_{project_id}_{item['scope_id']}", item.get("draft", ""))}
+                    for item in drafts
+                    if st.session_state.get(f"hub_draft_include_{project_id}_{item['scope_id']}", True)
+                ]
+                save_col, discard_col = st.columns([1, 1])
+                if save_col.button("Save selected page versions", type="primary", key=f"hub_save_update_{project_id}", disabled=not to_save):
+                    try:
+                        api_post(f"/api/v1/projects/{project_id}/knowledge-hub/updates", {
+                            "source_thread_id": draft_set.get("source_thread_id"),
+                            "draft_event_id": draft_set.get("draft_event_id"),
+                            "pages": to_save,
+                        })
+                        st.session_state.pop(draft_key, None)
+                        for item in drafts:
+                            st.session_state.pop(f"hub_draft_editor_{project_id}_{item['scope_id']}", None)
+                            st.session_state.pop(f"hub_draft_include_{project_id}_{item['scope_id']}", None)
+                            st.session_state.pop(f"hub_versions_{project_id}_{item['scope_id']}", None)
+                        st.success("Knowledge Hub versions saved.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not save the Knowledge Hub update: {exc}")
+                if discard_col.button("Discard drafts", key=f"hub_discard_update_{project_id}"):
+                    st.session_state.pop(draft_key, None)
+                    st.rerun()
+
+        history_key = f"hub_versions_{project_id}_{selected_id}"
+        with st.expander("Version history and changes", expanded=False):
+            if st.button("Refresh version history", key=f"hub_refresh_versions_{project_id}_{selected_id}"):
+                st.session_state.pop(history_key, None)
+            if history_key not in st.session_state:
+                try:
+                    st.session_state[history_key] = api_get(
+                        f"/api/v1/projects/{project_id}/knowledge-hub/pages/{selected_id}/versions"
+                    ) or []
+                except Exception as exc:
+                    st.error(f"Could not load page history: {exc}")
+                    st.session_state[history_key] = None
+            cached_versions = st.session_state.get(history_key)
+            versions = sorted(cached_versions or [], key=lambda item: int(item.get("version_number") or 0))
+            if versions:
+                for index, version in enumerate(versions):
+                    current = bool(version.get("is_current"))
+                    label = f"v{version.get('version_number', '?')}" + (" · Current" if current else "")
+                    with st.expander(label, expanded=False):
+                        st.caption(f"{version.get('created_at', '')}" + (f" · Source chat {version.get('source_thread_id')}" if version.get("source_thread_id") else ""))
+                        st.markdown(str(version.get("content") or ""))
+                        if index > 0:
+                            prior_content = str(versions[index - 1].get("content") or "")
+                            change = "\n".join(difflib.unified_diff(
+                                prior_content.splitlines(), str(version.get("content") or "").splitlines(),
+                                fromfile=f"v{versions[index - 1].get('version_number')}",
+                                tofile=f"v{version.get('version_number')}", lineterm="",
+                            ))
+                            with st.expander("Changes from previous version", expanded=False):
+                                _render_github_diff(change)
+                        if not current and st.button("Restore as new version", key=f"hub_restore_{project_id}_{selected_id}_{version['id']}"):
+                            try:
+                                api_post(
+                                    f"/api/v1/projects/{project_id}/knowledge-hub/pages/{selected_id}/versions/{version['id']}/restore", {},
+                                )
+                                st.session_state.pop(history_key, None)
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not restore version: {exc}")
+            elif st.session_state.get(history_key) is not None:
+                st.caption("No saved versions are available for this page yet.")
 
 def render_project_chat_tab() -> None:
-    """Render the conversation rail, the transcript, and the brief workspace."""
+    """Render the conversation rail, transcript, and versioned Knowledge Hub."""
     project = st.session_state.get("current_project") or {}
     project_id = str(project.get("id") or "")
     if not project_id:
@@ -459,7 +549,7 @@ def render_project_chat_tab() -> None:
     st.header("Project Chat")
     st.caption(
         "Discuss product behavior and requirements against the project context, "
-        "then keep what matters as a versioned brief."
+        "then prepare and review explicit updates to durable project knowledge."
     )
 
     selected_key = f"project_chat_selected_thread_{project_id}"
@@ -595,22 +685,14 @@ def render_project_chat_tab() -> None:
                 thread = None
         if not thread:
             view_key = f"chat_view_{project_id}"
-            st.session_state.setdefault(view_key, "Conversation")
+            if st.session_state.get(view_key) not in {"Conversation", "Knowledge Hub"}:
+                st.session_state[view_key] = "Conversation"
             view = st.segmented_control(
-                "View", ["Conversation", "Project briefs", "Knowledge"], key=view_key,
+                "View", ["Conversation", "Knowledge Hub"], key=view_key,
                 label_visibility="collapsed", width="stretch",
             ) or "Conversation"
-            if view == "Knowledge":
-                _render_knowledge_ledger(project_id)
-            elif view == "Project briefs":
-                try:
-                    scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
-                    overview = next((s for s in scopes if s.get("scope_type") == "project"), None)
-                    if overview and st.button("Edit project overview", key=f"brief_open_{project_id}_{overview.get('id')}", icon=":material/edit:"):
-                        _brief_dialog(project_id, overview)
-                    _render_brief_cards(project_id, [s for s in scopes if s.get("scope_type") != "project"])
-                except Exception as exc:
-                    st.error(f"Could not load project briefs: {exc}")
+            if view == "Knowledge Hub":
+                _render_knowledge_hub(project_id, None)
             else:
                 st.caption("Select a conversation on the left, or start one to discuss product context.")
             return
@@ -626,9 +708,10 @@ def render_project_chat_tab() -> None:
         st.markdown(" ".join(chips))
 
         view_key = f"chat_view_{project_id}"
-        st.session_state.setdefault(view_key, "Conversation")
+        if st.session_state.get(view_key) not in {"Conversation", "Knowledge Hub"}:
+            st.session_state[view_key] = "Conversation"
         view = st.segmented_control(
-            "View", ["Conversation", "Project briefs", "Knowledge"], key=view_key,
+            "View", ["Conversation", "Knowledge Hub"], key=view_key,
             label_visibility="collapsed", width="stretch",
         ) or "Conversation"
 
@@ -636,48 +719,4 @@ def render_project_chat_tab() -> None:
             _render_conversation(project_id, thread)
             return
 
-        if view == "Knowledge":
-            _render_knowledge_ledger(project_id)
-            return
-
-        try:
-            scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
-        except Exception as exc:
-            st.error(f"Could not load project briefs: {exc}")
-            return
-        overview = next((s for s in scopes if s.get("scope_type") == "project"), None)
-        with st.container(border=True):
-            if overview:
-                st.markdown(f"**{overview.get('name') or 'Project overview'}** :gray-badge[always included]")
-                st.caption(
-                    " ".join(str(overview.get("current_content") or "").split())[:240]
-                    or "No saved version yet."
-                )
-                if st.button(
-                    "Edit project overview", key=f"brief_open_{project_id}_{overview.get('id')}",
-                    icon=":material/edit:", width="stretch",
-                ):
-                    _brief_dialog(project_id, overview)
-            else:
-                st.caption("No project overview scope yet.")
-
-        with st.popover("Add a feature or service brief", icon=":material/add:"):
-            scope_type = st.selectbox("Scope", ["feature", "microservice"], key=f"brief_new_type_{project_id}")
-            scope_name = st.text_input("Name", key=f"brief_new_name_{project_id}", placeholder="For example, Checkout")
-            if st.button(
-                "Create brief", key=f"brief_create_{project_id}", type="primary",
-                width="stretch", disabled=not scope_name.strip(),
-            ):
-                try:
-                    api_post(
-                        f"/api/v1/projects/{project_id}/brief-scopes",
-                        {"scope_type": scope_type, "name": scope_name.strip()},
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not create brief scope: {exc}")
-
-        _render_brief_cards(
-            project_id,
-            [s for s in scopes if s.get("scope_type") != "project"],
-        )
+        _render_knowledge_hub(project_id, thread)

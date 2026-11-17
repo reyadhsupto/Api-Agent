@@ -36,7 +36,6 @@ from frontend.core import (  # noqa: E402
 
 import frontend.core as _core  # noqa: E402
 from frontend.styles import inject_styles  # noqa: E402
-from frontend.ui.theme_toggle import render_theme_control  # noqa: E402
 
 
 # The frontend used to live in this module. Mirror the shared core namespace,
@@ -46,7 +45,7 @@ globals().update({
     name: value for name, value in vars(_core).items() if not name.startswith("__")
 })
 
-from frontend.views.activity import render_generation_activity_tab  # noqa: E402
+from frontend.views.activity import render_activity_logs_tab  # noqa: E402
 from frontend.views.api_workspace import render_api_workspace  # noqa: E402
 from frontend.views.chat import render_project_chat_tab  # noqa: E402
 from frontend.views.test_cases import render_test_cases_tab  # noqa: E402
@@ -62,12 +61,14 @@ def main() -> None:
     initialize_session_state()
     _flush_toasts()
     inject_styles()
-    modes = ("API Workspace", "Test Cases", "Project Chat", "Generation Activity")
+    modes = ("API Workspace", "Test Cases", "Project Chat", "Activity Logs")
     st.sidebar.markdown(
         "<div class='aa-rail-brand'><span class='aa-rail-mark'>AA</span>"
         "<span class='aa-rail-name'>Api-Agent</span></div>",
         unsafe_allow_html=True,
     )
+    if st.session_state.get("ui_mode") == "Generation Activity":
+        st.session_state["ui_mode"] = "Activity Logs"
     st.sidebar.radio("Workspace mode", modes, key="ui_mode", label_visibility="collapsed")
     st.sidebar.divider()
     current_project = st.session_state.get("current_project") or {}
@@ -163,8 +164,6 @@ def main() -> None:
                 _queue_toast(f"Fetched {len(tcs)} test case(s).")
                 st.rerun()
 
-    render_theme_control()
-
     mode = st.session_state.get("ui_mode") or modes[0]
 
     if mode == "API Workspace":
@@ -190,8 +189,8 @@ def main() -> None:
         render_test_cases_tab()
     elif mode == "Project Chat":
         render_project_chat_tab()
-    elif mode == "Generation Activity":
-        render_generation_activity_tab()
+    elif mode == "Activity Logs":
+        render_activity_logs_tab()
 
     _flush_toasts()
 

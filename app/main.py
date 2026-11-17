@@ -11,6 +11,7 @@ Returns:
 import json
 import csv
 import copy
+import difflib
 import io
 import os
 import re
@@ -41,6 +42,10 @@ from app.schemas import (
     ProjectBriefScopeRequest,
     ProjectBriefVersionRequest,
     ProjectBriefDraftRequest,
+    KnowledgeHubDraftRequest,
+    KnowledgeHubFeatureServicesRequest,
+    KnowledgeHubVersionCompareRequest,
+    KnowledgeHubUpdateRequest,
     ProjectKnowledgeEntryRequest,
     ProjectKnowledgeSubmissionRequest,
     ProjectKnowledgeReviewRequest,
@@ -72,11 +77,11 @@ def _resolve_project_briefs(
     project_id: str, scope_ids: list[str], thread_id: str | None = None,
     legacy_brief: str | None = None, query: str = "", knowledge_coverage: str = "changed",
 ) -> dict:
-    """Resolve the current project overview and selected current brief versions."""
+    """Resolve the project page, selected feature pages, and linked services."""
     get_thread = getattr(database, "get_chat_thread", None)
     if thread_id and callable(get_thread) and not get_thread(project_id, thread_id):
         raise HTTPException(status_code=404, detail="Project chat thread not found.")
-    list_scopes = getattr(database, "list_project_brief_scopes", None)
+    list_scopes = getattr(database, "list_knowledge_hub_scopes", None)
     if not callable(list_scopes):
         return {"thread_id": thread_id, "briefs": [], "versions": [],
                 "legacy_brief": str(legacy_brief or "").strip(), "knowledge_sources": [],
@@ -84,22 +89,31 @@ def _resolve_project_briefs(
     scopes = list_scopes(project_id)
     if scopes is None:
         raise HTTPException(status_code=404, detail="Project not found.")
+    scopes = [item for item in scopes if item.get("scope_type") != "legacy"]
     scope_ids_available = {str(item["id"]) for item in scopes}
     if any(str(item) not in scope_ids_available for item in scope_ids):
         raise HTTPException(status_code=404, detail="One or more selected brief scopes do not belong to this project.")
     scope_by_id = {str(item["id"]): item for item in scopes}
-    for scope_id in scope_ids:
+    expanded_scope_ids = list(dict.fromkeys(str(item) for item in scope_ids))
+    for scope_id in list(expanded_scope_ids):
         selected = scope_by_id[str(scope_id)]
         if selected.get("scope_type") == "project":
             continue
         if not selected.get("current_version_id") or not str(selected.get("current_content") or "").strip():
-            raise HTTPException(status_code=422, detail=f"Selected brief '{selected.get('name')}' has no saved current version.")
-    briefs = database.get_current_project_brief_context(project_id, scope_ids)
+            raise HTTPException(status_code=422, detail=f"Selected Knowledge Hub page '{selected.get('name')}' has no saved version.")
+        if selected.get("scope_type") == "feature":
+            for service_id in selected.get("microservice_scope_ids", []):
+                if str(service_id) not in expanded_scope_ids:
+                    expanded_scope_ids.append(str(service_id))
+    if any(scope_id not in scope_ids_available for scope_id in expanded_scope_ids):
+        raise HTTPException(status_code=404, detail="A linked Knowledge Hub page no longer belongs to this project.")
+    briefs = database.get_current_project_brief_context(project_id, expanded_scope_ids)
     if briefs is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     context = {
         "thread_id": thread_id,
         "briefs": briefs,
+        "knowledge_hub_pages": briefs,
         "versions": [{
             "scope_id": item["scope_id"], "scope_type": item["scope_type"],
             "scope_name": item["scope_name"], "version_id": item["version_id"],
@@ -108,20 +122,16 @@ def _resolve_project_briefs(
         "legacy_brief": str(legacy_brief or "").strip(),
         "knowledge_sources": [],
     }
-    retrieve_knowledge = getattr(database, "retrieve_knowledge_facts", None)
-    if callable(retrieve_knowledge):
-        context["knowledge_context"] = _selected_knowledge(project_id, context, query or legacy_brief or "", knowledge_coverage)
-    else:
-        context["knowledge_context"] = {"coverage": knowledge_coverage, "facts": [], "fact_ids": [], "open_questions": []}
+    context["knowledge_context"] = {"coverage": knowledge_coverage, "facts": [], "fact_ids": [], "open_questions": []}
     return context
 
 
 def _format_project_briefs(context: dict) -> str:
-    """Format selected saved briefs as distinct, labeled prompt context."""
+    """Format selected immutable Knowledge Hub pages for prompts."""
     sections = []
     for item in context.get("briefs", []):
-        label = "Project overview" if item.get("scope_type") == "project" else (
-            f"{item.get('scope_type', 'feature').title()} brief: {item.get('scope_name', '')}"
+        label = "Project-wide Knowledge Hub" if item.get("scope_type") == "project" else (
+            f"{item.get('scope_type', 'feature').title()} knowledge page: {item.get('scope_name', '')}"
         )
         sections.append(f"{label} (version {item.get('version_number')}):\n{item.get('content', '')}")
     if context.get("legacy_brief"):
@@ -150,7 +160,7 @@ def _compose_generation_requirements(run_requirements: str | None, context: dict
     parts = []
     briefs = _format_project_briefs(context)
     if briefs:
-        parts.append("Current saved project briefs (durable context):\n" + briefs)
+        parts.append("Current saved Knowledge Hub pages (durable context):\n" + briefs)
     knowledge_text = _format_knowledge_context((context.get("knowledge_context") or {}))
     if knowledge_text:
         parts.append(knowledge_text)
@@ -161,21 +171,19 @@ def _compose_generation_requirements(run_requirements: str | None, context: dict
         parts.append("Requirements for this generation action:\n" + action_text)
     if briefs and action_text:
         parts.append(
-            "Context precedence: saved briefs are the durable baseline. Treat an explicit, clear instruction "
+            "Context precedence: saved Knowledge Hub pages are the durable baseline. Treat an explicit, clear instruction "
             "in this generation request as a change for this run. If the intended change is ambiguous or "
             "conflicts without explaining which rule should apply, ask a concise clarification question instead "
-            "of guessing. Do not rewrite or persist saved briefs."
+            "of guessing. Do not rewrite or persist saved knowledge."
         )
     combined = "\n\n".join(parts)
     return combined or None
 
 
 def _retrieved_project_context(project_id: str, query: str) -> tuple[list[dict], list[dict]]:
-    """Return relevant reviewed facts and endpoint references with lexical matches."""
-    scopes = database.list_project_brief_scopes(project_id) or []
-    scope_ids = [str(item["id"]) for item in scopes]
-    knowledge = database.retrieve_knowledge_facts(project_id, scope_ids, query, "changed", 12)
-    knowledge.extend({"kind": "open_question", **item} for item in database.list_open_knowledge_questions(project_id, scope_ids)[:10])
+    """Return the project page and lexically relevant Hub pages and endpoints."""
+    pages = database.list_knowledge_hub_scopes(project_id) or []
+    pages = [item for item in pages if item.get("scope_type") != "legacy" and item.get("current_content")]
     project = database.get_project(project_id) or {}
     stop_words = {
         "about", "after", "also", "and", "are", "can", "could", "does", "for", "from",
@@ -187,6 +195,30 @@ def _retrieved_project_context(project_id: str, query: str) -> tuple[list[dict],
         token for token in re.findall(r"[a-z0-9]+", query.casefold())
         if len(token) >= 3 and token not in stop_words
     }
+    page_matches = []
+    for page in pages:
+        searchable = f"{page.get('name', '')} {page.get('current_content', '')}".casefold()
+        matched_terms = terms & set(re.findall(r"[a-z0-9]+", searchable))
+        if page.get("scope_type") == "project" or not terms or matched_terms:
+            page_matches.append((page.get("scope_type") == "project", len(matched_terms), page))
+    page_matches.sort(key=lambda item: (not item[0], -item[1], str(item[2].get("name") or "")))
+    selected_pages = [item[2] for item in page_matches[:8]]
+    page_by_id = {str(item.get("id")): item for item in pages}
+    selected_page_ids = {str(item.get("id")) for item in selected_pages}
+    for page in list(selected_pages):
+        if page.get("scope_type") != "feature":
+            continue
+        for service_id in page.get("microservice_scope_ids", []):
+            service = page_by_id.get(str(service_id))
+            if service and str(service_id) not in selected_page_ids:
+                selected_pages.append(service)
+                selected_page_ids.add(str(service_id))
+    knowledge = [{
+        "kind": "knowledge_hub_page", "id": item["id"],
+        "title": f"{str(item.get('scope_type') or 'feature').title()} · {item.get('name')}",
+        "status": f"v{item.get('current_version_number') or 1}",
+        "content": str(item.get("current_content") or "")[:10000],
+    } for item in selected_pages[:12]]
     collection_names = {
         str(item.get("id")): str(item.get("name") or "")
         for item in project.get("collections", [])
@@ -240,70 +272,78 @@ def _extract_knowledge_submission(project_id: str, submission: dict, model: str 
             "Each proposal has operation (add/update/supersede), target_fact_id (required only when correcting an "
             "active fact; otherwise null), title, content, and evidence_quote copied from source text. Do not invent "
             "fact IDs; use a target only when the exact active fact ID is supplied in reference context. Questions "
-            "must be concise and identify missing or conflicting details. proposals/conflicts/questions are arrays."
+            "must be concise and identify missing or conflicting details. Keep gist under 60 words, each title short, "
+            "each fact content under 35 words, and each exact evidence_quote under 20 words. Merge duplicate facts; "
+            "do not repeat one fact as multiple proposals. proposals/conflicts/questions are arrays."
         )},
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
-    raw = openrouter_chat(messages, model, max_tokens=2200)
+    raw = ""
+    provider_metadata = {}
     try:
+        result = openrouter_chat(messages, model, max_tokens=5000, return_details=True)
+        if isinstance(result, dict):
+            raw = str(result.get("content") or "")
+            provider_metadata = {
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "finish_reason": result.get("finish_reason"),
+                "usage": result.get("usage"),
+            }
+            if result.get("finish_reason") == "length":
+                raise ValueError("The selected provider stopped the extraction response at its output token limit.")
+        else:
+            raw = str(result or "")
         candidate = raw.strip()
         if candidate.startswith("```"):
             candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE)
         extracted = json.loads(candidate)
+        if not isinstance(extracted, dict) or not isinstance(extracted.get("proposals", []), list):
+            raise ValueError("Knowledge extraction returned an invalid response shape.")
+        active_by_id = {str(item.get("id")): item for item in active_facts}
+        source_text = str(submission.get("source_text") or "")
+        for item in extracted.get("proposals", []):
+            if not isinstance(item, dict) or not str(item.get("content") or "").strip():
+                raise ValueError("Knowledge extraction returned an incomplete fact proposal.")
+            evidence = str(item.get("evidence_quote") or "").strip()
+            if not evidence or evidence.casefold() not in source_text.casefold():
+                raise ValueError("A proposed fact could not be tied to an exact quote from the submitted source.")
+            item["operation"] = str(item.get("operation") or "add").lower()
+            if item["operation"] not in {"add", "update", "supersede"}:
+                item["operation"] = "add"
+            target_id = str(item.get("target_fact_id") or "")
+            if item["operation"] in {"update", "supersede"} and target_id not in active_by_id:
+                raise ValueError("A correction proposal did not identify a current active fact.")
+            if item["operation"] not in {"update", "supersede"}:
+                item["target_fact_id"] = None
+        saved = database.save_knowledge_extraction(
+            project_id, submission["id"], extracted,
+            prompt_messages=messages, raw_response=raw, provider_metadata=provider_metadata,
+        )
+        if saved is None:
+            raise ValueError("Knowledge submission no longer exists.")
+        return saved
+    except json.JSONDecodeError as exc:
+        error = ValueError(
+            f"Knowledge extraction returned invalid JSON: {exc.msg} "
+            f"(line {exc.lineno}, column {exc.colno})."
+        )
+        error.prompt_messages = messages
+        error.raw_response = raw
+        error.provider_metadata = provider_metadata
+        raise error from exc
     except (TypeError, ValueError) as exc:
-        raise ValueError("Knowledge extraction did not return valid JSON.") from exc
-    if not isinstance(extracted, dict) or not isinstance(extracted.get("proposals", []), list):
-        raise ValueError("Knowledge extraction returned an invalid response shape.")
-    active_by_id = {str(item.get("id")): item for item in active_facts}
-    source_text = str(submission.get("source_text") or "")
-    for item in extracted.get("proposals", []):
-        if not isinstance(item, dict) or not str(item.get("content") or "").strip():
-            raise ValueError("Knowledge extraction returned an incomplete fact proposal.")
-        evidence = str(item.get("evidence_quote") or "").strip()
-        if not evidence or evidence.casefold() not in source_text.casefold():
-            raise ValueError("A proposed fact could not be tied to an exact quote from the submitted source.")
-        item["operation"] = str(item.get("operation") or "add").lower()
-        if item["operation"] not in {"add", "update", "supersede"}:
-            item["operation"] = "add"
-        target_id = str(item.get("target_fact_id") or "")
-        if item["operation"] in {"update", "supersede"} and target_id not in active_by_id:
-            raise ValueError("A correction proposal did not identify a current active fact.")
-        if item["operation"] not in {"update", "supersede"}:
-            item["target_fact_id"] = None
-    saved = database.save_knowledge_extraction(project_id, submission["id"], extracted)
-    if saved is None:
-        raise ValueError("Knowledge submission no longer exists.")
-    return saved
+        error = ValueError(str(exc) or "Knowledge extraction returned an invalid response.")
+        error.prompt_messages = messages
+        error.raw_response = raw
+        error.provider_metadata = provider_metadata
+        raise error from exc
+    except Exception as exc:
+        exc.prompt_messages = messages
+        exc.raw_response = raw
+        exc.provider_metadata = provider_metadata
+        raise
 
-
-def _selected_knowledge(project_id: str, brief_context: dict, query: str, coverage: str = "changed") -> dict:
-    """Resolve bounded fact and open-question context for one chat or generation action."""
-    scopes = brief_context.get("briefs", [])
-    scope_ids = list(dict.fromkeys(str(item.get("scope_id")) for item in scopes if item.get("scope_id")))
-    retrieve_facts = getattr(database, "retrieve_knowledge_facts", None)
-    retrieve_questions = getattr(database, "list_open_knowledge_questions", None)
-    facts = retrieve_facts(project_id, scope_ids, query, coverage) if callable(retrieve_facts) else []
-    questions = retrieve_questions(project_id, scope_ids) if callable(retrieve_questions) else []
-    budget = max(1000, min(int(os.getenv("PROJECT_KNOWLEDGE_CONTEXT_CHAR_BUDGET", "12000")), 40000))
-    selected, used = [], 0
-    for fact in facts:
-        block = json.dumps(fact, ensure_ascii=False)
-        if used + len(block) > budget:
-            continue
-        selected.append(fact)
-        used += len(block)
-    selected_questions = []
-    for question in questions:
-        block = json.dumps(question, ensure_ascii=False)
-        if used + len(block) > budget:
-            continue
-        selected_questions.append(question)
-        used += len(block)
-    snapshots = [{key: fact.get(key) for key in (
-        "id", "scope_id", "title", "content", "status", "source_submission_id",
-        "source_name", "source_type", "created_at",
-    )} for fact in selected]
-    return {"coverage": coverage, "facts": snapshots, "fact_ids": [str(item["id"]) for item in snapshots], "open_questions": selected_questions}
 
 def _generate_or_raise(generator, **kwargs):
     """Run an LLM generator and expose malformed output as a useful API error."""
@@ -407,6 +447,7 @@ def _record_generation_activity(
         "run_business_requirements": business_requirements or "",
         "effective_generation_context": effective_generation_context or "",
         "project_brief_context": project_brief_context or {"thread_id": None, "briefs": [], "versions": []},
+        "knowledge_hub_context": project_brief_context or {"thread_id": None, "briefs": [], "versions": []},
         "endpoints": [{
             "id": item.get("id"), "name": item.get("name", ""),
             "method": item.get("method", "GET"), "url": item.get("url", ""),
@@ -414,6 +455,7 @@ def _record_generation_activity(
         "endpoint_snapshot": endpoint_snapshot,
         "prompt": trace.get("prompt", ""),
         "llm_response": trace.get("llm_response", ""),
+        "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
         "clarification_questions": trace.get("clarification_questions", []),
         "status": status,
         "error": error or "",
@@ -629,6 +671,7 @@ def _attach_generation_requirements(
         test_case["run_business_requirements"] = requirements
         test_case["generation_requirements"] = effective_generation_context or requirements
         test_case["project_brief_versions"] = copy.deepcopy(brief_versions)
+        test_case["knowledge_hub_versions"] = copy.deepcopy(brief_versions)
         fact_context = knowledge_context or (project_brief_context or {}).get("knowledge_context") or {}
         test_case["knowledge_fact_ids"] = list(fact_context.get("fact_ids") or [])
         test_case["knowledge_fact_snapshot"] = copy.deepcopy(fact_context.get("facts") or [])
@@ -721,8 +764,8 @@ def list_project_chat_threads(project_id: str, include_archived: bool = False) -
 
 @app.post("/api/v1/projects/{project_id}/chat/threads")
 def create_project_chat_thread(project_id: str, request: ProjectChatThreadRequest) -> dict:
-    """Create a project chat thread using the configured OpenRouter model by default."""
-    model = (request.model or os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")).strip()
+    """Create a chat thread; its model field is informational, not a provider pin."""
+    model = (request.model or "").strip()
     result = database.create_chat_thread(project_id, request.title, model)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -761,7 +804,7 @@ def delete_project_chat_thread(project_id: str, thread_id: str) -> dict:
 
 @app.post("/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages")
 def send_project_chat_message(project_id: str, thread_id: str, request: ProjectChatMessageRequest) -> dict:
-    """Retrieve bounded project context, call OpenRouter, then persist the exchange."""
+    """Retrieve bounded context, call the configured provider order, and persist the exchange."""
     user_text = request.content.strip()
     if not user_text:
         raise HTTPException(status_code=422, detail="Message cannot be empty.")
@@ -810,7 +853,9 @@ def send_project_chat_message(project_id: str, thread_id: str, request: ProjectC
         "You are the product and API testing assistant for this Api-Agent project. Help clarify product behavior, "
         "integrations, endpoint relationships, requirements, and test coverage. Distinguish sourced facts from "
         "inference, ask concise questions when information is missing, and never claim the project context is exhaustive. "
-        "Treat saved endpoint definitions and reviewed knowledge facts as project data. Open questions are unresolved. "
+        "Answer the user's request directly and do not append generic sections such as 'Next steps I can take' or "
+        "unsolicited task menus. Ask a concise follow-up only when clarification is needed to answer accurately. "
+        "Treat saved endpoint definitions and current Knowledge Hub pages as project data. Open questions in those pages are unresolved. "
         "Treat user-provided product details as context that may need confirmation.\n\n"
         + "\n\n".join(context_blocks)
     )
@@ -831,39 +876,262 @@ def send_project_chat_message(project_id: str, thread_id: str, request: ProjectC
     prompt_messages.extend(reversed(bounded_history))
     prompt_messages.append({"role": "user", "content": user_text})
     try:
-        answer = openrouter_chat(prompt_messages, thread.get("model"))
+        completion = openrouter_chat(prompt_messages, return_details=True)
+        answer = str(completion.get("content") or "") if isinstance(completion, dict) else str(completion or "")
+        provider_metadata = completion.get("provider_metadata", {}) if isinstance(completion, dict) else {}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"OpenRouter chat request failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Configured LLM providers could not answer: {exc}") from exc
     if not answer:
-        raise HTTPException(status_code=502, detail="OpenRouter returned an empty chat response.")
+        raise HTTPException(status_code=502, detail="The configured LLM providers returned an empty chat response.")
     updated = database.append_chat_exchange(
-        project_id, thread_id, user_text, answer, thread.get("model", ""), knowledge, endpoints,
+        project_id, thread_id, user_text, answer, provider_metadata.get("model", ""),
+        knowledge, endpoints, provider_metadata,
     )
     if updated is None:
         raise HTTPException(status_code=409, detail="Chat thread changed or was archived while processing.")
     if len(updated.get("messages", [])) == 2 and updated.get("title") == "New project chat":
         updated = database.update_chat_thread(project_id, thread_id, {"title": user_text[:70]}) or updated
-    user_message = next((item for item in reversed(updated.get("messages", [])) if item.get("role") == "user"), {})
-    overview = next((item for item in (database.list_project_brief_scopes(project_id) or []) if item.get("scope_type") == "project"), None)
-    extraction = {"status": "failed", "error": "Project overview scope is unavailable."}
-    if overview:
-        submission = database.create_knowledge_submission(
-            project_id, overview["id"], "chat", f"Project chat: {thread.get('title') or 'Conversation'}",
-            user_text, thread_id=thread_id, message_id=user_message.get("id"),
+    return {
+        "thread": updated, "answer": answer, "knowledge_sources": knowledge,
+        "endpoint_context": endpoints, "provider_metadata": provider_metadata,
+    }
+
+
+@app.get("/api/v1/projects/{project_id}/knowledge-hub/pages")
+def list_knowledge_hub_pages(project_id: str) -> list[dict]:
+    """List versioned project, feature, and microservice knowledge pages."""
+    result = database.list_knowledge_hub_scopes(project_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return [item for item in result if item.get("scope_type") != "legacy"]
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge-hub/pages")
+def create_knowledge_hub_page(project_id: str, request: ProjectBriefScopeRequest) -> dict:
+    """Create a named feature or microservice knowledge page."""
+    if request.scope_type == "project":
+        raise HTTPException(status_code=422, detail="The project-wide page is created automatically.")
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Page name is required.")
+    pages = database.list_knowledge_hub_scopes(project_id)
+    if pages is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if any(item.get("scope_type") == request.scope_type and str(item.get("name", "")).casefold() == name.casefold() for item in pages):
+        raise HTTPException(status_code=409, detail="A page with this name already exists in that category.")
+    page = database.create_project_brief_scope(project_id, request.scope_type, name)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    database.record_knowledge_hub_event(project_id, "hub_page_created", {
+        "scope_id": page.get("id"), "scope_type": request.scope_type,
+        "scope_name": name,
+    })
+    return page
+
+
+@app.put("/api/v1/projects/{project_id}/knowledge-hub/features/{feature_id}/microservices")
+def set_knowledge_hub_feature_microservices(
+    project_id: str, feature_id: str, request: KnowledgeHubFeatureServicesRequest,
+) -> dict:
+    """Replace a feature's reusable microservice associations."""
+    try:
+        result = database.set_knowledge_hub_feature_services(
+            project_id, feature_id, request.microservice_scope_ids,
         )
-        if not submission:
-            return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints,
-                    "knowledge_extraction": {"status": "failed", "error": "Could not create the extraction submission."}}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Feature page not found in this project.")
+    return {"feature_scope_id": feature_id, "microservice_scope_ids": result}
+
+
+@app.get("/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions")
+def list_knowledge_hub_page_versions(project_id: str, scope_id: str) -> list[dict]:
+    """Return immutable versions for one Hub page."""
+    result = database.list_project_brief_versions(project_id, scope_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge Hub page not found.")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions/{version_id}/restore")
+def restore_knowledge_hub_page_version(project_id: str, scope_id: str, version_id: str) -> dict:
+    """Restore old Hub content as a new immutable version."""
+    versions = database.list_project_brief_versions(project_id, scope_id)
+    source_version = next((item for item in versions or [] if str(item.get("id")) == version_id), None)
+    result = database.restore_knowledge_hub_version(project_id, scope_id, version_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge Hub version not found.")
+    page = next((item for item in database.list_knowledge_hub_scopes(project_id) or [] if str(item.get("id")) == scope_id), {})
+    database.record_knowledge_hub_event(project_id, "hub_version_restored", {
+        "scope_id": scope_id, "scope_type": page.get("scope_type"),
+        "scope_name": page.get("name"), "source_version_id": version_id,
+        "source_version_number": source_version.get("version_number") if source_version else None,
+        "restored_version_id": result.get("id"),
+        "restored_version_number": result.get("version_number"),
+        "content": result.get("content", ""),
+    })
+    return result
+
+
+def _diff_knowledge_page_content(before: str, after: str) -> list[dict]:
+    """Return unified line changes grouped by Markdown section heading."""
+    before_sections = _knowledge_page_sections(before)
+    after_sections = _knowledge_page_sections(after)
+    diffs = []
+    for section in dict.fromkeys([*before_sections, *after_sections]):
+        old_content, new_content = before_sections.get(section, ""), after_sections.get(section, "")
+        if old_content == new_content:
+            continue
+        diffs.append({
+            "section": section,
+            "diff": "\n".join(difflib.unified_diff(
+                old_content.splitlines(), new_content.splitlines(),
+                fromfile="previous", tofile="current", lineterm="",
+            )),
+        })
+    return diffs
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/compare")
+def compare_knowledge_hub_versions(
+    project_id: str, scope_id: str, request: KnowledgeHubVersionCompareRequest,
+) -> dict:
+    """Compare two immutable versions of a project-owned Hub page by section."""
+    versions = database.list_project_brief_versions(project_id, scope_id)
+    if versions is None:
+        raise HTTPException(status_code=404, detail="Knowledge Hub page not found.")
+    by_id = {str(item.get("id")): item for item in versions}
+    before = by_id.get(request.from_version_id)
+    after = by_id.get(request.to_version_id)
+    if not before or not after:
+        raise HTTPException(status_code=404, detail="One or both versions do not belong to this page.")
+    return {
+        "from_version_id": request.from_version_id,
+        "to_version_id": request.to_version_id,
+        "section_diffs": _diff_knowledge_page_content(
+            str(before.get("content") or ""), str(after.get("content") or ""),
+        ),
+    }
+
+
+def _knowledge_page_sections(content: str) -> dict[str, str]:
+    """Split Markdown into named sections for readable version comparisons."""
+    sections: dict[str, list[str]] = {"Introduction": []}
+    active = "Introduction"
+    for line in content.splitlines():
+        if line.startswith("#"):
+            active = line.lstrip("#").strip() or "Untitled section"
+            sections.setdefault(active, [])
+        sections.setdefault(active, []).append(line)
+    return {name: "\n".join(lines).strip() for name, lines in sections.items() if "\n".join(lines).strip()}
+
+
+@app.post("/api/v1/projects/{project_id}/chat/threads/{thread_id}/knowledge-draft")
+def draft_knowledge_hub_update(
+    project_id: str, thread_id: str, request: KnowledgeHubDraftRequest,
+) -> dict:
+    """Prepare separate unsaved page drafts and section-level diffs from chat."""
+    thread = database.get_chat_thread(project_id, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found in this project.")
+    if thread.get("archived"):
+        raise HTTPException(status_code=409, detail="Restore the archived chat before preparing an update.")
+    pages = database.list_knowledge_hub_scopes(project_id)
+    page_by_id = {str(item["id"]): item for item in pages or [] if item.get("scope_type") != "legacy"}
+    ids = list(dict.fromkeys(request.scope_ids))
+    if not ids or any(scope_id not in page_by_id for scope_id in ids):
+        raise HTTPException(status_code=404, detail="One or more selected Hub pages do not belong to this project.")
+    messages = thread.get("messages", [])
+    transcript = "\n\n".join(
+        f"{str(item.get('role', 'assistant')).upper()}: {item.get('content', '')}"
+        for item in messages
+    )
+    budget = max(12000, min(int(os.getenv("PROJECT_BRIEF_DRAFT_CHAR_BUDGET", "48000")), 120000))
+    summary = str(thread.get("context_summary") or "")[-min(10000, budget // 4):]
+    transcript = transcript[-max(4000, budget - len(summary) - 24000):]
+    drafts, page_runs = [], []
+    for scope_id in ids:
+        page = page_by_id[scope_id]
+        current = str(page.get("current_content") or "")[-24000:]
+        label = f"{page.get('scope_type')} · {page.get('name')}"
+        prompt = (
+            "Prepare a proposed update to this one versioned Knowledge Hub page using the saved discussion. "
+            "Return only complete Markdown content for the page. Preserve current settled information unless "
+            "the discussion clearly changes it. Distinguish confirmed rules from inference. Include uncertain "
+            "or conflicting details only in a clearly labeled 'Open questions' section; do not resolve them by "
+            "guessing. Do not invent product behavior.\n\n"
+            f"Destination page: {label}\n\nCurrent saved page:\n{current or '(empty)'}\n\n"
+            f"Conversation summary:\n{summary or '(none)'}\n\nConversation transcript:\n{transcript or '(empty)'}"
+        )
+        prompt_messages = [
+            {"role": "system", "content": "You carefully maintain user-reviewed product knowledge. Draft; never save."},
+            {"role": "user", "content": prompt},
+        ]
         try:
-            extracted = _extract_knowledge_submission(
-                project_id, submission, thread.get("model"),
-                "\n".join(str(item.get("content") or "") for item in all_messages[-6:]),
+            completion = openrouter_chat(
+                prompt_messages, thread.get("model"), max_tokens=5000, return_details=True,
             )
-            extraction = {"status": extracted["status"], "submission_id": extracted["id"], "proposal_count": len(extracted.get("proposals", []))}
+            draft = str(completion.get("content") or "") if isinstance(completion, dict) else str(completion or "")
+            provider_metadata = completion.get("provider_metadata", {}) if isinstance(completion, dict) else {}
         except Exception as exc:
-            database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
-            extraction = {"status": "failed", "submission_id": submission["id"], "error": str(exc)}
-    return {"thread": updated, "answer": answer, "knowledge_sources": knowledge, "endpoint_context": endpoints, "knowledge_extraction": extraction}
+            page_runs.append({
+                "scope_id": scope_id, "scope_name": page.get("name"),
+                "prompt_messages": prompt_messages, "raw_response": "",
+                "provider_metadata": {}, "error": str(exc),
+            })
+            database.record_knowledge_hub_event(project_id, "hub_draft_failed", {
+                "source_thread_id": thread_id, "status": "failed", "error": str(exc),
+                "pages": page_runs,
+            })
+            raise HTTPException(status_code=502, detail=f"Could not prepare {label} update: {exc}") from exc
+        if not draft or not str(draft).strip():
+            page_runs.append({
+                "scope_id": scope_id, "scope_name": page.get("name"),
+                "prompt_messages": prompt_messages, "raw_response": draft,
+                "provider_metadata": provider_metadata,
+                "error": "The model returned an empty draft.",
+            })
+            database.record_knowledge_hub_event(project_id, "hub_draft_failed", {
+                "source_thread_id": thread_id, "status": "failed",
+                "error": "The model returned an empty draft.", "pages": page_runs,
+            })
+            raise HTTPException(status_code=502, detail=f"The model returned an empty draft for {label}.")
+        diffs = _diff_knowledge_page_content(current, str(draft))
+        page_run = {
+            "scope_id": scope_id, "scope_name": page.get("name"),
+            "scope_type": page.get("scope_type"), "current_content": current,
+            "prompt_messages": prompt_messages, "raw_response": str(draft).strip(),
+            "provider_metadata": provider_metadata,
+        }
+        page_runs.append(page_run)
+        drafts.append({
+            "scope_id": scope_id, "scope_name": page.get("name"),
+            "scope_type": page.get("scope_type"), "current_version_number": page.get("current_version_number"),
+            "current_content": current, "draft": str(draft).strip(), "section_diffs": diffs,
+            "provider_metadata": provider_metadata,
+        })
+    event = database.record_knowledge_hub_event(project_id, "hub_draft_prepared", {
+        "source_thread_id": thread_id, "status": "succeeded", "pages": page_runs,
+    })
+    if event is None:
+        raise HTTPException(status_code=404, detail="Project not found while recording the Hub draft.")
+    return {"source_thread_id": thread_id, "draft_event_id": event["id"], "pages": drafts}
+
+
+@app.post("/api/v1/projects/{project_id}/knowledge-hub/updates")
+def save_knowledge_hub_update(project_id: str, request: KnowledgeHubUpdateRequest) -> dict:
+    """Save all user-reviewed page versions in one database transaction."""
+    try:
+        saved = database.save_knowledge_hub_update(
+            project_id, [item.dict() for item in request.pages], request.source_thread_id,
+            request.draft_event_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Project, active chat, or selected Hub page was not found.")
+    return {"versions": saved}
 
 
 @app.get("/api/v1/projects/{project_id}/brief-scopes")
@@ -1018,6 +1286,27 @@ def get_project_knowledge_ledger(project_id: str) -> dict:
     return ledger
 
 
+@app.get("/api/v1/projects/{project_id}/knowledge/activity")
+def list_project_knowledge_activity(
+    project_id: str, limit: int = Query(default=25, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Return a paged summary of extraction and Knowledge Hub events."""
+    result = database.list_knowledge_activity(project_id, limit, offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.get("/api/v1/projects/{project_id}/knowledge/activity/{event_id}")
+def get_project_knowledge_activity(project_id: str, event_id: str) -> dict:
+    """Return the full prompt, response, and payload for one knowledge event."""
+    result = database.get_knowledge_activity(project_id, event_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Knowledge activity not found")
+    return result
+
+
 @app.post("/api/v1/projects/{project_id}/knowledge/submissions")
 def submit_project_knowledge(project_id: str, request: ProjectKnowledgeSubmissionRequest) -> dict:
     """Save user-provided text, extract proposals, and leave them pending review."""
@@ -1045,7 +1334,12 @@ def submit_project_knowledge(project_id: str, request: ProjectKnowledgeSubmissio
     try:
         return _extract_knowledge_submission(project_id, submission, reference=reference)
     except Exception as exc:
-        failed = database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
+        failed = database.save_knowledge_extraction(
+            project_id, submission["id"], {}, str(exc),
+            prompt_messages=getattr(exc, "prompt_messages", None),
+            raw_response=getattr(exc, "raw_response", ""),
+            provider_metadata=getattr(exc, "provider_metadata", None),
+        )
         return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
 
 
@@ -1060,10 +1354,33 @@ def retry_project_knowledge_extraction(project_id: str, submission_id: str) -> d
         raise HTTPException(status_code=404, detail="Knowledge submission not found")
     if submission.get("status") != "failed":
         raise HTTPException(status_code=409, detail="Only failed knowledge extractions can be retried.")
+    reference = ""
+    thread_id = str(submission.get("thread_id") or "")
+    message_id = str(submission.get("message_id") or "")
+    if thread_id and message_id:
+        thread = database.get_chat_thread(project_id, thread_id) or {}
+        messages = thread.get("messages") or []
+        message_index = next(
+            (index for index, item in enumerate(messages) if str(item.get("id") or "") == message_id),
+            None,
+        )
+        if message_index is not None:
+            # Match the original extraction's context window while retaining
+            # the submitted user message as the only evidence source.
+            nearby_messages = messages[max(0, message_index - 6):message_index]
+            reference = "\n".join(
+                f"{item.get('role', 'user')}: {item.get('content', '')}"
+                for item in nearby_messages
+            )
     try:
-        return _extract_knowledge_submission(project_id, submission, reference="")
+        return _extract_knowledge_submission(project_id, submission, thread.get("model") if thread_id else None, reference)
     except Exception as exc:
-        failed = database.save_knowledge_extraction(project_id, submission_id, {}, str(exc))
+        failed = database.save_knowledge_extraction(
+            project_id, submission_id, {}, str(exc),
+            prompt_messages=getattr(exc, "prompt_messages", None),
+            raw_response=getattr(exc, "raw_response", ""),
+            provider_metadata=getattr(exc, "provider_metadata", None),
+        )
         return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
 
 
@@ -1099,7 +1416,12 @@ def answer_project_knowledge_question(project_id: str, question_id: str, request
     try:
         return _extract_knowledge_submission(project_id, submission, reference=question.get("question", ""))
     except Exception as exc:
-        failed = database.save_knowledge_extraction(project_id, submission["id"], {}, str(exc))
+        failed = database.save_knowledge_extraction(
+            project_id, submission["id"], {}, str(exc),
+            prompt_messages=getattr(exc, "prompt_messages", None),
+            raw_response=getattr(exc, "raw_response", ""),
+            provider_metadata=getattr(exc, "provider_metadata", None),
+        )
         return failed or {**submission, "status": "failed", "extraction_error": str(exc)}
 
 
@@ -1128,15 +1450,6 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
         raise HTTPException(status_code=404, detail="Source generation action not found in this project")
     if source.get("status") != "succeeded" or source.get("business_requirements") is None:
         raise HTTPException(status_code=422, detail="Choose a successful generation action with saved requirements.")
-    prior_cases = {str(item.get("id")): item for item in project.get("test_cases", [])}
-    prior_baseline = [prior_cases[item] for item in request.baseline_case_ids if item in prior_cases]
-    revision_query = "\n".join([
-        str(source.get("business_requirements") or ""), request.release_notes,
-        *(str(item.get("name") or "") + " " + str(item.get("description") or "") for item in prior_baseline),
-    ])
-    brief_context["knowledge_context"] = _selected_knowledge(
-        project_id, brief_context, revision_query, getattr(request, "knowledge_coverage", "changed"),
-    )
     cases_by_id = {str(item.get("id")): item for item in project.get("test_cases", [])}
     baseline_ids = list(dict.fromkeys(request.baseline_case_ids))
     if not baseline_ids:
@@ -1282,6 +1595,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
         for case in generated:
             case["run_business_requirements"] = request.release_notes
             case["project_brief_versions"] = copy.deepcopy(brief_refs)
+            case["knowledge_hub_versions"] = copy.deepcopy(brief_refs)
             if str(case.get("source_case_id") or "") not in keep_unchanged_set:
                 case["knowledge_fact_ids"] = list(brief_context.get("knowledge_context", {}).get("fact_ids") or [])
                 case["knowledge_fact_snapshot"] = copy.deepcopy(brief_context.get("knowledge_context", {}).get("facts") or [])
@@ -1306,12 +1620,14 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 part for part in [cumulative_requirements, project_brief_text] if part
             ),
             "project_brief_context": brief_context,
+            "knowledge_hub_context": brief_context,
             "knowledge_context": copy.deepcopy(brief_context.get("knowledge_context") or {}),
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
             "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
             "endpoint_snapshot": endpoint_snapshot,
             "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
             "status": "succeeded", "error": "", "generated_case_ids": [item["id"] for item in generated],
             "revision_id": revision_id, "revision_label": revision["label"],
             "source_activity_id": request.source_activity_id, "source_case_ids": baseline_ids,
@@ -1338,6 +1654,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
                 part for part in [cumulative_requirements, project_brief_text] if part
             ),
             "project_brief_context": brief_context,
+            "knowledge_hub_context": brief_context,
             "knowledge_context": copy.deepcopy(brief_context.get("knowledge_context") or {}),
             "previous_requirements": previous_requirements,
             "previous_release_notes": previous_release_notes, "release_notes": request.release_notes,
@@ -1345,6 +1662,7 @@ def create_test_case_revision(project_id: str, request: TestCaseRevisionRequest)
             "endpoints": [{"id": e.get("id"), "name": e.get("name", ""), "method": e.get("method", "GET"), "url": e.get("url", "")} for e in endpoints],
             "endpoint_snapshot": endpoint_snapshot,
             "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
             "status": "failed", "error": str(exc), "generated_case_ids": [],
             "source_activity_id": request.source_activity_id,
         })
@@ -1416,6 +1734,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
                 "effective_generation_context", source.get("business_requirements", ""),
             )
             case["project_brief_versions"] = copy.deepcopy(source_brief_refs)
+            case["knowledge_hub_versions"] = copy.deepcopy(source_brief_refs)
             case["knowledge_fact_ids"] = list(source_knowledge_context.get("fact_ids") or [])
             case["knowledge_fact_snapshot"] = copy.deepcopy(source_knowledge_context.get("facts") or [])
             if source.get("business_requirements"):
@@ -1498,6 +1817,7 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
             "endpoints": source.get("endpoints", []),
             "endpoint_snapshot": _project_endpoint_snapshot(project),
             "prompt": trace.get("prompt", ""), "llm_response": trace.get("llm_response", ""),
+            "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
             "status": "succeeded", "error": "",
             "generated_case_ids": [case["id"] for case in refined],
             "clarification_questions": trace.get("clarification_questions", []),
@@ -1546,7 +1866,9 @@ def follow_up_generation(project_id: str, request: GenerationFollowUpRequest) ->
             "follow_up_of": request.source_activity_id,
             "questions_answered": source.get("clarification_questions", []),
             "clarification_answers": answers, "prompt": trace.get("prompt", ""),
-            "llm_response": trace.get("llm_response", ""), "generated_case_ids": [],
+            "llm_response": trace.get("llm_response", ""),
+            "provider_metadata": copy.deepcopy(trace.get("provider_metadata") or {}),
+            "generated_case_ids": [],
         })
         raise HTTPException(status_code=502, detail=f"Could not refine generated cases: {exc}") from exc
 
@@ -2660,6 +2982,28 @@ def save_test_cases(project_id: str, request: dict) -> dict:
     return {"message": f"Saved {len(new_tcs)} test case(s)", "count": len(updated["test_cases"])}
 
 
+@app.get("/api/v1/projects/{project_id}/general-case-collections")
+def list_general_case_collections(project_id: str) -> list[dict]:
+    """List project-scoped collections used by requirements-only scenarios."""
+    result = database.list_general_case_collections(project_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
+@app.post("/api/v1/projects/{project_id}/general-case-collections")
+def create_general_case_collection(project_id: str, request: dict) -> dict:
+    """Create a named General scenario collection before generating cases."""
+    name = str(request.get("name") or "").strip()
+    try:
+        result = database.create_general_case_collection(project_id, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return result
+
+
 @app.get("/api/v1/projects/{project_id}/test-cases")
 def get_test_cases(project_id: str, limit: int = 50, offset: int = 0) -> dict:
     """
@@ -2917,7 +3261,7 @@ def _validate_editable_test_case(test_case: dict) -> None:
 def mark_manual_test_result(
     project_id: str, test_case_id: str, request: ManualTestResultRequest,
 ) -> dict:
-    """Append a tester-marked pass/fail outcome for a general scenario."""
+    """Append a manual outcome and optional failure reason for a general case."""
     found = database.find_test_case(test_case_id, project_id)
     if not found:
         raise HTTPException(status_code=404, detail="Test case not found")
@@ -2926,18 +3270,29 @@ def mark_manual_test_result(
         raise HTTPException(status_code=409, detail="Superseded test cases are read-only.")
     if test_case.get("case_kind") != "general":
         raise HTTPException(status_code=422, detail="Manual outcomes are available only for general test cases.")
+    failure_reason = (request.failure_reason or request.note).strip() if request.status == "failed" else ""
+    assertion_detail = failure_reason or (
+        "Marked failed manually without a reason." if request.status == "failed"
+        else "Marked passed manually."
+    )
     result = {
         "status": request.status,
         "manual_result": True,
-        "note": request.note.strip(),
-        "assertion_detail": request.note.strip() or f"Marked {request.status} manually.",
+        "failure_reason": failure_reason,
+        "assertion_detail": assertion_detail,
         "test_case_snapshot": copy.deepcopy(test_case),
     }
     database.append_execution(project_id, test_case_id, result)
-    updated = database.update_test_case(project_id, test_case_id, {"manual_status": request.status})
+    updated = database.update_test_case(project_id, test_case_id, {
+        "manual_status": request.status,
+        "manual_failure_reason": failure_reason,
+    })
     if updated is None:
         raise HTTPException(status_code=404, detail="Test case not found")
-    return {"test_case_id": test_case_id, "status": request.status, "manual_result": True}
+    return {
+        "test_case_id": test_case_id, "status": request.status, "manual_result": True,
+        "failure_reason": failure_reason, "assertion_detail": assertion_detail,
+    }
 
 @app.post("/api/v1/test-cases/execute")
 def execute_test_case_endpoint(request: dict) -> dict:

@@ -73,7 +73,8 @@ class ManualTestResultRequest(BaseModel):
     """A tester-recorded outcome for a requirements-only general case."""
 
     status: Literal["passed", "failed"]
-    note: str = ""
+    failure_reason: str = Field(default="", max_length=2000)
+    note: str = ""  # Backward compatibility with earlier manual-result clients.
 
 
 class ProjectChatThreadRequest(BaseModel):
@@ -112,6 +113,40 @@ class ProjectBriefDraftRequest(BaseModel):
     scope_id: Optional[str] = None
     create_scope_type: Optional[Literal["feature", "microservice"]] = None
     create_scope_name: Optional[str] = None
+
+
+class KnowledgeHubDraftRequest(BaseModel):
+    """Choose one or more Hub pages to update from a reviewed chat thread."""
+
+    scope_ids: list[str] = Field(min_length=1)
+
+
+class KnowledgeHubFeatureServicesRequest(BaseModel):
+    """Set reusable microservice pages associated with one feature."""
+
+    microservice_scope_ids: list[str] = Field(default_factory=list)
+
+
+class KnowledgeHubPageVersionInput(BaseModel):
+    """One user-reviewed page version in an atomic Hub update."""
+
+    scope_id: str
+    content: str
+
+
+class KnowledgeHubVersionCompareRequest(BaseModel):
+    """Choose two versions of one project page to compare."""
+
+    from_version_id: str
+    to_version_id: str
+
+
+class KnowledgeHubUpdateRequest(BaseModel):
+    """Save reviewed versions for several Hub pages as one operation."""
+
+    source_thread_id: str
+    draft_event_id: Optional[str] = None
+    pages: list[KnowledgeHubPageVersionInput] = Field(min_length=1)
 
 
 class ProjectKnowledgeEntryRequest(BaseModel):

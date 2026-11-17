@@ -1,93 +1,84 @@
-# Persistent Project Chat, Briefs, and Knowledge Ledger
+# Project Chat and Knowledge Hub
 
-## Purpose and ownership
-
-Api-Agent keeps project knowledge in PostgreSQL. OpenRouter is stateless between calls: each chat or generation request receives a bounded context assembled by Api-Agent. The app retains full chat transcripts, original knowledge submissions, immutable brief versions, stable fact IDs, fact change events, generated cases, and Generation Activity.
-
-The brief and fact ledger serve different purposes. Briefs are user-reviewed, readable documents that capture coherent product/service behavior. The ledger stores smaller source-linked claims and their corrections. A chat response or extraction proposal never changes a brief or activates a fact automatically.
-
-| Context | Durable storage | Use |
-| --- | --- | --- |
-| Chat transcript and rolling summary | Project chat thread/message tables | Full transcript remains browseable; bounded recent messages and summary support later chat turns. |
-| Project overview and feature/service briefs | Brief scopes and immutable version rows | Overview is always included in generation; selected feature and microservice scopes add current versions. |
-| Knowledge source submissions | `project_knowledge_submissions` | Original text, source label, gist, proposals, conflicts, extraction state, and chat/question references. |
-| Reviewed facts | `project_knowledge_facts` | Stable IDs, scope, confidence, source submission, and optional superseded fact link. Only active confirmed/assumed facts are retrieved. |
-| Questions and changes | `project_knowledge_questions` and append-only `project_knowledge_events` | Tracks unresolved questions, answers/dismissal, proposal decisions, and fact corrections. |
-| Run-specific requirements and model context | Generated case payloads and Generation Activity | Exact briefs, requirements, endpoint snapshot, coverage choice, fact IDs/snapshots, prompt, response, and result. |
-
-The older mutable `project_knowledge_entries` table remains intact. Existing entries are shown as legacy items for import and review; they are not silently treated as approved facts.
+Api-Agent keeps project conversations and approved product knowledge in PostgreSQL. LLM requests use the shared provider order configured by `LLM_PROVIDER_ORDER` (AMD Token Lab first by default), rather than provider-owned conversation threads. The backend stores the transcript, summarizes older turns, and assembles bounded context for each chat request. A chat message is only a conversation turn. It does not run knowledge extraction or change saved Hub pages.
 
 ## User workflow
 
-1. Start or reopen a project conversation. Discuss product behavior, user journeys, rules, dependencies, and missing details. Chat answers may cite saved endpoints and previously reviewed facts.
-2. After each successful user chat turn, Api-Agent stores the exchange and runs a separate extraction call. The user's message is the only evidence for proposed facts; nearby conversation may resolve a reference such as “that timeout” but cannot support a fact by itself.
-3. Open **Knowledge** to review the source, gist, proposed add/update/supersede operations, conflicts, and open questions. Choose a scope (project overview, feature, or microservice) and confidence for each operation. Approve or reject explicitly. Proposals are not generation context until approved.
-4. Paste a source or import Markdown/plain text in **Knowledge** to submit product documents, meeting notes, or requirements. New submissions default to the project overview; assign individual proposals to other existing scopes during review.
-5. An approved correction marks the prior fact inactive and creates a new fact with a stable ID linked to the old fact. The previous fact and source remain in history. Do not edit old source text to make corrections; submit the corrected statement as new evidence.
-6. Review open questions. Submit an answer as another source submission and approve its resulting fact proposals before the question is marked answered. Dismiss a question when it no longer needs resolution. Questions are passed to chat/generation as unresolved context and do not block generation.
-7. In **Project briefs**, draft coherent durable behavior from a conversation, review it, and save a new brief version explicitly. Facts and briefs remain separate; ledger approvals never rewrite a brief.
-8. In Test Cases, select the project overview (always included) and any relevant current feature/service briefs. Enter run-specific **Business requirements**. Choose **Changed areas** (default) or **Full relevant context** for the fact ledger. The run-specific field guides that action and is not saved as durable knowledge.
-9. Generation Activity and each generated case retain the exact fact IDs/snapshots and brief versions used. Release revision additionally carries its baseline, prior requirements/release notes, current endpoint snapshot, and new requirement changes.
+1. Select a project and open **Project Chat**. Start or reopen a conversation and discuss product behavior, workflows, integrations, and open questions. Ask the assistant to summarize the current understanding or clarify uncertainties as part of the discussion.
+2. Open **Knowledge Hub** to create or select pages. The project-wide page stores shared rules. Feature pages hold product capabilities and journeys. Microservice pages hold reusable service behavior and integration details.
+3. Link each feature to its microservices. A feature can link to several microservices, and one microservice can be reused by several features.
+4. Return to the conversation, select one or more destination pages, and choose **Prepare knowledge update**. The model prepares an unsaved full-page draft and a section-level diff for each page using the selected thread and the current page contents.
+5. Review and edit every draft. Added and removed lines appear in a GitHub-style diff; use the **Edit** and **Preview** tabs to update the Markdown and inspect its rendered form. Confirmed rules may be saved while uncertainties remain in a clearly labeled **Open questions** section. Select which drafted pages to include, then save them together as new immutable versions. Drafting alone does not change the Hub. The current page preview and proposed changes use separate scroll areas.
+6. Inspect each page's version history to read prior contents and compare each version with the preceding version. Restoring old content creates a new version; earlier versions remain unchanged.
+7. In Test Cases, the project-wide page is always included. Select feature pages relevant to the generation; their linked microservice pages are added automatically. Enter **Business requirements for this generation** for action-specific guidance. That field is saved with the generation and cases but never updates Hub pages.
 
-If chat extraction returns invalid data or the provider fails, the chat exchange is preserved. The source submission records the extraction failure and can be retried from Knowledge. Pasted/imported extraction behaves the same way.
+## Data and provenance
 
-## Retrieval policy
+| Information | Durable storage and behavior |
+| --- | --- |
+| Chat threads and ordered messages | `project_chat_threads` and `project_chat_messages`; full transcripts and rolling summaries remain in PostgreSQL. |
+| Hub pages | Existing `project_brief_scopes` rows represent project, feature, and microservice pages. Legacy scopes remain preserved but are hidden from current Hub selection. |
+| Page history | `project_brief_versions` stores immutable version content, version number, current marker, source thread, and timestamp. A multi-page save appends every selected version in one database transaction. |
+| Feature/service relationships | `knowledge_hub_feature_services` stores project-scoped many-to-many links between feature and microservice pages. |
+| Old extraction history | `project_knowledge_submissions`, `project_knowledge_facts`, `project_knowledge_questions`, and `project_knowledge_events` remain available. Existing extraction events are history; chat turns no longer create new submissions or extraction events. |
+| Generation provenance | Generation Activity and generated case payloads retain the exact version IDs, numbers, names, and content used, alongside run-specific requirements, selected endpoints, prompt, and LLM response. |
 
-Knowledge is scoped to the project overview plus feature/service briefs explicitly selected for the generation. Chat can search across project scopes. Retrieval uses PostgreSQL full-text search and a bounded character budget (`PROJECT_KNOWLEDGE_CONTEXT_CHAR_BUDGET`, default 12,000).
+The app does not use the full chat transcript as durable generation context. Chat uses relevant Hub page snapshots, saved endpoint matches, a rolling summary, recent turns, and the new message within its context budget. A knowledge update draft uses the selected thread's saved transcript and summary, the current destination page, and the configured drafting budget. Generation uses the current project-wide page, explicitly selected feature pages, and linked microservice pages. Open questions are text in those pages and are presented to the model as unresolved context.
 
-- **Changed areas** searches relevant terms and prioritizes matching facts by full-text relevance and recency. If no useful query terms are present, it uses recent current facts.
-- **Full relevant context** includes every current confirmed/assumed fact in the selected scopes up to the same budget.
-- `needs-clarification` proposals may be approved for tracking, but are not injected as settled facts. Their associated open questions are sent in a clearly labeled unresolved section.
-- Rejected proposals, pending proposals, failed extractions, dismissed questions, and legacy entries do not become factual prompt context.
-- Retrieved fact IDs and snapshots are stored with generated cases and Generation Activity for audit. Model-produced IDs are not used as provenance.
+## Migration and compatibility
 
-Chat retrieval also adds lexical matches from current saved endpoints. Both endpoint and knowledge retrieval can miss synonyms or relationships not represented in searchable wording; users can add clarifying text or select full relevant context for generation.
+Startup performs an additive, idempotent migration. Existing project, feature, and microservice brief versions remain in their original version history and become the corresponding Hub pages. Existing per-thread legacy briefs are retained and their current content is copied into the project-wide page with a source label. Active approved or assumed facts are appended to a new current page version with their fact ID and source submission ID. The original fact rows, submissions, and extraction events are not deleted or rewritten. Unapproved proposals and legacy mutable entries are not copied into active Hub context.
 
-## Data flow
+Old brief API routes remain for compatibility with existing stored activity and clients. The current interface uses Knowledge Hub routes and no longer offers a separate brief editor or automatic per-message extraction. **Activity Logs → Knowledge Extraction** combines historical extraction events with Hub page creation, feature-service link changes, draft successes/failures, page saves, and restores. Draft details retain the exact prompt, raw response, provider/model, source thread, and destination page. Save/restore details retain the version and content. The table loads paged summaries and fetches prompt/response bodies only when a user opens a record. Normal chat turns do not create extraction events.
+
+## API surface
+
+- `GET /api/v1/projects/{project_id}/knowledge-hub/pages` lists current project, feature, and microservice pages and feature links.
+- `POST /api/v1/projects/{project_id}/knowledge-hub/pages` creates a feature or microservice page; the project page is created during initialization.
+- `PUT /api/v1/projects/{project_id}/knowledge-hub/features/{feature_id}/microservices` replaces a feature's linked microservice IDs. All pages must belong to the same project and have the expected page type.
+- `GET /api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions` returns page history.
+- `POST /api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/compare` accepts `from_version_id` and `to_version_id` and returns Markdown section diffs.
+- `POST /api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions/{version_id}/restore` appends a new version using the selected historical content.
+- `POST /api/v1/projects/{project_id}/chat/threads/{thread_id}/knowledge-draft` accepts `scope_ids` and returns separate draft content and section diffs for each destination. It does not save.
+- `POST /api/v1/projects/{project_id}/knowledge-hub/updates` accepts `source_thread_id` and reviewed `{scope_id, content}` page entries; it appends all versions atomically.
+- `GET /api/v1/projects/{project_id}/knowledge/activity?limit=25&offset=0` returns paged summaries for historical extraction and Knowledge Hub events without prompt/response bodies.
+- `GET /api/v1/projects/{project_id}/knowledge/activity/{event_id}` returns a project-scoped full event, including saved prompts/responses and the source submission for legacy extraction events.
+
+All operations validate project ownership. Chat messages continue to use `POST /api/v1/projects/{project_id}/chat/threads/{thread_id}/messages`; this route stores the exchange and returns without extracting facts.
+
+## Process diagram
 
 ```mermaid
 flowchart TD
-    U[User] --> UI[Streamlit Project Chat and Knowledge]
-    UI -->|message or source text| API[FastAPI]
-    API --> DB[(PostgreSQL)]
-    API -->|bounded thread summary, recent messages, matching endpoints and reviewed facts| OR[OpenRouter chat model]
-    OR -->|assistant reply| API
-    API -->|persist exchange| DB
-    API -->|separate extraction: source text plus reference context| OR
-    OR -->|gist, proposed operations, conflicts, questions| API
-    API -->|retain source and pending proposal| DB
-    U -->|review approve/reject, scope, confidence| UI
-    UI -->|decision| API
-    API -->|append fact, supersede link, question and audit events| DB
-    DB -->|selected current briefs and retrieved approved facts| GEN[Test Cases generation]
-    U -->|coverage choice and run requirements| GEN
-    GEN --> API
-    API -->|bounded prompt with endpoints and unresolved questions| OR
-    OR -->|test cases and clarifications| API
-    API -->|case fact snapshots and Generation Activity| DB
-    DB --> UI
+    U[User discusses and clarifies] --> UI[Project Chat]
+    UI --> API[FastAPI chat endpoint]
+    API --> DB[(PostgreSQL transcript and summaries)]
+    API --> CTX[Bounded context assembly: Hub pages, matching endpoints, recent turns]
+    CTX --> OR[Configured LLM provider]
+    OR --> API
+    API --> DB
+    U -->|Prepare knowledge update| HUBUI[Knowledge Hub review]
+    HUBUI --> DRAFT[Draft selected page versions and section diffs]
+    DRAFT --> OR
+    OR --> DRAFT
+    DRAFT -->|User edits and confirms| SAVE[Atomic multi-page save]
+    SAVE --> DB
+    DB --> GEN[Test generation selects feature pages]
+    GEN --> LINK[Resolve linked microservice pages]
+    LINK --> GCTX[Project page + selected feature/service versions + run requirements]
+    GCTX --> OR
+    OR --> GEN
+    GEN --> ACT[(Generation Activity and case provenance)]
 ```
 
-## Process insights and tradeoffs
+## Tradeoffs and limits
 
-- **Source traceability:** Every active fact points to a retained submission and proposal; a correction creates a new fact rather than erasing the earlier assertion. This supports review and audit but grows database storage over time.
-- **Human approval:** Pending model output cannot affect generation. Review adds a deliberate step, while reducing the risk of assistant guesses becoming product truth.
-- **Separate extraction call:** Extracting after each user chat turn gives granular provenance and catches details while the discussion is fresh. It adds latency and OpenRouter usage; extraction failure is isolated from the chat response and can be retried.
-- **Scoped retrieval:** Full-text search and explicit brief scopes keep prompts smaller and make context inspectable. Lexical search may miss a relevant fact phrased with different terms; Full relevant context is available when a change spans the scope.
-- **Open questions:** Unresolved items are visible to the model but do not stop test generation. The model is instructed to ask rather than assume; users can answer through a new reviewed submission or dismiss the question.
-- **Briefs and facts:** Briefs are coherent versioned narratives; facts are individually reviewable evidence. This avoids silently rewriting a business brief when a single fact changes, at the cost of maintaining both views.
-- **Provider and privacy:** The full database is not sent to OpenRouter. Each call receives only the bounded transcript, matching endpoints, selected briefs/facts, source text for extraction, or generation input required for that task. Project content is still sent to the configured external provider; its availability, limits, and policies apply.
-- **Legacy entries:** Old entries remain available for review and import. Their former mutable approval flag is not considered sufficient provenance for the new ledger.
+- Storing full chat and immutable page versions improves continuity and auditability, while adding PostgreSQL storage and migration complexity.
+- Page retrieval reduces unrelated prompt content, but a page can be omitted from chat context if its wording does not match the request. Users choose feature pages explicitly for generation, and linked services are included automatically.
+- Configurable provider fallback improves availability, but model behavior and context limits differ by provider. Requests send selected project content to the external provider that answers.
+- A model draft is a proposal, not a verified source of truth. The user reviews and saves every page update; unclear facts stay in **Open questions** instead of being silently decided.
+- Historical extraction logs can show prompt/response metadata only when those snapshots were recorded. Hub draft logs retain prompt and model response; Hub save and restore logs retain page version content. Normal chat does not create extraction attempts.
 
-## Configuration and API
+## Local database reset
 
-- `OPENROUTER_API_KEY` is needed for project chat and extraction.
-- `OPENROUTER_MODEL` is the default thread model; existing threads retain their selected model.
-- `PROJECT_CHAT_RECENT_MESSAGES` defaults to 12; `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` defaults to 24,000 characters.
-- `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` defaults to 48,000 characters.
-- `PROJECT_KNOWLEDGE_CONTEXT_CHAR_BUDGET` defaults to 12,000 characters for generation retrieval.
-- Chat thread routes are under `/api/v1/projects/{project_id}/chat/threads`; brief scope/version routes are under `/api/v1/projects/{project_id}/brief-scopes`.
-- `GET /api/v1/projects/{project_id}/knowledge/ledger` returns scopes, facts, submissions, questions, events, and legacy entries.
-- `POST /api/v1/projects/{project_id}/knowledge/submissions` stores pasted/imported text and extracts proposals; `POST .../submissions/{submission_id}/retry` retries extraction; `POST .../submissions/{submission_id}/review` applies explicit proposal decisions.
-- `POST /api/v1/projects/{project_id}/knowledge/questions/{question_id}/answer` submits an answer for extraction/review; `POST .../questions/{question_id}/dismiss` records dismissal.
-- Generation requests accept `knowledge_coverage: "changed" | "full"`. Covered routes include Single, Flow, General, contract-discovered Flow, Release Revision, and source-linked follow-ups.
+`make docker-db-reset` deletes the current Docker Compose project's PostgreSQL volume after the user types `RESET`, then starts the stack so backend initialization creates the schema and built-in Default Project. This is a destructive local development command; it does not target an arbitrary `DATABASE_URL`. `make docker-down` stops services without deleting database data.

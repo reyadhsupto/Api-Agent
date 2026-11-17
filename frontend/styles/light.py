@@ -10,7 +10,7 @@ needs no branch here. This module covers only the surfaces Streamlit paints: the
 app shell, the sidebar, widget fills, menus, code, alerts, chat bubbles, and the
 frames around canvas grids.
 
-Injected only while Light is active.
+Injected for the app's single supported light theme.
 """
 
 LIGHT_CSS = """

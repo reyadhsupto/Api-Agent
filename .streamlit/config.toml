@@ -1,14 +1,13 @@
 # .streamlit/config.toml
 
-# Black-first theme: the whole canvas is black, not only the input fields.
-# The token layer in frontend/styles/tokens.py repeats these values so app
-# surfaces and native widgets stay visually consistent.
+# The app uses a single light theme. The token layer in
+# frontend/styles/tokens.py repeats these values for custom app surfaces.
 [theme]
-base = "dark"
+base = "light"
 primaryColor = "#ff6c37"
-backgroundColor = "#000000"
-secondaryBackgroundColor = "#0a0a0c"
-textColor = "#f2f3f5"
+backgroundColor = "#f6f7fa"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#12161d"
 font = "sans serif"
 
 [browser]

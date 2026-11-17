@@ -220,8 +220,8 @@ ALIASES = {
 
 PALETTES = {"dark": DARK, "light": LIGHT}
 
-# The product ships on the black workspace by default.
-DEFAULT_THEME = "dark"
+# The product uses a single light workspace palette.
+DEFAULT_THEME = "light"
 
 
 def palette(theme: str = DEFAULT_THEME) -> dict[str, str]:

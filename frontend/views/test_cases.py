@@ -29,9 +29,9 @@ def render_test_cases_tab() -> None:
     with st.container(key="test-cases-workspace"):
         raw_test_cases = st.session_state.get("test_cases", [])
         deduplicated_cases = _deduplicate_test_cases(raw_test_cases)
-        if len(deduplicated_cases) != len(raw_test_cases):
+        if not isinstance(raw_test_cases, (list, tuple)) or len(deduplicated_cases) != len(raw_test_cases):
             st.session_state["test_cases"] = deduplicated_cases
-            st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+            st.warning("Malformed test-case entries were ignored, and duplicate IDs were collapsed to the latest copy.")
         test_cases = [case for case in deduplicated_cases if not case.get("superseded_by_activity_id")]
         project = st.session_state.get("current_project") or {}
         test_cases.sort(key=_test_case_sort_key)

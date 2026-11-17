@@ -3,15 +3,13 @@
 """
 Surface layer: the box recipe and the edges of native Streamlit surfaces.
 
-Every rule here reads ``--aa-*`` tokens and nothing else, so the same stylesheet
-paints the black workspace and the light one. The module has two jobs.
+Every rule here reads ``--aa-*`` tokens and paints the single light workspace.
+The module has two jobs.
 
 1. ``.aa-box`` and its variants give application code one card recipe instead of
    per-page border and padding guesses.
-2. The native hooks give Streamlit's own containers an explicit edge. Streamlit's
-   dark theme draws several containers with no border and a fill within 1.06:1
-   of the canvas, which is why card outlines disappeared on pure black. These
-   edges are declared, not inherited.
+2. The native hooks give Streamlit's own containers an explicit edge and keep
+   nested controls distinct from the pale canvas.
 
 Nested boxes fall back to ``--aa-line-soft`` and ``--aa-panel-alt`` so a card
 inside a card reads as a child rather than as a second frame.
@@ -204,12 +202,34 @@ div[data-testid="stExpander"] summary p { font-weight: 620; }
     padding: .2rem 0 !important;
     color: var(--aa-text-dim) !important;
 }
-/* Keep the chat composer visibly separated from the canvas in both palettes. */
+.st-key-project-chat-transcript [class*="st-key-chat-bubble-"] [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"] {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+/* Keep the chat composer visibly separated from the light canvas. */
 [data-testid="stChatInput"] {
+    position: sticky !important;
+    bottom: .55rem;
+    z-index: 9;
     background: var(--aa-panel-alt) !important;
     border: 1px solid var(--aa-line-contrast) !important;
     border-radius: var(--aa-radius-sm) !important;
     padding: .25rem .4rem !important;
+}
+/* Keep the composer within reach while the conversation page scrolls. */
+div[class*="st-key-project-chat-composer-"] {
+    position: sticky;
+    bottom: .55rem;
+    z-index: 8;
+    padding-top: .45rem;
+    background: linear-gradient(180deg, transparent, var(--aa-canvas) 28%);
 }
 [data-testid="stChatInput"]:focus-within {
     border-color: var(--aa-accent) !important;

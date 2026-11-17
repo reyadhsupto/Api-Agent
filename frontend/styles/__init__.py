@@ -16,7 +16,7 @@ surface:
     request_tabs   request tab strip
     test_cases     test case cards and toolbar
     theme          controls, menus, toasts, responsive rules
-    light          repaint of native chrome while Light is active
+    light          repaint of native chrome for the single light theme
 
 ``inject_styles`` emits exactly one ``<style>`` block per run.
 """
@@ -70,43 +70,26 @@ __all__ = [
 
 
 def active_theme() -> str:
-    """Return the palette name for the current session.
-
-    The sidebar Appearance control is authoritative. ``st.context.theme.type``
-    is only a fallback: Streamlit infers it from the background colour and
-documents that it can lag behind a change in the settings menu, so trusting it
-    over an explicit selection would flip the palette under the user.
+    """Return the single supported palette name.
 
     Returns:
-        str: "light" when Light is selected, else ``DEFAULT_THEME``.
+        str: The light palette name.
     """
-    selected = str(st.session_state.get("ui_theme") or "").lower()
-    if selected in {"light", "dark"}:
-        return selected
-    try:
-        native = str(st.context.theme.type or "").lower()
-    except Exception:
-        return DEFAULT_THEME
-    return native if native in {"light", "dark"} else DEFAULT_THEME
+    return DEFAULT_THEME
 
 
-def inject_styles(theme: str | None = None) -> None:
+def inject_styles() -> None:
     """Emit the design tokens plus every stylesheet the app needs.
-
-    Args:
-        theme (str | None): Palette override; ``None`` uses the active theme.
 
     Returns:
         None: Writes one ``<style>`` block to the Streamlit page.
     """
-    chosen = str(theme or active_theme()).lower()
-    if chosen not in PALETTES:
-        chosen = DEFAULT_THEME
+    chosen = DEFAULT_THEME
     st.markdown(
         "<style>" + css_variables(chosen) + "</style>"
         + GLOBAL_CSS + SHELL_CSS + SURFACES_CSS + LAYOUT_CSS + RAIL_CSS
         + REQUEST_TAB_CSS + TEST_CASE_CSS + TEST_CASES_TOPBAR_CSS
         + THEME_CSS
-        + (LIGHT_CSS if chosen == "light" else ""),
+        + LIGHT_CSS,
         unsafe_allow_html=True,
     )

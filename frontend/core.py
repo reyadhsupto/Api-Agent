@@ -469,7 +469,6 @@ def initialize_session_state() -> None:
         "generation_order_ids": [],
         "selected_collection_id": None,
         "persisted_project_id": None,
-        "ui_theme": "Dark",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1081,22 +1080,24 @@ def _execute_test_case(tc: dict, notify: bool = True) -> dict:
     return result
 
 
-def _mark_general_test_case(tc: dict, status: str) -> dict:
-    """Persist a manual pass/fail mark and update the saved case's current badge."""
+def _mark_general_test_case(tc: dict, status: str, failure_reason: str = "") -> dict:
+    """Persist a manual outcome and optional failure reason for a General case."""
     project = st.session_state.get("current_project") or {}
     if not project.get("id"):
         raise ValueError("Save the project before recording a manual result.")
     result = api_post(
         f"/api/v1/projects/{project['id']}/test-cases/{tc['id']}/manual-result",
-        {"status": status},
+        {"status": status, "failure_reason": failure_reason if status == "failed" else ""},
     )
     tc["manual_status"] = status
+    tc["manual_failure_reason"] = result.get("failure_reason", "")
     st.session_state.setdefault("executions", {})[str(tc["id"])] = result
     st.session_state.pop(f"tc_history_{project['id']}_{tc['id']}", None)
     saved_cases = st.session_state.get("test_cases", [])
     for item in saved_cases:
         if str(item.get("id")) == str(tc["id"]):
             item["manual_status"] = status
+            item["manual_failure_reason"] = result.get("failure_reason", "")
     _queue_toast(f"{tc.get('name') or 'General scenario'} marked {status}.", "success" if status == "passed" else "error")
     return result
 
@@ -1731,11 +1732,27 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
             ]) if cached_history is not None else {"flaky": False}
             flaky_badge = " :orange-badge[FLAKY]" if cached_flaky["flaky"] else ""
             st.markdown(f"{_status_badge(status)} :gray-badge[{_format_latency(latency)}]{flaky_badge}")
+        passed_clicked = failed_clicked = False
+        failure_reason = ""
         with run_col:
             if is_general:
                 passed_col, failed_col = st.columns(2, gap="small")
                 passed_clicked = passed_col.button("Passed", key=f"manual_pass_{tc_id}", type="secondary", help="Record a manual pass", width="stretch")
-                failed_clicked = failed_col.button("Failed", key=f"manual_fail_{tc_id}", type="secondary", help="Record a manual failure", width="stretch")
+                with failed_col.popover(
+                    "Failed", key=f"manual_fail_{tc_id}", width="stretch",
+                    help="Record a manual failure and optionally describe the reason.",
+                ):
+                    failure_reason = st.text_area(
+                        "Failure Reason (optional)",
+                        key=f"manual_failure_reason_input_{tc_id}",
+                        height=90,
+                        max_chars=2000,
+                        placeholder="What failed or behaved unexpectedly?",
+                    ).strip()
+                    failed_clicked = st.button(
+                        "Record Failed result", key=f"manual_fail_submit_{tc_id}",
+                        type="primary", width="stretch",
+                    )
                 run_clicked = False
             else:
                 run_clicked = st.button(
@@ -1764,6 +1781,13 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
 
         if tc.get("description"):
             st.caption(tc["description"])
+        if is_general and status == "failed":
+            assertion_detail = (
+                (result or {}).get("assertion_detail")
+                or tc.get("manual_failure_reason")
+                or "Marked failed manually without a reason."
+            )
+            st.error(f"Assertion result: {assertion_detail}")
         if is_open:
             requirements_key = f"tc_business_requirements_{tc_id}"
             st.session_state.setdefault(
@@ -1773,14 +1797,14 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                 "Generation requirements",
                 expanded=bool(st.session_state[requirements_key]),
             ):
-                brief_refs = tc.get("project_brief_versions") or []
+                brief_refs = tc.get("project_brief_versions") or tc.get("knowledge_hub_versions") or []
                 if brief_refs:
-                    st.caption("Saved brief versions included for this generation")
+                    st.caption("Knowledge Hub versions used for this generation")
                     for brief_ref in brief_refs:
                         st.caption(
-                            f"{brief_ref.get('scope_name') or 'Project brief'} · "
+                            f"{brief_ref.get('scope_name') or 'Knowledge page'} · "
                             f"v{brief_ref.get('version_number') or '?'} · "
-                            f"{brief_ref.get('scope_type') or 'brief'}"
+                            f"{brief_ref.get('scope_type') or 'feature'}"
                         )
                 if tc.get("generation_requirements"):
                     with st.expander("Full combined generation context", expanded=False):
@@ -1794,7 +1818,10 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                 )
         if is_general and (passed_clicked or failed_clicked):
             try:
-                _mark_general_test_case(tc, "passed" if passed_clicked else "failed")
+                _mark_general_test_case(
+                    tc, "passed" if passed_clicked else "failed",
+                    failure_reason if failed_clicked else "",
+                )
                 st.rerun()
             except Exception as exc:
                 st.error(f"Could not record manual result: {exc}")
@@ -1988,16 +2015,42 @@ def _test_case_sort_key(tc: dict) -> int:
 
 
 def _deduplicate_test_cases(test_cases: list[dict]) -> list[dict]:
-    """Keep the latest payload for each stable case ID, preserving list order.
+    """Normalize saved case records and keep the latest copy of each ID.
 
     Args:
-        test_cases (list[dict]): Cases that may contain repeated IDs.
+        test_cases (list[dict]): Case records, possibly including malformed legacy values.
 
     Returns:
-        list[dict]: One case per ID, with the last payload retained.
+        list[dict]: Valid dictionary cases, deduplicated by ID in last-seen order.
     """
+    if isinstance(test_cases, dict):
+        # Tolerate an API envelope accidentally stored where its case list belongs.
+        nested_cases = test_cases.get("test_cases")
+        test_cases = nested_cases if isinstance(nested_cases, list) else [test_cases]
+    elif isinstance(test_cases, str):
+        try:
+            decoded = json.loads(test_cases)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if isinstance(decoded, dict):
+            nested_cases = decoded.get("test_cases")
+            test_cases = nested_cases if isinstance(nested_cases, list) else [decoded]
+        elif isinstance(decoded, list):
+            test_cases = decoded
+        else:
+            return []
+    if not isinstance(test_cases, (list, tuple)):
+        return []
+
     unique_cases = {}
     for index, test_case in enumerate(test_cases):
+        if isinstance(test_case, str):
+            try:
+                test_case = json.loads(test_case)
+            except (TypeError, json.JSONDecodeError):
+                continue
+        if not isinstance(test_case, dict):
+            continue
         case_id = test_case.get("id")
         key = str(case_id) if case_id else f"__missing_id_{index}"
         unique_cases[key] = test_case
@@ -2256,41 +2309,40 @@ def _generation_requests_in_order(
 
 
 def _render_project_brief_picker(project_id: str | None, key_prefix: str) -> list[str]:
-    """Render a compact selector for current feature and service briefs.
+    """Render a compact selector for feature Knowledge Hub pages.
 
-    The project overview is added by the API automatically. This selector only
-    returns explicitly selected feature, microservice, or legacy brief IDs.
+    The project-wide page is always included. The API adds linked microservice
+    pages whenever a feature page is selected.
     """
     if not project_id:
         return []
     try:
-        scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
+        scopes = api_get(f"/api/v1/projects/{project_id}/knowledge-hub/pages") or []
     except Exception as exc:
-        st.caption(f"Project briefs are unavailable: {exc}")
+        st.caption(f"Knowledge Hub pages are unavailable: {exc}")
         return []
     selectable = [
         scope for scope in scopes
-        if scope.get("scope_type") != "project"
+        if scope.get("scope_type") == "feature"
         and scope.get("current_version_id")
         and str(scope.get("current_content") or "").strip()
     ]
     if not selectable:
-        st.caption("No saved feature or service briefs yet. The project overview is included automatically.")
+        st.caption("No saved feature knowledge pages yet. Project-wide knowledge is included automatically.")
         return []
     by_id = {str(scope.get("id")): scope for scope in selectable if scope.get("id")}
-    key = f"{key_prefix}_brief_scope_ids_{project_id}"
+    key = f"{key_prefix}_knowledge_feature_ids_{project_id}"
     st.session_state.setdefault(key, [])
     st.session_state[key] = [value for value in st.session_state[key] if value in by_id]
     return st.multiselect(
-        "Additional project briefs",
+        "Feature knowledge",
         options=list(by_id),
         key=key,
         format_func=lambda value: (
-            f"{by_id[value].get('name') or 'Untitled brief'} · "
-            f"{str(by_id[value].get('scope_type') or 'feature').title()}"
+            str(by_id[value].get('name') or 'Untitled feature')
         ),
-        placeholder="Select feature or service context",
-        help="The current project overview is always included. Selected current brief versions add durable product context.",
+        placeholder="Select feature context",
+        help="Project-wide knowledge is always included. Linked microservice pages are added automatically for each selected feature.",
     )
 
 
@@ -2499,26 +2551,25 @@ def render_generation_panel() -> None:
 
     project = st.session_state.get("current_project") or {}
     project_id = project.get("id")
-    brief_key = f"generation_brief_scope_ids_{project_id}"
-    chosen_briefs = st.session_state.get(brief_key) or []
+    feature_key = f"generation_knowledge_feature_ids_{project_id}"
+    chosen_features = st.session_state.get(feature_key) or []
     project_chat_thread_id = (
         st.session_state.get(f"project_chat_selected_thread_{project_id}")
         if project_id else None
     )
-    brief_badge = ("blue" if chosen_briefs else "gray") + f"-badge[{len(chosen_briefs)} brief(s)]"
+    feature_badge = ("blue" if chosen_features else "gray") + f"-badge[{len(chosen_features)} feature(s)]"
     thread_badge = "violet-badge[Thread set]" if project_chat_thread_id else "gray-badge[No chat thread]"
     context_col, context_edit_col = st.columns([4.6, 1.0], vertical_alignment="center")
     with context_col:
         st.markdown(
             "**Context** :green-badge[Overview, always included] :"
-            + brief_badge + " :" + thread_badge
+            + feature_badge + " :" + thread_badge
         )
     with context_edit_col:
         with st.popover("Edit", icon=":material/tune:", width="stretch"):
             project_brief_scope_ids = _render_project_brief_picker(project_id, "generation")
             st.caption(
-                "The overview is always included. Requirements below apply to this run "
-                "only; reviewed project knowledge is managed in Project Chat."
+                "Project-wide knowledge is always included. Selected features also include their linked microservices."
             )
     requests_by_id = {endpoint["id"]: endpoint for endpoint in endpoints}
     eligible_ids = [endpoint["id"] for endpoint in endpoints]
@@ -2632,12 +2683,15 @@ def render_generation_panel() -> None:
     general_collection_name = None
     if mode == "General":
         existing_general_collections = {}
+        for collection in project.get("general_case_collections", []):
+            if collection.get("id"):
+                existing_general_collections[str(collection["id"])] = str(collection.get("name") or "General scenarios")
         for case in project_test_cases:
             if case.get("case_kind") != "general":
                 continue
             collection_id = str(case.get("case_collection_id") or GENERAL_CASE_COLLECTION_ID)
             collection_name = str(case.get("case_collection_name") or GENERAL_CASE_COLLECTION_NAME)
-            existing_general_collections[collection_id] = collection_name
+            existing_general_collections.setdefault(collection_id, collection_name)
         collection_choice_key = f"general_collection_choice_{project_id or 'default'}"
         pending_choice = st.session_state.pop(f"{collection_choice_key}_pending", None)
         if pending_choice in existing_general_collections:
@@ -2659,16 +2713,30 @@ def render_generation_panel() -> None:
                 ),
             )
             if collection_choice == NEW_GENERAL_CASE_COLLECTION:
-                general_collection_name = st.text_input(
-                    "New collection name", value="General scenarios",
+                new_collection_name = st.text_input(
+                    "New collection name", value="",
                     key=f"general_collection_name_{project_id or 'default'}",
+                    max_chars=100,
                     help="Use a product or business context, such as Checkout or Customer onboarding.",
                 ).strip()
-                if general_collection_name:
-                    general_collection_id = str(uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"api-agent:{project_id or 'default'}:general-collection:{general_collection_name.casefold()}",
-                    ))
+                if st.button(
+                    "Create collection", key=f"general_collection_create_{project_id or 'default'}",
+                    icon=":material/create_new_folder:", disabled=not new_collection_name,
+                ):
+                    try:
+                        if project_id:
+                            created = api_post(
+                                f"/api/v1/projects/{project_id}/general-case-collections",
+                                {"name": new_collection_name},
+                            )
+                        else:
+                            created = {"id": str(uuid.uuid4()), "name": new_collection_name}
+                        project.setdefault("general_case_collections", []).append(created)
+                        st.session_state[f"{collection_choice_key}_pending"] = created["id"]
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not create collection: {exc}")
+                st.caption("Create and select a collection before generating scenarios.")
             else:
                 general_collection_id = collection_choice
                 general_collection_name = existing_general_collections[collection_choice]
@@ -2680,12 +2748,7 @@ def render_generation_panel() -> None:
             label_visibility="collapsed",
             placeholder="Rules, edge cases, or expected behavior the tests should cover...",
         )
-        knowledge_coverage = st.radio(
-            "Project knowledge coverage", ["changed", "full"], horizontal=True,
-            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
-            key="generation_knowledge_coverage",
-            help="Changed areas is the default and prioritizes relevant recent reviewed facts. Full relevant context includes every current reviewed fact in selected brief scopes, within the context budget.",
-        )
+        knowledge_coverage = "full"
 
     if mode == "Flow" and project_id:
         selected_by_id = {endpoint["id"]: endpoint for endpoint in selected}
@@ -2787,9 +2850,9 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
     """
     raw_test_cases = st.session_state.get("test_cases", [])
     deduplicated_cases = _deduplicate_test_cases(raw_test_cases)
-    if len(deduplicated_cases) != len(raw_test_cases):
+    if not isinstance(raw_test_cases, (list, tuple)) or len(deduplicated_cases) != len(raw_test_cases):
         st.session_state["test_cases"] = deduplicated_cases
-        st.warning("Duplicate test-case IDs were found and collapsed to the latest copy.")
+        st.warning("Malformed test-case entries were ignored, and duplicate IDs were collapsed to the latest copy.")
     test_cases = [case for case in deduplicated_cases if not case.get("superseded_by_activity_id")]
     test_cases.sort(key=_test_case_sort_key)
     project = st.session_state.get("current_project") or {}
@@ -3129,152 +3192,17 @@ def _load_project_chat_thread(project_id: str, thread_id: str) -> None:
     st.session_state[f"project_chat_selected_thread_{project_id}"] = thread_id
 
 
-def _render_project_brief_manager(project_id: str, thread: dict | None) -> None:
-    """Render reviewed, versioned project overview and feature/service briefs."""
-    try:
-        scopes = api_get(f"/api/v1/projects/{project_id}/brief-scopes") or []
-    except Exception as exc:
-        st.error(f"Could not load project briefs: {exc}")
-        return
-    if not scopes:
-        st.info("No project brief scopes are available yet.")
-        return
-
-    scope_by_id = {str(item["id"]): item for item in scopes if item.get("id")}
-    overview = next((item for item in scopes if item.get("scope_type") == "project"), None)
-    scope_ids = list(scope_by_id)
-    selected_key = f"brief_manager_scope_{project_id}"
-    pending_scope = st.session_state.pop(f"{selected_key}_pending", None)
-    if pending_scope in scope_by_id:
-        st.session_state[selected_key] = pending_scope
-    if st.session_state.get(selected_key) not in scope_by_id:
-        st.session_state[selected_key] = str((overview or scopes[0]).get("id"))
-
-    left, right = st.columns([1.15, 2.85], gap="large")
-    with left:
-        st.markdown("#### Brief library")
-        selected_scope_id = st.radio(
-            "Project overview and feature briefs", scope_ids,
-            key=selected_key,
-            format_func=lambda value: (
-                f"{scope_by_id[value].get('name') or 'Untitled'}"
-                + (" · Overview" if scope_by_id[value].get("scope_type") == "project" else "")
-            ),
-            label_visibility="collapsed",
-        )
-        st.divider()
-        with st.expander("Add a feature or service brief", expanded=False):
-            scope_type = st.selectbox("Scope", ["feature", "microservice"], key=f"brief_new_type_{project_id}")
-            scope_name = st.text_input("Name", key=f"brief_new_name_{project_id}", placeholder="For example, Checkout")
-            if st.button("Create brief", key=f"brief_create_scope_{project_id}", disabled=not scope_name.strip()):
-                try:
-                    created = api_post(f"/api/v1/projects/{project_id}/brief-scopes", {
-                        "scope_type": scope_type, "name": scope_name.strip(),
-                    })
-                    st.session_state[f"{selected_key}_pending"] = created["id"]
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not create brief scope: {exc}")
-
-    with right:
-        scope = scope_by_id[selected_scope_id]
-        scope_name = str(scope.get("name") or "Project brief")
-        st.markdown(f"#### {html.escape(scope_name)}")
-        st.caption(
-            ("Project overview · always included in generation" if scope.get("scope_type") == "project"
-             else f"{str(scope.get('scope_type') or 'feature').title()} context · selected explicitly for generation")
-        )
-        current_content = str(scope.get("current_content") or "")
-        version_number = scope.get("current_version_number")
-        if current_content:
-            st.markdown(f"Current version · **v{version_number or 1}**")
-            st.markdown(current_content)
-        else:
-            st.caption("No saved version yet. Discuss the product context in chat, draft a brief, then review and save it.")
-
-        if thread and not thread.get("archived"):
-            with st.expander("Draft from this conversation", expanded=False):
-                st.caption("The model consolidates the current brief with this thread. Review the draft before saving a new version.")
-                if st.button("Draft brief from conversation", key=f"brief_draft_{project_id}_{selected_scope_id}", type="primary"):
-                    try:
-                        with st.spinner("Drafting a consolidated brief from the conversation…"):
-                            draft = api_post(
-                                f"/api/v1/projects/{project_id}/chat/threads/{thread['id']}/brief-draft",
-                                {"scope_id": selected_scope_id},
-                            )
-                        st.session_state[f"brief_draft_{project_id}"] = {
-                            "scope_id": selected_scope_id,
-                            "thread_id": thread["id"],
-                            "content": draft.get("draft", ""),
-                        }
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not draft brief: {exc}")
-        else:
-            st.caption("Select an active chat thread to draft or update a brief from its discussion.")
-
-        draft_key = f"brief_draft_{project_id}"
-        draft = st.session_state.get(draft_key)
-        if draft and draft.get("scope_id") == selected_scope_id:
-            with st.container(border=True):
-                st.markdown("**Review draft**")
-                st.caption("Resolve conflicts and edit the wording before saving. Saving adds a version; it does not erase earlier versions.")
-                edited = st.text_area(
-                    "Draft content", value=draft.get("content", ""), height=300,
-                    key=f"brief_draft_editor_{project_id}_{selected_scope_id}",
-                )
-                if st.button("Save as new version", key=f"brief_save_{project_id}_{selected_scope_id}", type="primary", disabled=not edited.strip()):
-                    try:
-                        api_post(
-                            f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions",
-                            {"content": edited, "source_thread_id": draft.get("thread_id")},
-                        )
-                        st.session_state.pop(draft_key, None)
-                        st.session_state[f"{selected_key}_pending"] = selected_scope_id
-                        _queue_toast("New project brief version saved.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not save brief version: {exc}")
-
-        history_key = f"brief_versions_{project_id}_{selected_scope_id}"
-        with st.expander("Version history", expanded=False):
-            if st.button("Load versions", key=f"brief_load_versions_{project_id}_{selected_scope_id}") or history_key not in st.session_state:
-                try:
-                    st.session_state[history_key] = api_get(
-                        f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions"
-                    ) or []
-                except Exception as exc:
-                    st.error(f"Could not load brief versions: {exc}")
-            versions = st.session_state.get(history_key, [])
-            if versions:
-                for version in versions:
-                    current = bool(version.get("is_current"))
-                    with st.expander(
-                        f"Version {version.get('version_number', '?')}" + (" · Current" if current else ""),
-                        expanded=False,
-                    ):
-                        st.caption(version.get("created_at", ""))
-                        st.markdown(str(version.get("content") or ""))
-                        if not current and st.button("Make current", key=f"brief_restore_{selected_scope_id}_{version['id']}"):
-                            try:
-                                api_post(
-                                    f"/api/v1/projects/{project_id}/brief-scopes/{selected_scope_id}/versions/{version['id']}/restore",
-                                    {},
-                                )
-                                st.session_state.pop(history_key, None)
-                                st.session_state[f"{selected_key}_pending"] = selected_scope_id
-                                st.rerun()
-                            except Exception as exc:
-                                st.error(f"Could not restore brief version: {exc}")
-            else:
-                st.caption("No versions saved yet.")
-
-
 @st.dialog("Generation activity details", width="large")
 def _show_generation_activity_details(record: dict) -> None:
     """Show the complete selected generation record in a modal dialog."""
     st.caption(f"{record.get('created_at', 'Unknown time')} · {record.get('mode', 'Generation')} · {record.get('status', 'unknown')}")
     st.caption(f"Activity ID: {record.get('id', 'Unknown')}")
+    provider_metadata = record.get("provider_metadata") or {}
+    if provider_metadata:
+        st.caption(
+            f"LLM provider: {provider_metadata.get('provider') or 'unknown'} · "
+            f"Model: {provider_metadata.get('model') or 'unknown'}"
+        )
     st.markdown("**Project**")
     st.write(record.get("project_id", "Unknown project"))
     if record.get("mode") == "Release revision":
@@ -3295,10 +3223,10 @@ def _show_generation_activity_details(record: dict) -> None:
     brief_context = record.get("project_brief_context") or {}
     brief_versions = brief_context.get("versions") or record.get("project_brief_versions") or []
     if brief_versions:
-        st.markdown("**Project brief versions used**")
+        st.markdown("**Knowledge Hub versions used**")
         for brief in brief_versions:
             with st.expander(
-                f"{brief.get('scope_name') or brief.get('name') or 'Project brief'} · v{brief.get('version_number') or '?'}",
+                f"{brief.get('scope_name') or brief.get('name') or 'Knowledge page'} · v{brief.get('version_number') or '?'}",
                 expanded=False,
             ):
                 st.caption(
@@ -3310,7 +3238,7 @@ def _show_generation_activity_details(record: dict) -> None:
     if chat_thread_id:
         st.caption(f"Project Chat thread: {chat_thread_id}")
     knowledge_context = record.get("knowledge_context") or {}
-    if knowledge_context:
+    if knowledge_context and (knowledge_context.get("facts") or knowledge_context.get("open_questions")):
         coverage_label = "Full relevant context" if knowledge_context.get("coverage") == "full" else "Changed areas"
         st.markdown(f"**Project knowledge used** · {coverage_label}")
         facts = knowledge_context.get("facts") or []
@@ -3881,14 +3809,10 @@ def _render_contract_import_panel(project_id: str, collections: list[dict]) -> N
             key=f"contract_flow_requirements_{project_id}_{source_id}",
             placeholder="For example, describe what makes a checkout complete or which outcomes should be asserted.",
         )
-        knowledge_coverage = st.radio(
-            "Project knowledge coverage", ["changed", "full"], horizontal=True,
-            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
-            key=f"contract_knowledge_coverage_{project_id}_{source_id}",
-        )
+        knowledge_coverage = "full"
         with st.expander("Project context", expanded=False):
             project_brief_scope_ids = _render_project_brief_picker(project_id, "contract_flow")
-            st.caption("The project overview is included automatically. Selected saved briefs add durable context.")
+            st.caption("Project-wide knowledge is included automatically; linked microservices follow selected features.")
         if st.button(
             "Generate flow test cases", type="primary", icon=":material/auto_awesome:",
             key=f"contract_generate_flows_{project_id}_{source_id}",
@@ -5448,11 +5372,7 @@ def _render_revision_dialog(project_id: str, project: dict) -> None:
                 disabled=True, height=80,
             )
         revision_brief_scope_ids = _render_project_brief_picker(project_id, "revision")
-        revision_knowledge_coverage = st.radio(
-            "Project knowledge coverage", ["changed", "full"], horizontal=True,
-            format_func=lambda value: "Changed areas" if value == "changed" else "Full relevant context",
-            key=f"revision_knowledge_coverage_{project_id}",
-        )
+        revision_knowledge_coverage = "full"
         revision_chat_thread_id = st.session_state.get(f"project_chat_selected_thread_{project_id}")
         revision_notes = st.text_area(
             "New requirement changes", key=f"revision_notes_{project_id}", height=95,
