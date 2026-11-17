@@ -347,8 +347,9 @@ stylesheet compatibility, but only `LIGHT` is used by the application.
 `DEFAULT_THEME` is `light`, and `active_theme()` always returns that value.
 There is no in-app theme switch or theme session key.
 
-`.streamlit/config.toml` configures Streamlit's native theme as light. The app
-also injects `frontend/styles/light.py` to align native surfaces such as menus,
+`.streamlit/config.toml` configures Streamlit's native theme as light and is
+copied into the frontend Docker image by `Dockerfile.frontend`. The app also
+sets the document `color-scheme` to light and injects `frontend/styles/light.py` to align native surfaces such as menus,
 dialogs, tooltips, toasts, code, alerts, chat bubbles, and widget edges with the
 light tokens. Data grids and charts use Streamlit's native light canvas as well.
 
