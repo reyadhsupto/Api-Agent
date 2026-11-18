@@ -215,21 +215,14 @@ div[data-testid="stExpander"] summary p { font-weight: 620; }
 }
 /* Keep the chat composer visibly separated from the light canvas. */
 [data-testid="stChatInput"] {
-    position: sticky !important;
-    bottom: .55rem;
-    z-index: 9;
     background: var(--aa-panel-alt) !important;
     border: 1px solid var(--aa-line-contrast) !important;
     border-radius: var(--aa-radius-sm) !important;
     padding: .25rem .4rem !important;
 }
-/* Keep the composer within reach while the conversation page scrolls. */
+/* Keep the composer in normal document flow with the conversation. */
 div[class*="st-key-project-chat-composer-"] {
-    position: sticky;
-    bottom: .55rem;
-    z-index: 8;
     padding-top: .45rem;
-    background: linear-gradient(180deg, transparent, var(--aa-canvas) 28%);
 }
 [data-testid="stChatInput"]:focus-within {
     border-color: var(--aa-accent) !important;

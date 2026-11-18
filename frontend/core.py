@@ -168,6 +168,7 @@ def _revision_case_signature(test_case: dict) -> str:
 
     fields = (
         "name", "type", "description", "business_requirements", "release_notes",
+        "technique_tags", "requirement_refs",
         "is_flow", "source_endpoint_id", "source_endpoint_name", "expected_status",
         "expected_body_contains", "request", "assertions", "steps",
     )
@@ -304,6 +305,11 @@ def _select_revision_collection(project_id: str, collection_id: str, endpoint_id
     selected = bool(st.session_state.get(f"revision_collection_{project_id}_{collection_id}"))
     for endpoint_id in endpoint_ids:
         st.session_state[f"revision_endpoint_{project_id}_{endpoint_id}"] = selected
+
+
+def _set_revision_baseline_selection(state_key: str, case_ids: list[str]) -> None:
+    """Set the revision baseline multiselect before its widget is rendered."""
+    st.session_state[state_key] = list(case_ids)
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -1591,6 +1597,88 @@ def _test_case_request_snapshot(test_case: dict):
     return copy.deepcopy(test_case.get(field))
 
 
+def _render_case_coverage_metadata(test_case: dict, case_id: str) -> None:
+    """Edit case-level technique tags and requirement trace references."""
+    tags_key = f"tc_technique_tags_{case_id}"
+    refs_key = f"tc_requirement_refs_{case_id}"
+    def initial_text(field: str) -> str:
+        """Format legacy list or scalar metadata for a comma-separated editor."""
+        value = test_case.get(field) or []
+        values = value if isinstance(value, list) else [value]
+        return ", ".join(str(item) for item in values if str(item).strip())
+
+    st.session_state.setdefault(tags_key, initial_text("technique_tags"))
+    st.session_state.setdefault(refs_key, initial_text("requirement_refs"))
+    with st.expander("Coverage metadata", expanded=False):
+        tags = st.text_input(
+            "Technique tags", key=tags_key,
+            help="Comma-separated methods such as BVA, equivalence partitioning, or negative testing.",
+        )
+        refs = st.text_input(
+            "Requirement references", key=refs_key,
+            help="Comma-separated requirement IDs, such as HD-7, or generated REQ-001 references.",
+        )
+    test_case["technique_tags"] = list(dict.fromkeys(item.strip() for item in tags.split(",") if item.strip()))
+    test_case["requirement_refs"] = list(dict.fromkeys(item.strip() for item in refs.split(",") if item.strip()))
+
+
+def _coverage_summary_table(summary: dict) -> list[dict]:
+    """Format a saved coverage summary as rows suitable for a compact table."""
+    rows = []
+    for item in summary.get("requirements", []):
+        if not isinstance(item, dict):
+            continue
+        names = item.get("case_names") or []
+        ids = item.get("case_ids") or []
+        linked_cases = [
+            f"{name} [{ids[index]}]" if index < len(ids) and ids[index] else str(name)
+            for index, name in enumerate(names)
+        ]
+        rows.append({
+            "Requirement": item.get("ref", ""),
+            "Coverage": str(item.get("status", "unknown")).title(),
+            "Requirement statement": item.get("statement", ""),
+            "Linked cases": ", ".join(linked_cases),
+            "Notes": item.get("note", ""),
+        })
+    return rows
+
+
+def _store_coverage_summary(project_id: str, response: dict) -> None:
+    """Retain the latest generation coverage summary for the project workspace."""
+    summary = response.get("coverage_summary") or (response.get("activity") or {}).get("coverage_summary")
+    if summary is not None:
+        st.session_state[f"latest_generation_coverage_{project_id}"] = {
+            "summary": summary,
+            "activity_id": (response.get("activity") or {}).get("id"),
+        }
+
+
+def _render_latest_coverage_summary(project_id: str) -> None:
+    """Show requirement mapping and unsupported coverage from the latest action."""
+    if not project_id:
+        return
+    stored = st.session_state.get(f"latest_generation_coverage_{project_id}") or {}
+    summary = stored.get("summary") or {}
+    if not summary:
+        return
+    with st.expander("Requirement coverage from latest generation", expanded=False):
+        if stored.get("activity_id"):
+            st.caption(f"Activity {stored['activity_id']}")
+        rows = _coverage_summary_table(summary)
+        if rows:
+            st.dataframe(rows, hide_index=True, width="stretch")
+        else:
+            st.caption("No requirement references were returned for this action.")
+        unsupported = summary.get("unsupported_coverage") or []
+        if unsupported:
+            st.markdown("**Coverage claims needing source evidence**")
+            for claim in unsupported:
+                st.markdown(f"- {claim}")
+        if summary.get("note"):
+            st.caption(summary["note"])
+
+
 def _flaky_summary(outcomes: list[str]) -> dict:
     """Classify recent outcomes using the product rule of three of the latest ten."""
     recent = outcomes[:10]
@@ -1781,6 +1869,15 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
 
         if tc.get("description"):
             st.caption(tc["description"])
+        technique_tags = tc.get("technique_tags") or []
+        requirement_refs = tc.get("requirement_refs") or []
+        if technique_tags or requirement_refs:
+            metadata_parts = []
+            if technique_tags:
+                metadata_parts.append("Techniques: " + ", ".join(str(item) for item in technique_tags))
+            if requirement_refs:
+                metadata_parts.append("Requirements: " + ", ".join(str(item) for item in requirement_refs))
+            st.caption(" · ".join(metadata_parts))
         if is_general and status == "failed":
             assertion_detail = (
                 (result or {}).get("assertion_detail")
@@ -1795,7 +1892,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
             )
             with st.expander(
                 "Generation requirements",
-                expanded=bool(st.session_state[requirements_key]),
+                expanded=False,
             ):
                 brief_refs = tc.get("project_brief_versions") or tc.get("knowledge_hub_versions") or []
                 if brief_refs:
@@ -1846,6 +1943,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     st.json({key: value for key, value in tc.items() if key not in {"id"}})
                 return tc
             if is_general:
+                _render_case_coverage_metadata(tc, tc_id)
                 st.markdown("**Manual steps**")
                 for step_index, step in enumerate(tc.get("manual_steps", []), start=1):
                     st.markdown(f"{step_index}. {step}")
@@ -1853,6 +1951,21 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     st.caption(f"Current manually recorded result: {tc['manual_status'].upper()}")
                 with st.expander("History", expanded=False):
                     _render_test_case_history(tc, project.get("id", ""))
+                if st.button(
+                    "Save changes", key=f"save_tc_{tc_id}", icon=":material/save:",
+                    type="primary", disabled=not project.get("id"),
+                ):
+                    try:
+                        saved = api_put(f"/api/v1/projects/{project['id']}/test-cases/{tc_id}", tc)
+                        tc.update(saved)
+                        for collection in (project.get("test_cases", []), st.session_state.get("test_cases", [])):
+                            for case_index, stored_case in enumerate(collection):
+                                if stored_case.get("id") == tc_id:
+                                    collection[case_index] = copy.deepcopy(saved)
+                        _queue_toast("Test case changes saved to the project.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not save test case changes: {exc}")
                 return tc
             save_notice_key = f"tc_save_notice_{project.get('id', 'local')}_{tc_id}"
             if notice := st.session_state.pop(save_notice_key, None):
@@ -1864,6 +1977,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
             title_col, description_col = st.columns([1, 2])
             tc["name"] = title_col.text_input("Test case name", key=name_key)
             tc["description"] = description_col.text_input("Description", key=description_key)
+            _render_case_coverage_metadata(tc, tc_id)
             if is_flow:
                 step_results = {
                     item.get("step_order"): item
@@ -1966,7 +2080,7 @@ def render_test_case_card(tc: dict, index: int, read_only: bool = False) -> dict
                     except Exception as exc:
                         st.error(f"Could not save test case changes: {exc}")
             with save_hint_col:
-                st.caption("Requirements, request, step, mapping, and assertion edits stay in this session until you save changes.")
+                st.caption("Requirements, coverage metadata, request, step, mapping, and assertion edits stay in this session until you save changes.")
     return tc
 
 
@@ -2434,6 +2548,8 @@ def _accept_generation_response(response, mode: str) -> list[dict]:
         st.session_state[f"tc_selected_{case.get('id')}"] = True
     questions = envelope.get("clarification_questions", [])
     activity = envelope.get("activity") or {}
+    project_id = str((st.session_state.get("current_project") or {}).get("id") or "")
+    _store_coverage_summary(project_id, envelope)
     if questions and activity.get("id"):
         pending = st.session_state.setdefault("generation_clarification_rounds", [])
         pending[:] = [item for item in pending if item.get("activity_id") != activity["id"]]
@@ -2832,6 +2948,7 @@ def render_generation_panel() -> None:
                 st.session_state[generation_submit_key] = time.time()
 
     _render_generation_clarifications(str(project_id or ""))
+    _render_latest_coverage_summary(str(project_id or ""))
 
     if project_id and st.button(
         "Create release revision", key=f"revision_open_{project_id}",
@@ -3055,7 +3172,7 @@ def render_test_case_list(loaded_run_id: str | None = None) -> None:
                 icon=":material/download:",
                 width="stretch",
                 disabled=not selected_case_ids,
-                help=f"Download {len(selected_case_ids)} selected test case(s) as CSV with execution results",
+                help=f"Download {len(selected_case_ids)} selected test case(s) as CSV without execution results",
             )
         with run_col:
             run_selected = st.button(
@@ -3274,6 +3391,19 @@ def _show_generation_activity_details(record: dict) -> None:
     if record.get("generated_case_ids"):
         st.markdown("**Generated test case IDs**")
         st.write(", ".join(record["generated_case_ids"]))
+    coverage_summary = record.get("coverage_summary") or {}
+    if coverage_summary:
+        st.markdown("**Requirement coverage mapping**")
+        coverage_rows = _coverage_summary_table(coverage_summary)
+        if coverage_rows:
+            st.dataframe(coverage_rows, hide_index=True, width="stretch")
+        unsupported = coverage_summary.get("unsupported_coverage") or []
+        if unsupported:
+            st.markdown("**Unsupported coverage claims**")
+            for claim in unsupported:
+                st.markdown(f"- {claim}")
+        if coverage_summary.get("note"):
+            st.caption(coverage_summary["note"])
     if record.get("follow_up_of"):
         st.markdown("**Refined from activity**")
         st.write(record["follow_up_of"])
@@ -5282,17 +5412,15 @@ def _render_revision_dialog(project_id: str, project: dict) -> None:
             key=lambda item: int(item.get("ordinal", 0)),
         )
         baseline_key = f"revision_baseline_{project_id}"
+        baseline_source_key = f"revision_baseline_source_{project_id}"
         pending_baseline = st.session_state.pop(f"{baseline_key}_pending", None)
         if isinstance(pending_baseline, list):
             st.session_state[baseline_key] = [
                 str(case_id) for case_id in pending_baseline
                 if str(case_id) in saved_cases_by_id
             ]
-        if baseline_key not in st.session_state:
-            if revisions:
-                suggested = [str(value) for value in revisions[-1].get("case_ids", [])]
-            else:
-                suggested = [str(value) for value in source_action.get("generated_case_ids", [])]
+        elif st.session_state.get(baseline_source_key) != source_id or baseline_key not in st.session_state:
+            suggested = [str(value) for value in source_action.get("generated_case_ids", [])]
             st.session_state[baseline_key] = [
                 case_id for case_id in suggested if case_id in saved_cases_by_id
             ]
@@ -5301,7 +5429,23 @@ def _render_revision_dialog(project_id: str, project: dict) -> None:
                 str(case_id) for case_id in st.session_state[baseline_key]
                 if str(case_id) in saved_cases_by_id
             ]
+        st.session_state[baseline_source_key] = source_id
         case_options = list(saved_cases_by_id)
+        select_all_col, clear_all_col, baseline_count_col = st.columns([1.1, 0.8, 3], vertical_alignment="center")
+        with select_all_col:
+            st.button(
+                "Select all", key=f"revision_baseline_select_all_{project_id}",
+                on_click=_set_revision_baseline_selection,
+                args=(baseline_key, case_options), width="stretch",
+                help="Carry every currently saved, non-superseded case and flow into this revision.",
+            )
+        with clear_all_col:
+            st.button(
+                "Clear", key=f"revision_baseline_clear_{project_id}",
+                on_click=_set_revision_baseline_selection,
+                args=(baseline_key, []), width="stretch",
+                help="Clear the selected baseline cases.",
+            )
         baseline_ids = st.multiselect(
             "Cases and flows to carry forward", case_options, key=baseline_key,
             format_func=lambda case_id: (
@@ -5315,7 +5459,7 @@ def _render_revision_dialog(project_id: str, project: dict) -> None:
                 "edits before generating; only saved configurations are used."
             ),
         )
-        st.caption(f"{len(baseline_ids)} saved baseline case(s) selected.")
+        baseline_count_col.caption(f"{len(baseline_ids)} of {len(case_options)} saved cases selected.")
         with st.expander("View selected case details", expanded=False):
             if baseline_ids:
                 for case_id in baseline_ids:
@@ -5567,6 +5711,7 @@ def _render_revision_dialog(project_id: str, project: dict) -> None:
                     project.setdefault("test_case_revisions", []).append(response["revision"])
                     project.setdefault("test_cases", []).extend(response["test_cases"])
                     st.session_state["test_cases"] = project["test_cases"]
+                    _store_coverage_summary(project_id, response)
                     st.session_state[f"{source_key}_pending"] = response["activity"]["id"]
                     st.session_state[f"{baseline_key}_pending"] = [
                         str(item.get("id")) for item in response["test_cases"] if item.get("id")

@@ -28,7 +28,7 @@ _STRICT_JSON_INSTRUCTION = (
 def _output_token_limit() -> int:
     """Read a shared configurable generation ceiling for supported providers."""
     try:
-        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 16000)
+        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 25000)
     except ValueError:
         return 6000
 
@@ -61,7 +61,7 @@ def generate_test_cases(
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
     print("llm response:", generated_text)
-    cases, questions = _parse_generation_output(generated_text)
+    cases, questions = _parse_generation_output(generated_text, trace=trace)
     if trace is not None:
         trace["clarification_questions"] = questions
     return cases
@@ -76,13 +76,20 @@ def generate_general_test_cases(
         "Create general software test scenarios from the business requirements only. "
         "These are manual scenarios and must not contain HTTP requests, endpoints, assertions, "
         "response mappings, or executable API data. Each case needs name, type, description, "
-        "and ordered manual_steps as an array of concise human-readable strings. "
+        "ordered manual_steps as an array of concise human-readable strings, technique_tags, "
+        "and requirement_refs. Keep each independent scenario separate: distinct input values, "
+        "boundaries, outcomes, and requirement behaviors must not be combined into one case. "
         "Return a JSON object with test_cases and clarification_questions. Ask concise questions "
         "when requirements are ambiguous; otherwise use an empty clarification_questions array. "
+        "Also return coverage_summary with requirements (ref, statement, status, note) and "
+        "unsupported_coverage. Preserve explicit requirement IDs exactly; for unnumbered atomic "
+        "requirements assign stable REQ-001 style labels within this response. Report uncovered "
+        "or ambiguous requirements. Only claim branch/statement coverage if the supplied context "
+        "supports it; otherwise list it as unsupported. "
         f"{_STRICT_JSON_INSTRUCTION}\nBusiness requirements:\n{business_requirements}"
     )
     raw = _call_llm_with_fallback(prompt, trace)
-    cases, questions = _parse_generation_output(raw, validate=False)
+    cases, questions = _parse_generation_output(raw, validate=False, trace=trace)
     for case in cases:
         if not isinstance(case, dict):
             raise ValueError("Each general scenario must be a JSON object.")
@@ -111,14 +118,16 @@ def refine_generated_cases(
     prompt = (
         "Refine the supplied test cases using the user's answers to the clarification questions. "
         "Return a complete refined case set in the same order. For each revised case, copy its input id into source_case_id; set source_case_id null for newly added cases. Preserve each original case kind and structure. "
+        "Keep independent scenarios separate; never combine distinct input values, branches, or expected outcomes into one test case. Preserve technique_tags and requirement_refs unless the clarification changes their meaning. "
         "Ask additional clarification_questions only if important ambiguity remains; otherwise return an empty array. "
         "For general cases, retain manual_steps and omit request/assertion/mapping data. For API cases, "
-        "retain executable request or flow structure. Return JSON with test_cases and clarification_questions. "
+        "retain executable request or flow structure. Return JSON with test_cases, clarification_questions, "
+        "and coverage_summary (requirements and unsupported_coverage); report remaining gaps honestly. "
         f"{_STRICT_JSON_INSTRUCTION}\nOriginal cases:\n{json.dumps(cases, ensure_ascii=False)}\n"
         f"Clarification answers:\n{json.dumps(answers, ensure_ascii=False)}"
     )
     raw = _call_llm_with_fallback(prompt, trace)
-    refined, questions = _parse_generation_output(raw, validate=False)
+    refined, questions = _parse_generation_output(raw, validate=False, trace=trace)
     for original, updated in zip(cases, refined):
         if isinstance(original, dict) and isinstance(updated, dict) and original.get("source_case_id"):
             updated.setdefault("source_case_id", original["source_case_id"])
@@ -152,14 +161,18 @@ def _validate_general_cases(cases: list[dict]) -> None:
             raise ValueError(f"General test case {index} needs ordered manual_steps.")
 
 
-def _parse_generation_output(text: str, validate: bool = True) -> tuple[list, list[str]]:
+def _parse_generation_output(
+    text: str, validate: bool = True, trace: dict | None = None,
+) -> tuple[list, list[str]]:
     """Normalize an envelope or legacy array into test cases and questions."""
     parsed = _parse_generated_json(text)
     if isinstance(parsed, list):
         cases, questions = parsed, []
+        coverage_summary = None
     elif isinstance(parsed, dict):
         cases = parsed.get("test_cases")
         questions = parsed.get("clarification_questions", [])
+        coverage_summary = parsed.get("coverage_summary")
         if not isinstance(cases, list):
             raise ValueError("Generation response object must contain a test_cases array.")
         if not isinstance(questions, list) or any(not isinstance(item, str) for item in questions):
@@ -168,7 +181,27 @@ def _parse_generation_output(text: str, validate: bool = True) -> tuple[list, li
         raise ValueError("Generation response must be a JSON array or object envelope.")
     if validate:
         _validate_generated_cases(cases)
+    for case in cases:
+        if isinstance(case, dict):
+            case["technique_tags"] = _string_list(case.get("technique_tags", case.get("tags", [])))
+            case["requirement_refs"] = _string_list(
+                case.get("requirement_refs", case.get("requirement_ids", []))
+            )
+    if trace is not None:
+        trace["coverage_summary"] = coverage_summary if isinstance(coverage_summary, dict) else None
     return cases, [item.strip() for item in questions if item.strip()]
+
+
+def _string_list(value) -> list[str]:
+    """Normalize optional model metadata to a de-duplicated list of strings."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def generate_test_case_revision(
@@ -193,13 +226,15 @@ def generate_test_case_revision(
             "id", "name", "type", "description", "is_flow", "source_endpoint_id",
             "source_endpoint_name", "request", "steps", "manual_steps", "case_kind",
             "assertions", "business_requirements", "case_collection_id", "case_collection_name",
+            "technique_tags", "requirement_refs",
         ) if key in case}
         baseline_context.append(clean)
     prompt = (
-        "You are revising a complete API test suite for a new software release. Return every baseline case, "
+        "You are revising a complete test suite for a new software release. Return every baseline case, "
         "updated where the changed endpoints or release notes require it, and add useful cases for new behavior. "
         "Do not mutate or omit baseline cases merely to reduce output. For every retained/revised baseline case, "
         "copy its exact id into source_case_id. New cases must use source_case_id null. Assign unique temporary ids. "
+        "Keep one independent scenario per case. Never combine boundary values or distinct expected outcomes in one case; below, exactly-at, and above-threshold values are separate cases. Preserve each baseline case's technique_tags and requirement_refs unless its behavior changes. Establish coverage of atomic requirements first, then add only justified dependency-driven flows and supplementary edge/branch cases. Do not merge cases to reduce output. "
         "Preserve general/manual cases as case_kind general with ordered human-readable manual_steps and no request, mapping, or assertion data. For each API single case, use a request object. For each API flow, use ordered steps with step_order, endpoint_id, "
         "endpoint, assertions, and variable_mappings. Use selected endpoints for updated behavior and preserve baseline "
         "endpoint definitions for unchanged requests not selected. Preserve useful assertions and mappings, update obsolete "
@@ -218,13 +253,12 @@ def generate_test_case_revision(
         "Never alter the stored briefs.\n"
         f"Selected current endpoints (optional; this list may be empty):\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Baseline cases:\n{json.dumps(baseline_context, ensure_ascii=False, separators=(',', ':'))}\n"
-        "Return a JSON object with test_cases and clarification_questions. Ask concise questions if important requirements remain ambiguous; otherwise questions is empty. Every case must contain id, source_case_id, name, type, description, "
-        "case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
+        "Return a JSON object with test_cases, clarification_questions, and coverage_summary. coverage_summary.requirements contains {ref, statement, status, note}; unsupported_coverage lists claims that lack evidence. Preserve explicit requirement IDs exactly; use stable REQ-001 labels for unnumbered requirements, continuing baseline labels and assigning new labels after them. Link each case with requirement_refs and technique_tags. Report uncovered/ambiguous requirements. Do not claim branch/statement coverage without supplied logic/source. Every case must contain id, source_case_id, name, type, description, technique_tags, requirement_refs, case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
     )
     generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    cases, questions = _parse_generation_output(generated_text, validate=False)
+    cases, questions = _parse_generation_output(generated_text, validate=False, trace=trace)
     if trace is not None:
         trace["clarification_questions"] = questions
     baseline_by_id = {str(item.get("id")): item for item in baseline_cases}
@@ -331,6 +365,8 @@ def _example_case_summaries(test_cases: list[dict] | None) -> list[dict]:
             "name": case.get("name"),
             "description": case.get("description"),
             "assertions": case.get("assertions", {}),
+            "technique_tags": case.get("technique_tags", []),
+            "requirement_refs": case.get("requirement_refs", []),
         }
         if case.get("business_requirements"):
             summary["business_requirements"] = case["business_requirements"]
@@ -399,26 +435,27 @@ def _build_prompt(
 
     return (
         "You are a senior software test engineer specializing in backend application testing. Generate independent single-request test cases "
-        "for every endpoint in the supplied list. Cover positive, negative, edge, and race scenarios "
-        "for each endpoint.\n"
+        "for every endpoint in the supplied list. First decompose the supplied requirements into atomic behaviors and ensure each is represented "
+        "by one or more independently executable cases. Each case tests one scenario and one meaningful input/outcome combination. "
+        "Never combine multiple boundary values or outcomes into one case: for example, below, exactly-at, and above-threshold values are three cases. "
+        "Use BVA as a technique tag for boundary cases. Do not create multi-request flows in Single mode. Cover relevant positive, negative, edge, "
+        "and evidence-supported race scenarios. The current executor runs requests sequentially, so do not claim concurrent race coverage unless "
+        "the test is still independently executable and explicitly describes the external concurrency requirement.\n"
         f"{_STRICT_JSON_INSTRUCTION}\n"
-        "Generate at least 6 concise cases per endpoint, and do not omit any endpoint. When an "
+        "Generate concise cases per endpoint based on distinct requirement behaviors; do not pad the suite with redundant cases or omit any endpoint. When an "
         "endpoint has source_endpoint_id, copy that exact ID into every case for it. Keep the "
         "request method and URL aligned with the endpoint; vary request data only as needed by the scenario.\n"
-        "1. Positive test: valid request, expect success (2xx)\n"
-        "2. Negative test: invalid data, expect error (4xx)\n"
-        "3. Negative test: missing required fields, expect error (4xx)\n"
-        "4. Edge case: boundary values, empty strings, null values\n"
-        "5. Edge case: maximum/minimum values, special characters\n"
-        "6. Race condition: concurrent requests, consistency checks\n"
-        "7. Any additional scenarios relevant to the endpoint\n"
+        "For every independent required field, rule, branch, or boundary, create separate cases for distinct conditions and expected outcomes. "
+        "A single case must not list multiple alternative values as separate steps. Include additional edge or negative cases only when relevant.\n"
         f"\nEndpoints:\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Business Requirements: {business_requirements or 'None provided'}\n"
         f"{examples_text}\n"
-        "Return a JSON object with test_cases and clarification_questions. Ask concise questions for important ambiguity in requirements or endpoint behavior while still providing the best draft; otherwise use an empty questions array. Each test case has:\n"
+        "Return a JSON object with test_cases, clarification_questions, and coverage_summary. Ask concise questions for important ambiguity in requirements or endpoint behavior while still providing the best draft; otherwise use an empty questions array. coverage_summary has requirements, an array of {ref, statement, status, note}, and unsupported_coverage, an array of coverage claims that cannot be supported by the supplied context. Preserve explicit requirement IDs exactly; assign stable REQ-001 style references to atomic requirements without IDs. Link every case using requirement_refs. Report uncovered and ambiguous requirements rather than implying full coverage. Only claim branch/statement coverage when supplied logic or source supports the claim. Each test case has:\n"
         "- id: unique string like \"tc_1\"\n"
         "- source_endpoint_id: exact endpoint ID when one is supplied\n"
         "- type: one of \"positive\", \"negative\", \"edge\", \"race\"\n"
+        "- technique_tags: array such as [\"BVA\", \"negative\"]\n"
+        "- requirement_refs: array of explicit requirement IDs or generated REQ-001 labels\n"
         "- name: descriptive test name\n"
         "- description: what this test validates\n"
         "- request: the full request object with method, url, headers, body\n"
@@ -774,7 +811,7 @@ def generate_flow_test_cases(
     generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    cases, questions = _parse_generation_output(generated_text, validate=False)
+    cases, questions = _parse_generation_output(generated_text, validate=False, trace=trace)
     _attach_flow_endpoints(cases, endpoints)
     if trace is not None:
         trace["clarification_questions"] = questions
@@ -1002,10 +1039,10 @@ def generate_discovered_flow_test_cases(
         })
     context = f"\nBusiness requirements:\n{business_requirements}" if business_requirements else ""
     prompt = (
-        "Create executable API flow test scenarios for the selected dependency paths. "
-        "Use only the endpoint IDs and order supplied in each candidate. Return a JSON object with test_cases and clarification_questions; ask only questions needed to resolve important ambiguity. "
+        "Create executable API flow test scenarios for selected dependency paths. Use a multi-request flow only when the steps have a real data or process dependency; do not chain unrelated requests. Keep distinct input variations and outcomes in separate cases. Establish atomic requirement coverage before supplementary flow/edge coverage. "
+        "Use only the endpoint IDs and order supplied in each candidate. Return a JSON object with test_cases, clarification_questions, and coverage_summary; ask only questions needed to resolve important ambiguity. "
         f"{_STRICT_JSON_INSTRUCTION} "
-        "Each result must include id, type (positive, negative, edge, or race), name, description, "
+        "Each result must include id, type (positive, negative, edge, or race), technique_tags, requirement_refs, name, description, "
         "is_flow true, candidate_id, and steps. Each step must include step_order (1-based), "
         "endpoint_id copied exactly, description, assertions, and variable_mappings. Include one or "
         "more concise useful scenarios for every candidate. Do not repeat endpoint request data. "
@@ -1019,6 +1056,7 @@ def generate_discovered_flow_test_cases(
         "cookies, URL, or request body. The application attaches canonical endpoint data. Keep names "
         "and descriptions short.\n\nSelected candidates:\n"
         f"{json.dumps(candidate_data, ensure_ascii=False)}{context}\n"
+        "coverage_summary.requirements is an array of {ref, statement, status, note}; unsupported_coverage lists unsupported branch/statement claims. Preserve explicit IDs and use stable REQ-001 labels for unnumbered requirements. Report gaps/ambiguities; only claim code branch/statement coverage with supplied logic/source.\n"
         "Expected step shape: {\"step_order\":1,\"endpoint_id\":\"...\",\"description\":\"...\","
         "\"assertions\":{\"status\":[{\"enabled\":true,\"expected_status\":200}]},"
         "\"variable_mappings\":[{\"from\":\"$.cart_id\",\"to\":\"request.path.cart_id\"}]}"
@@ -1026,7 +1064,7 @@ def generate_discovered_flow_test_cases(
     generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
         trace.update({"prompt": prompt, "llm_response": generated_text})
-    cases, questions = _parse_generation_output(generated_text, validate=False)
+    cases, questions = _parse_generation_output(generated_text, validate=False, trace=trace)
     if trace is not None:
         trace["clarification_questions"] = questions
     return cases
@@ -1063,13 +1101,14 @@ def _build_flow_prompt(
         if examples else ""
     )
     return (
-        "You are a Senior SQA Engineer specializing in Backend application testing. Propose a set of distinct, useful executable flow "
-        "scenarios for the ordered requests. Prefer complete valid JSON over many scenarios; cover "
-        "positive, negative, race and edge behavior when supported by the request context.\n"
+        "You are a Senior SQA Engineer specializing in Backend application testing. Propose distinct, independently executable flow "
+        "scenarios for the ordered requests. Create a flow only for requests with a meaningful dependency or multi-step user journey; do not "
+        "combine independent requirements or boundary variants into one case. Separate below/at/above-boundary values into separate cases. "
+        "Establish atomic requirement coverage before supplementary flow and edge coverage. Do not claim branch/statement coverage without supplied logic/source.\n"
         f"{_STRICT_JSON_INSTRUCTION}\n"
         f"\nOrdered endpoint summaries:\n{json.dumps(endpoint_summaries, ensure_ascii=False, separators=(',', ':'))}\n"
         f"{requirements_text}{examples_text}"
-        "Return a JSON object with test_cases and clarification_questions. Ask concise questions for important ambiguity in requirements or endpoint behavior; otherwise use an empty questions array. Each item has id, type (positive/negative/edge/race), "
+        "Return a JSON object with test_cases, clarification_questions, and coverage_summary. Ask concise questions for important ambiguity in requirements or endpoint behavior; otherwise use an empty questions array. coverage_summary.requirements contains {ref, statement, status, note}; unsupported_coverage lists unsubstantiated coverage claims. Preserve explicit requirement IDs and use stable REQ-001 labels for unnumbered requirements. Report gaps and ambiguity. Each item has id, type (positive/negative/edge/race), technique_tags, requirement_refs, "
         "name, description, is_flow:true, and steps. Each step contains step_order, endpoint_id copied "
         "exactly from a summary, concise description, assertions, and variable_mappings. Use only "
         "provided endpoint IDs and preserve the supplied order. A mapping uses from as a response "
