@@ -28,9 +28,9 @@ _STRICT_JSON_INSTRUCTION = (
 def _output_token_limit() -> int:
     """Read a shared configurable generation ceiling for supported providers."""
     try:
-        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 25000)
+        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 50000)
     except ValueError:
-        return 6000
+        return 16000
 
 
 def generate_test_cases(

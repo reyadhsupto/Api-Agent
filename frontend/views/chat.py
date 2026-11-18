@@ -294,11 +294,10 @@ def _render_conversation(project_id: str, thread: dict) -> None:
         st.info("This conversation is archived. Restore it from the rail to continue.")
         return
 
-    with st.container(key=f"project-chat-composer-{project_id}"):
-        prompt = st.chat_input(
-            "Message about this project",
-            key=f"chat_composer_{project_id}_{thread_id}",
-        )
+    prompt = st.bottom.chat_input(
+        "Message about this project",
+        key=f"chat_composer_{project_id}_{thread_id}",
+    )
     if not prompt:
         return
     with st.status("Thinking with project context", expanded=False) as status:
