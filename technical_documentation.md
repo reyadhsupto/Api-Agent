@@ -130,7 +130,7 @@ Returns {"test_cases": [...], "clarification_questions": [...], "coverage_summar
 
 Generated cases are independent scenarios by default; distinct boundary values or expected outcomes are separate cases. `technique_tags` (for example, BVA) and `requirement_refs` (explicit IDs or stable `REQ-001` labels) are separate editable case fields. The `coverage_summary` envelope and activity snapshot map requirements to case IDs/names, state covered/partial/uncovered/ambiguous status, and list unsupported coverage claims. Branch or statement coverage is not asserted without supplied implementation logic or source. Release revision and clarification prompts preserve baseline tags/references when the model omits them; revision summaries describe the complete output suite, including cases copied unchanged.
 
-Generation output is normalized from an envelope containing `test_cases`, optional `clarification_questions`, and optional `coverage_summary`, or from a legacy bare array (treated as no questions or coverage summary). General cases contain no request, mapping, or generated assertion data. The frontend renders their manual steps and records Passed/Failed marks through the project-scoped manual-result endpoint; each mark is appended to execution history and contributes to flaky classification. A Failed mark can include an optional `failure_reason`, shown on the card as its assertion result and retained on the execution entry. HTTP batch runs skip general cases.
+Generation output is normalized from an envelope containing `test_cases`, optional `clarification_questions`, and optional `coverage_summary`, or from a legacy bare array (treated as no questions or coverage summary). Clarification questions may be strings or objects with `question` and optional `context`; the API normalizes them to displayable strings. General cases contain no request, mapping, or generated assertion data. The frontend renders their manual steps and records Passed/Failed marks through the project-scoped manual-result endpoint; each mark is appended to execution history and contributes to flaky classification. A Failed mark can include an optional `failure_reason`, shown on the card as its assertion result and retained on the execution entry. HTTP batch runs skip general cases.
 
 General scenario collection groups are separate from endpoint collections. `GET /api/v1/projects/{project_id}/general-case-collections` lists them and `POST` with `{"name":"..."}` creates one before generation. Existing groups are migrated from saved General case metadata at startup, and saving a General case keeps its group metadata synchronized.
 
@@ -305,6 +305,8 @@ Flow execution runs all steps sequentially:
 
 Generation, Project Chat, and Knowledge Hub model calls use the shared provider dispatcher. `LLM_PROVIDER_ORDER` is a comma-separated precedence list; the default is `amd,openrouter,groq,cohere,huggingface`. Providers without keys are skipped, and unknown provider names are a configuration error. API or provider response failures advance to the next configured provider. Once a provider returns a completion, application-level validation runs without another provider attempt; malformed JSON and malformed flow data are reported as generation errors.
 
+Provider failures are logged by provider name and HTTP status (when available), without logging prompts or credentials, so silent fallback can be diagnosed. A successful AMD call reports the configured `AMD_MODEL` as its model metadata; the gateway-reported model alias is retained separately when it differs. Chat shows the provider alongside the latest model.
+
 AMD Token Lab uses the OpenAI-compatible chat-completions endpoint `https://api.tokenlab.amd.com/v1/chat/completions`, bearer authorization, and `AMD_MODEL` read at request time (default `Gemma-4-31B-IT`). `AMD_API_KEY` supplies its key. OpenRouter uses `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`; Groq uses its largest available active model; Cohere and Hugging Face retain their configured/default models. `API_AGENT_LLM_MAX_OUTPUT_TOKENS` bounds completion output. The shared dispatcher preserves the existing text-only interface.
 
 Every successful completion returns provider/model metadata. Generation activities and Knowledge Extraction events retain this metadata; assistant chat messages retain it in their message records and return it in the message API response. Chat threads retry the configured provider order on each call; their stored model is descriptive metadata, not a provider pin.
@@ -324,7 +326,7 @@ Set one or more provider keys in `.env`, then arrange their precedence with `LLM
 - FastAPI local: `uvicorn app.main:app --reload` on port 8000
 - Streamlit local: `streamlit run frontend/app.py` on port 8501
 - Single user, local only, no auth
-- Frontend API timeout: 300 seconds (5 minutes) for LLM generation
+- Frontend POST API timeout: 1,200 seconds (20 minutes), including LLM generation
 - PostgreSQL URL: `DATABASE_URL` in `.env`; Compose volume: `api_agent_pgdata`
 - Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
 - Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions

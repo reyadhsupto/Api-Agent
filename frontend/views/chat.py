@@ -294,11 +294,10 @@ def _render_conversation(project_id: str, thread: dict) -> None:
         st.info("This conversation is archived. Restore it from the rail to continue.")
         return
 
-    with st.container(key=f"project-chat-composer-{project_id}"):
-        prompt = st.chat_input(
-            "Message about this project",
-            key=f"chat_composer_{project_id}_{thread_id}",
-        )
+    prompt = st.bottom.chat_input(
+        "Message about this project",
+        key=f"chat_composer_{project_id}_{thread_id}",
+    )
     if not prompt:
         return
     with st.status("Thinking with project context", expanded=False) as status:
@@ -701,7 +700,17 @@ def render_project_chat_tab() -> None:
         messages = thread.get("messages") or []
         st.markdown(f"### {title}")
         chips = [f":gray-badge[{len(messages)} message(s)]"]
-        if thread.get("model"):
+        latest_provider_metadata = next((
+            message.get("provider_metadata")
+            for message in reversed(messages)
+            if message.get("role") == "assistant" and message.get("provider_metadata")
+        ), {})
+        if latest_provider_metadata:
+            provider = latest_provider_metadata.get("provider") or "LLM"
+            model = latest_provider_metadata.get("model") or thread.get("model")
+            if model:
+                chips.append(f":gray-badge[{provider} · {model}]")
+        elif thread.get("model"):
             chips.append(f":gray-badge[{thread.get('model')}]")
         if thread.get("archived"):
             chips.append(":gray-badge[Archived]")
