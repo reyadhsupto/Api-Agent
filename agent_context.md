@@ -14,7 +14,7 @@ Mode: Act
 - PostgreSQL-backed unit and persistence tests pass (21/21)
 - Backend smoke test passed (health, curl parse, generate, execute endpoints)
 - Frontend syntax verified
-- LLM providers: AMD Token Lab, OpenRouter, Groq (dynamic model), Cohere, Hugging Face; shared environment precedence defaults to AMD first
+- LLM providers: AMD Token Lab, OpenRouter, Groq (dynamic model), Cohere, Hugging Face; shared environment precedence defaults to AMD first. Provider failures log provider name and HTTP status when available before fallback; successful AMD metadata identifies the configured `AMD_MODEL`.
 - Frontend features: unified API Workspace with temporary request tabs, cURL parsing, saved collections, and generation selection
 - API Workspace editor uses Postman-like request tabs with horizontal scrolling and right-aligned close controls, a Method/URL/Send row, Params and Headers tables, and none/raw Body modes
 - URL input accepts multiline cURL and auto-parses recognized commands beginning with `curl` after three seconds of inactivity through an embedded Streamlit component; regular URLs are left alone
@@ -52,7 +52,7 @@ Mode: Act
 - Selected-case CSV export includes JSON columns `technique_tags_json` and `requirement_refs_json`; suite-level coverage summaries stay in activity records
 - Generation supports General requirements-only scenarios alongside Single, Flow, contract-discovered Flow, and Release Revision modes. General cases store ordered `manual_steps` under `case_kind: general` and contain no HTTP request/assertion/mapping data; testers record Passed/Failed as append-only manual history. Failed marks accept an optional `failure_reason`, display it as the case's assertion result, and retain it in history. HTTP batch execution skips these cases
 - General cases carry project-scoped `case_collection_id`/`case_collection_name` metadata. `general_case_collections` persists named groups, including empty collections. The General generation form creates and selects a collection before generation or reuses an existing one; startup seeds groups from saved General cases. The existing Collections filter lists these groups without another filter. Legacy General cases use the default General scenarios collection
-- All generation prompts request an envelope containing `test_cases` and optional `clarification_questions`; legacy LLM arrays normalize to an empty question list. Users can answer questions through explicit project-scoped follow-up actions or dismiss a round; dismissal is persisted on the source activity and survives refresh. Successful non-revision follow-ups supersede source output in active workflows while retaining case records and execution history, and revision follow-ups create a new revision. Activities retain questions, answers, dismissal time, and replacement linkage
+- All generation prompts request an envelope containing `test_cases` and optional `clarification_questions`; legacy LLM arrays normalize to an empty question list. Clarification entries are normalized from strings or objects containing a `question` and optional `context`. Users can answer questions through explicit project-scoped follow-up actions or dismiss a round; dismissal is persisted on the source activity and survives refresh. Successful non-revision follow-ups supersede source output in active workflows while retaining case records and execution history, and revision follow-ups create a new revision. Activities retain questions, answers, dismissal time, and replacement linkage
 - All newly generated single cases and flows receive backend-generated UUID IDs across generation routes; model-provided IDs are ignored, while existing and manual case IDs stay stable
 - Each generated case stores the submitted business requirements in its JSON payload; the case editor lets users revise them, and selected generation examples pass those requirements into later prompts
 - Test-case generation ignores rapid duplicate submissions per project to prevent queued Streamlit button clicks from issuing a second LLM request
@@ -135,7 +135,7 @@ Mode: Act
 - Playground assertion results render as a compact Test Results table
 - Test-case card Delete moved from the footer into a per-card kebab in the header, away from Save
   changes; the delete key is unchanged so saved selections and run references keep resolving
-- Frontend read timeouts are scoped (15/30/60 s) so a stalled backend cannot freeze a page for 300 s
+- Frontend GET/DELETE/PUT read timeouts remain scoped (15/30/60 s); POST requests allow up to 1,200 s (20 minutes) for long-running generation
 - The app uses one light palette; there is no sidebar theme control or persisted theme choice
 - Added `frontend/styles/theme.py` to re-point native surfaces (toolbar, popover, tooltip, toast,
   segmented pill, slider, progress, spinner, tab highlight, notices) at the palette tokens
@@ -178,7 +178,7 @@ Mode: Act
 - Generated single-case and flow-step assertion data supports repeatable response_schema entries; generation adds a disabled blank entry when the LLM omits one, and users can edit it in the Test Cases workspace
 - Test case cards: Collapsible via st.expander
 - Console logging: st.iframe with console.log
-- Timeout: 300 seconds (5 minutes) for LLM generation
+- Frontend POST API timeout: 1,200 seconds (20 minutes), including LLM generation; GET/DELETE/PUT timeouts remain 15/30/60 seconds
 - Flow execution: Sequential HTTP calls with variable substitution between steps
 - Flow failure handling: Stop on first failed step (configurable per scenario)
 - Scenario grouping: Multiple scenarios per flow (positive, negative, edge, race)
