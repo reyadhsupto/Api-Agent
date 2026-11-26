@@ -10,11 +10,15 @@ Returns:
 """
 
 import ast
+import logging
 import os
 import re
 import json
 import requests
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+
+logger = logging.getLogger(__name__)
 
 
 _STRICT_JSON_INSTRUCTION = (
@@ -28,9 +32,9 @@ _STRICT_JSON_INSTRUCTION = (
 def _output_token_limit() -> int:
     """Read a shared configurable generation ceiling for supported providers."""
     try:
-        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 25000)
+        return min(max(int(os.getenv("API_AGENT_LLM_MAX_OUTPUT_TOKENS", "6000")), 256), 50000)
     except ValueError:
-        return 6000
+        return 16000
 
 
 def generate_test_cases(
@@ -161,6 +165,29 @@ def _validate_general_cases(cases: list[dict]) -> None:
             raise ValueError(f"General test case {index} needs ordered manual_steps.")
 
 
+def _normalize_clarification_questions(value) -> list[str]:
+    """Normalize model clarification strings or question objects for the UI."""
+    if not isinstance(value, list):
+        raise ValueError("clarification_questions must be an array.")
+    questions = []
+    for index, item in enumerate(value, start=1):
+        if isinstance(item, str):
+            question = item.strip()
+        elif isinstance(item, dict):
+            question = str(item.get("question") or item.get("text") or "").strip()
+            context = str(item.get("context") or "").strip()
+            if question and context:
+                question = f"{question} (Context: {context})"
+        else:
+            raise ValueError(
+                f"Clarification question {index} must be a string or an object with a question field."
+            )
+        if not question:
+            raise ValueError(f"Clarification question {index} is empty or missing its question text.")
+        questions.append(question)
+    return questions
+
+
 def _parse_generation_output(
     text: str, validate: bool = True, trace: dict | None = None,
 ) -> tuple[list, list[str]]:
@@ -171,12 +198,10 @@ def _parse_generation_output(
         coverage_summary = None
     elif isinstance(parsed, dict):
         cases = parsed.get("test_cases")
-        questions = parsed.get("clarification_questions", [])
+        questions = _normalize_clarification_questions(parsed.get("clarification_questions", []))
         coverage_summary = parsed.get("coverage_summary")
         if not isinstance(cases, list):
             raise ValueError("Generation response object must contain a test_cases array.")
-        if not isinstance(questions, list) or any(not isinstance(item, str) for item in questions):
-            raise ValueError("clarification_questions must be an array of strings.")
     else:
         raise ValueError("Generation response must be a JSON array or object envelope.")
     if validate:
@@ -189,7 +214,7 @@ def _parse_generation_output(
             )
     if trace is not None:
         trace["coverage_summary"] = coverage_summary if isinstance(coverage_summary, dict) else None
-    return cases, [item.strip() for item in questions if item.strip()]
+    return cases, questions
 
 
 def _string_list(value) -> list[str]:
@@ -253,7 +278,7 @@ def generate_test_case_revision(
         "Never alter the stored briefs.\n"
         f"Selected current endpoints (optional; this list may be empty):\n{json.dumps(endpoint_context, ensure_ascii=False, separators=(',', ':'))}\n"
         f"Baseline cases:\n{json.dumps(baseline_context, ensure_ascii=False, separators=(',', ':'))}\n"
-        "Return a JSON object with test_cases, clarification_questions, and coverage_summary. coverage_summary.requirements contains {ref, statement, status, note}; unsupported_coverage lists claims that lack evidence. Preserve explicit requirement IDs exactly; use stable REQ-001 labels for unnumbered requirements, continuing baseline labels and assigning new labels after them. Link each case with requirement_refs and technique_tags. Report uncovered/ambiguous requirements. Do not claim branch/statement coverage without supplied logic/source. Every case must contain id, source_case_id, name, type, description, technique_tags, requirement_refs, case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
+        "Return a JSON object with test_cases, clarification_questions, and coverage_summary. clarification_questions must be an array of concise strings, not objects; use an empty array when no clarification is needed. coverage_summary.requirements contains {ref, statement, status, note}; unsupported_coverage lists claims that lack evidence. Preserve explicit requirement IDs exactly; use stable REQ-001 labels for unnumbered requirements, continuing baseline labels and assigning new labels after them. Link each case with requirement_refs and technique_tags. Report uncovered/ambiguous requirements. Do not claim branch/statement coverage without supplied logic/source. Every case must contain id, source_case_id, name, type, description, technique_tags, requirement_refs, case_kind and either an API request plus assertions, an API flow with is_flow true and ordered steps, or a general case with manual_steps and no API data. Flow step_order starts at 1 and is contiguous."
     )
     generated_text = _call_llm_with_fallback(prompt, trace)
     if trace is not None:
@@ -543,11 +568,15 @@ def _openai_compatible_call(
     content = choice.get("message", {}).get("content")
     if not isinstance(content, str) or not content.strip():
         raise ValueError(f"{provider} returned an empty assistant message.")
+    reported_model = payload.get("model")
     return {
         "content": content.strip(),
         "provider_metadata": {
             "provider": provider,
-            "model": payload.get("model") or model,
+            # AMD model IDs are the requested Token Lab catalog IDs. Preserve
+            # that configured value even if the gateway reports a provider alias.
+            "model": model if provider == "amd" else reported_model or model,
+            "reported_model": reported_model if provider == "amd" and reported_model != model else None,
             "finish_reason": choice.get("finish_reason"),
             "usage": payload.get("usage"),
         },
@@ -612,6 +641,13 @@ def _chat_completion(
         try:
             return _call_provider(provider, messages, api_key, output_limit)
         except Exception as exc:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+            status = f", HTTP {status_code}" if status_code else ""
+            logger.warning(
+                "LLM provider %s failed%s (%s); checking configured fallbacks",
+                provider, status, type(exc).__name__,
+            )
             errors.append(f"{provider}: {exc}")
     if errors:
         raise RuntimeError("All configured LLM providers failed. " + " | ".join(errors))

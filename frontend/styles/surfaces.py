@@ -215,24 +215,33 @@ div[data-testid="stExpander"] summary p { font-weight: 620; }
 }
 /* Keep the chat composer visibly separated from the light canvas. */
 [data-testid="stChatInput"] {
+    box-sizing: border-box !important;
+    width: 66.666% !important;
+    max-width: 100% !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
     background: var(--aa-panel-alt) !important;
     border: 1px solid var(--aa-line-contrast) !important;
     border-radius: var(--aa-radius-sm) !important;
     padding: .25rem .4rem !important;
 }
-/* Keep the composer in normal document flow with the conversation. */
-div[class*="st-key-project-chat-composer-"] {
-    padding-top: .45rem;
-}
 [data-testid="stChatInput"]:focus-within {
     border-color: var(--aa-accent) !important;
-    box-shadow: 0 0 0 3px var(--aa-accent-soft) !important;
+    box-shadow: none !important;
+    outline: none !important;
 }
-[data-testid="stChatInput"] [data-baseweb="textarea"] {
+[data-testid="stBottom"]:has([data-testid="stChatInput"]),
+[data-testid="stBottomBlockContainer"]:has([data-testid="stChatInput"]) {
+    outline: none !important;
+    box-shadow: none !important;
+}
+[data-testid="stChatInput"] [data-baseweb="textarea"],
+[data-testid="stChatInput"] [data-baseweb="base-input"] {
     background: transparent !important;
     color: var(--aa-text) !important;
     border: 0 !important;
     box-shadow: none !important;
+    outline: none !important;
 }
 [data-testid="stChatInput"] textarea {
     background: transparent !important;
@@ -249,6 +258,9 @@ div[class*="st-key-project-chat-composer-"] {
     gap: .1rem;
 }
 @media (max-width: 768px) {
+    [data-testid="stChatInput"] {
+        width: calc(100% - 1rem) !important;
+    }
     .st-key-project-chat-transcript [class*="st-key-chat-time-"],
     .st-key-project-chat-transcript [class*="st-key-chat-bubble-"] {
         width: 92% !important;

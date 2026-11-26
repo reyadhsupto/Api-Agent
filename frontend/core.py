@@ -30,6 +30,7 @@ else:
     from request_controls import render_curl_aware_url, render_request_order_list
 
 BACKEND_URL = os.getenv("API_BACKEND_URL", "http://localhost:8000")
+API_POST_TIMEOUT_SECONDS = 20 * 60
 GENERAL_CASE_COLLECTION_ID = "__general_scenarios__"
 GENERAL_CASE_COLLECTION_NAME = "General scenarios"
 NEW_GENERAL_CASE_COLLECTION = "__create_general_collection__"
@@ -377,10 +378,14 @@ def _api_error_message(exc: Exception, response=None) -> str:
 
 
 def api_post(path: str, payload: dict) -> dict:
-    """Send a POST request to the backend and log to browser console."""
+    """Send a POST request with a 20-minute timeout and log to browser console."""
     log_to_console(payload, f"REQUEST {path}")
     try:
-        response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=300)
+        response = requests.post(
+            f"{BACKEND_URL}{path}",
+            json=payload,
+            timeout=API_POST_TIMEOUT_SECONDS,
+        )
     except requests.RequestException as exc:
         raise RuntimeError(_api_error_message(exc)) from exc
     try:
