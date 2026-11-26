@@ -19,9 +19,10 @@ Api-Agent is a local workspace for building API requests, generating tests with 
 - **Generate from selected knowledge:** Generation always includes project-wide knowledge. Select feature pages and their linked microservice pages are included automatically. **Business requirements for this generation** remains run-specific and is recorded with the exact Hub versions, endpoint snapshot, prompt, and response; it never changes saved knowledge by itself.
 - **Revise a release suite:** Start from a prior generation action, carry forward existing generated or manual cases, keep prior requirements as read-only context, add new requirement changes, and optionally select current endpoints from every collection. Choose **Keep unchanged** for cases to copy into the complete new suite without AI edits. A saved baseline can be revised without endpoint selection; full endpoint snapshots show added or modified request definitions. Each revision is saved separately.
 - **Track execution history:** Each case has a History view with the configuration snapshot used for every run. Flow history also groups outcomes by stable step ID. A case, flow, or step is marked flaky when at least three of its latest ten runs include both passes and failures or errors.
-- **Keep project data:** Projects, collections, saved requests, test cases, named runs, execution history, and generation activity are stored in PostgreSQL. Temporary playground tabs and unsaved edits remain in the Streamlit session.
+- **Keep project data:** Projects, collections, saved requests, test cases, named runs, execution history, and generation activity are stored in PostgreSQL. Temporary playground tabs and unsaved edits remain in the frontend session.
+- **Modern frontend:** The default UI is a Next.js App Router application in `web/` with TypeScript, Tailwind CSS, and shared design tokens. The legacy Streamlit UI in `frontend/` remains available during the migration.
 
-The frontend is built with Streamlit, the API with FastAPI, and request execution uses Python `requests`. LLM providers include AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face; the backend tries configured providers in `LLM_PROVIDER_ORDER` and records which provider/model answered.
+The frontend is built with Next.js (App Router, TypeScript, Tailwind CSS), the API with FastAPI, and request execution uses Python `requests`. LLM providers include AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face; the backend tries configured providers in `LLM_PROVIDER_ORDER` and records which provider/model answered.
 
 ## Typical workflow
 
@@ -80,7 +81,7 @@ Configure one or more provider keys. `LLM_PROVIDER_ORDER` controls precedence; i
 
 ### Run locally
 
-Start PostgreSQL, then start the backend and frontend in separate terminals:
+Start PostgreSQL, then start the backend and the Next.js frontend in separate terminals:
 
 ```bash
 make docker-db-up
@@ -91,10 +92,20 @@ make run-local-backend
 ```
 
 ```bash
+make run-local-web
+```
+
+Open [http://localhost:3000](http://localhost:3000). FastAPI's interactive API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
+
+The Next.js app proxies `/api` and `/health` to the FastAPI backend, so the browser only talks to one origin. Set `BACKEND_URL` if the backend is not on `http://localhost:8000`.
+
+The legacy Streamlit UI remains available during the migration:
+
+```bash
 make run-local-frontend
 ```
 
-Open [http://localhost:8501](http://localhost:8501). FastAPI's interactive API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
+Open [http://localhost:8501](http://localhost:8501) for the Streamlit app.
 
 ### Run the full stack in Docker
 
@@ -103,7 +114,7 @@ make docker-up-build
 make docker-logs
 ```
 
-Use `make docker-up` for subsequent starts with the built images; it skips image builds. Run `make docker-up-build` after changing application code, dependencies, or Streamlit configuration. The frontend image includes `.streamlit/config.toml` so its native theme stays light regardless of the host system preference. Docker caches pip downloads across dependency rebuilds, and application source is copied after dependency installation so source-only edits reuse the installed dependency layers. Open [http://localhost:8501](http://localhost:8501). Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume.
+Use `make docker-up` for subsequent starts with the built images; it skips image builds. Run `make docker-up-build` after changing application code, dependencies, or frontend configuration. Docker caches pip and npm downloads across dependency rebuilds, and application source is copied after dependency installation so source-only edits reuse the installed dependency layers. Open [http://localhost:3000](http://localhost:3000) for the Next.js frontend. Stop services with `make docker-down`; PostgreSQL data remains in the `api_agent_pgdata` volume.
 
 To permanently erase this Compose project's PostgreSQL data and start with the current schema, run `make docker-db-reset` in an interactive terminal and type `RESET` when prompted. This removes all saved projects and their requests, cases, run history, chat, Knowledge Hub pages, and generation activity. It rebuilds and starts the stack; backend initialization creates the tables and built-in Default Project with its project-wide page. It does not target a local process configured with `DATABASE_URL` or an external PostgreSQL volume. See the [full context and database guide](docs/persistent_context.md) for how context is stored and used.
 
@@ -238,9 +249,10 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 
 | Command | Purpose |
 |---|---|
-| `make setup` | Create `.venv` and install backend and frontend dependencies |
+| `make setup` | Create `.venv`, install backend and legacy frontend dependencies, and install Next.js dependencies |
 | `make run-local-backend` | Run FastAPI locally on port 8000 |
-| `make run-local-frontend` | Run Streamlit locally on port 8501 |
+| `make run-local-web` | Run Next.js locally on port 3000 |
+| `make run-local-frontend` | Run the legacy Streamlit UI locally on port 8501 |
 | `make docker-db-up` | Start PostgreSQL for local app processes |
 | `make docker-db-reset` | Delete this Compose project's PostgreSQL data after typing `RESET`, then rebuild and start the stack |
 | `make docker-up` | Start the full Compose stack without rebuilding images |
@@ -263,15 +275,27 @@ app/
   generator.py         LLM prompts, provider routing, and case generation
   executor.py          HTTP and assertion execution
   schemas.py           API request and response models
+web/
+  Dockerfile           Next.js image; standalone output
+  package.json         Next.js dependencies and scripts
+  next.config.ts       Backend proxy rewrites and Turbopack rules
+  src/
+    app/               App Router pages and layout
+      workspace/
+        api/           API Workspace composer and response viewer
+        test-cases/    Generation list and execution detail
+        chat/          Project Chat thread rail and conversation
+        activity/      Generation and Knowledge activity logs
+    components/        Feature UI and shared layout components
+    context/           Global project selection state
+    lib/               Typed fetch client
+    types/             TypeScript contracts shared with FastAPI
 frontend/
-  app.py               Streamlit entry point
+  app.py               Legacy Streamlit entry point
   core.py              Shared frontend state, API clients, and helpers
   request_controls.py  Custom URL and request-order components
   views/
-    api_workspace.py   Request editor and collection navigator
-    test_cases.py      Generation, test-case editing, and execution
-    chat.py            Project Chat and Knowledge Hub
-    activity.py        Generation and Knowledge Extraction activity logs
+    ...                Legacy Streamlit views
   styles/              Design tokens and workspace styles
 docs/
   persistent_context.md  Project Chat, Knowledge Hub, and generation workflow
@@ -280,8 +304,8 @@ scripts/
 tests/
   ...                  API, persistence, execution, generation, and UI tests
 Dockerfile.backend       Backend container image
-Dockerfile.frontend      Frontend image; includes Streamlit configuration
-docker-compose.yml       PostgreSQL, backend, and frontend services
+Dockerfile.frontend      Legacy Streamlit image; includes Streamlit configuration
+docker-compose.yml       PostgreSQL, backend, Next.js, and legacy frontend services
 Makefile                 Local and Docker workflows
 README.md
 technical_documentation.md
@@ -309,3 +333,42 @@ configured for light backgrounds.
 - Release revisions are created from a modal opened in Test Cases; the saved
   project and generation history load when the modal opens, not on every rerun.
 - Generation Activity is paged (10, 25, 50, 100 rows) against a real record count.
+
+## Next.js frontend (migration target)
+
+`web/` is the new frontend. It talks to the same FastAPI routes through a same-origin rewrite, so there is no CORS step and no second backend.
+
+```bash
+make install-web
+make docker-db-up
+make run-local-backend     # port 8000
+make run-local-web         # port 3000, separate terminal
+```
+
+Open `http://localhost:3000`. The legacy Streamlit UI stays available on port 8501 through `make run-local-frontend` while the remaining surfaces are migrated.
+
+### Appearance
+
+Black is the default workspace. The sidebar Appearance control switches to light and back without a reload, and remembers the choice in `localStorage`. Both palettes come from one generated stylesheet, `web/src/app/tokens.css`, which is rendered from `frontend/styles/tokens.py`:
+
+```bash
+make gen-tokens      # regenerate tokens.css
+make check-tokens    # fail when it is stale
+```
+
+### Generated API types
+
+```bash
+make gen-types       # refresh web/openapi.json and request interfaces
+make check-types     # fail on drift
+make check-web       # tsc and eslint
+make build-web       # production build
+```
+
+Only request bodies are generated: the FastAPI routes return plain dictionaries without `response_model`, so response shapes are hand written in `web/src/types/api.ts` and covered by `tests/test_api_contract.py`.
+
+### Migrated so far
+
+- API Workspace: draft tabs, collections, cURL parsing, params, headers, body, auth, checks, response inspector, Postman export.
+- Test Cases: Single, General, and Flow generation, examples, brief and thread context, clarifications, coverage, revision and collection filters, per-case assertions, history, flaky signal, batch run, CSV export.
+- Chat and Activity are status pages in `web/`; their full surfaces remain in the Streamlit UI until the next phase.

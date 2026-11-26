@@ -36,7 +36,22 @@ services:
       timeout: 5s
       retries: 10
 
-  frontend:
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Legacy Streamlit UI. Opt in with: docker compose --profile legacy up -d
+  frontend-legacy:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile.frontend

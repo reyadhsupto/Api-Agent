@@ -53,6 +53,10 @@ class Database:
     def initialize(self) -> None:
         """Create normalized tables and indexes if this is a fresh database."""
         with self.session() as connection:
+            # Serialise DDL across processes and test workers. Two concurrent
+            # initialisations otherwise take ALTER TABLE locks in different
+            # orders and PostgreSQL reports a deadlock.
+            _execute(connection, "SELECT pg_advisory_xact_lock(?)", (866421,))
             schema = """
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,

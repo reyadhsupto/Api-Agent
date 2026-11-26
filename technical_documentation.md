@@ -420,3 +420,45 @@ The Activity Logs workspace has two project-scoped subviews. Generation uses the
 the real number of pages. The view keeps the page size and offset in session
 state, clamps the offset when records are deleted, and disables Previous
 and Next at the boundaries.
+
+## Next.js frontend and shared design tokens
+
+`web/` is a Next.js App Router and TypeScript application served on port 3000. It reads the same FastAPI routes as the Streamlit UI, through a same-origin rewrite: `web/next.config.ts` forwards `/api/:path*` to `BACKEND_URL` (default `http://localhost:8000`), so the browser never needs a backend origin and there is no CORS preflight.
+
+### One token source
+
+The colour contract lives in `frontend/styles/tokens.py` (`DARK`, `LIGHT`, `RADII`, `MOTION`, `FONTS`). `scripts/gen_tokens.py` renders it into `web/src/app/tokens.css`:
+
+- light values in `:root`
+- dark values in `.dark`
+- both blocks declare the same names, asserted by the generator
+- `@theme inline` maps the names onto Tailwind v4 `--color-*`, `--radius-*`, `--shadow-*`, and `--font-*`
+
+Dark is the shipped default: `<html class="dark">` is server rendered and a small pre-paint script removes the class only when `localStorage['aa-theme']` is `light`. The sidebar Appearance control toggles the class, writes the preference, and repaints without a reload.
+
+Run `make gen-tokens` after changing a token; `make check-tokens` fails when the generated stylesheet is stale.
+
+### Typed backend boundary
+
+`scripts/gen_types.py` imports `app.main` and writes `web/openapi.json` plus `web/src/types/api.generated.ts`. The FastAPI routes return plain dictionaries and declare `no response_model`, so OpenAPI carries only request schemas; response types are hand written in `web/src/types/api.ts` and guarded by `tests/test_api_contract.py`. Adding `response_model` to those routes would silently drop undeclared fields, so it is deliberately not done.
+
+`app.main` constructs the repository lazily through `get_database()`; importing it no longer runs schema DDL or needs PostgreSQL.
+
+### Surfaces
+
+| Route | Status |
+| --- | --- |
+| `/workspace/api` | Migrated: draft tabs, collections, cURL parse, params/headers/body/auth editors, checks, response inspector, Postman export |
+| `/workspace/test-cases` | Migrated: Single/General/Flow generation, examples and briefs context, clarifications, coverage, revision and collection filters, per-case assertions, history and flaky signal, batch run, CSV export |
+| `/workspace/chat` | Migrated: thread rail with search and Active/All/Archived scope, per-thread rename, archive/restore and confirmed delete, transcript with role, local time, ordinal, 900-character collapse and a cited-source disclosure per message, day dividers, and a composer that is a flex sibling of the transcript so it never scrolls |
+| `/workspace/activity` | Migrated: Generation and Knowledge extraction streams, page sizes 10/25/50/100, real total from COUNT(*), Previous and Next with boundary disabling, offset clamping when history shrinks, and a detail dialog that fetches the full knowledge event |
+
+### Serving the production build
+
+`web/next.config.ts` sets `output: "standalone"`, so `next start` is not the serving command and prints a warning. Build first, then run the standalone server:
+
+```bash
+make serve-web              # build, stage .next/static into standalone, serve on PORT=3000
+```
+
+The staging step is required: the standalone bundle does not copy `.next/static` or `public`, so without it the page HTML arrives but its client chunks 404 and interactive surfaces never hydrate.

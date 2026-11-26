@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./content.css";
+
+/*
+ * Base surface. The palette itself lives in tokens.css, generated from
+ * frontend/styles/tokens.py, so the Python and Next.js frontends cannot drift.
+ */
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--aa-canvas);
+  color: var(--aa-text);
+  font-family: var(--aa-font-ui);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--aa-font-mono);
+}
+
+/* Focus must stay obvious on black, where the browser default is invisible. */
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--aa-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--aa-accent-soft);
+  color: var(--aa-text);
+}
+
+/* Slim scrollbars for the rail density the workbench uses. */
+.aa-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--aa-line-strong) transparent;
+}
+
+.aa-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.aa-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--aa-line-strong);
+}
+
+.aa-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Keep long identifiers3, URLs, and JSON from widening a flex child. */
+.aa-wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

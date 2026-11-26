@@ -86,6 +86,20 @@ DARK = {
     "aa-bad-strong": "#da3633",
     "aa-info": "#58a6ff",
 
+    # HTTP method ink and fill, tuned to stay legible on the black canvas.
+    "aa-method-get": "#3fb950",
+    "aa-method-post": "#f0883e",
+    "aa-method-put": "#58a6ff",
+    "aa-method-patch": "#a371f7",
+    "aa-method-delete": "#f85149",
+    "aa-method-other": "#8a919c",
+    "aa-method-get-fill": "rgba(63, 185, 80, .14)",
+    "aa-method-post-fill": "rgba(240, 136, 62, .14)",
+    "aa-method-put-fill": "rgba(88, 166, 255, .14)",
+    "aa-method-patch-fill": "rgba(163, 113, 247, .14)",
+    "aa-method-delete-fill": "rgba(248, 81, 73, .14)",
+    "aa-method-other-fill": "rgba(138, 145, 156, .14)",
+
     # Surfaces: a lift ladder above a pure black canvas.
     "aa-canvas": "#000000",
     "aa-rail": "#040506",
@@ -152,6 +166,20 @@ LIGHT = {
     "aa-bad": "#cf222e",
     "aa-bad-strong": "#a40e26",
     "aa-info": "#0969da",
+
+    # HTTP method ink and fill, tuned to stay legible on the light canvas.
+    "aa-method-get": "#1a7f37",
+    "aa-method-post": "#b45309",
+    "aa-method-put": "#0969da",
+    "aa-method-patch": "#8250df",
+    "aa-method-delete": "#cf222e",
+    "aa-method-other": "#6b7280",
+    "aa-method-get-fill": "rgba(26, 127, 55, .10)",
+    "aa-method-post-fill": "rgba(180, 83, 9, .10)",
+    "aa-method-put-fill": "rgba(9, 105, 218, .10)",
+    "aa-method-patch-fill": "rgba(130, 80, 223, .10)",
+    "aa-method-delete-fill": "rgba(207, 34, 46, .10)",
+    "aa-method-other-fill": "rgba(107, 114, 128, .10)",
 
     "aa-canvas": "#f6f7fa",
     "aa-rail": "#ffffff",
@@ -220,8 +248,9 @@ ALIASES = {
 
 PALETTES = {"dark": DARK, "light": LIGHT}
 
-# The product uses a single light workspace palette.
-DEFAULT_THEME = "light"
+# The product ships the pure-black workspace by default. The light palette is a
+# first-class alternative selected from the Appearance switch in the web UI.
+DEFAULT_THEME = "dark"
 
 
 def palette(theme: str = DEFAULT_THEME) -> dict[str, str]:

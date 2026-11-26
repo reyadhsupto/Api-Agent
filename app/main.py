@@ -18,6 +18,7 @@ import re
 import time
 import uuid
 import requests
+from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
@@ -67,7 +68,45 @@ from app.executor import execute_test_case, execute_flow_test_case, evaluate_req
 load_dotenv()
 from app.storage import Database
 
-database = Database()
+
+@lru_cache(maxsize=1)
+def get_database() -> Database:
+    """Return the process-wide repository, initializing its schema on first use.
+
+    Laziness matters for more than start-up time. Creating the wrapper runs
+    schema DDL, so an eager module-level instance makes ``app.main`` impossible
+    to import without a reachable PostgreSQL server. That would block OpenAPI
+    generation, type generation, and any contract test, and two processes
+    importing at once can deadlock on the ``ALTER TABLE`` lock it takes.
+
+    Returns:
+        Database: Shared repository instance for this process.
+    """
+    return Database()
+
+
+class _DatabaseProxy:
+    """Forward attribute access to the lazily created repository.
+
+    Routes keep referring to the ``database`` name exactly as before; only the
+    moment of construction changes. Attribute lookups resolve against
+    :func:`get_database`, so the schema is created on first query rather than at
+    import time.
+    """
+
+    def __getattr__(self, name: str):
+        """Resolve one attribute against the shared repository.
+
+        Args:
+            name (str): Attribute requested by a route handler.
+
+        Returns:
+            Any: The attribute value from the process-wide ``Database``.
+        """
+        return getattr(get_database(), name)
+
+
+database = _DatabaseProxy()
 
 GENERAL_CASE_COLLECTION_ID = "__general_scenarios__"
 GENERAL_CASE_COLLECTION_NAME = "General scenarios"
@@ -778,6 +817,20 @@ app.add_middleware(
 def health() -> dict:
     """
     Return application health status.
+
+    Returns:
+        dict: {"status": "ok"}
+    """
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/health")
+def api_health() -> dict:
+    """Return liveness under the versioned prefix used by the web proxy.
+
+    The Next.js rewrite and any future gateway only forward ``/api/*``, so the
+    unprefixed route above is not reachable from the browser. This alias answers
+    the same question without touching the database.
 
     Returns:
         dict: {"status": "ok"}

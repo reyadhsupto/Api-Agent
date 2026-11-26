@@ -9,6 +9,14 @@ Mode: Act
 - Feasibility analysis completed
 - Tech stack selected (FastAPI, python requests, Streamlit, free-tier LLM fallback)
 - All project files created (documentation, backend, frontend, tests)
+- Knowledge Hub: Implemented `KnowledgeHubPanel` for managing briefs, versioning, restoration, and drafting updates from chat threads.
+- Test Case Management: Implemented `ManualCaseBuilder` (single cases/flows) and `TestRunManager` (reusable suites).
+- Revisions: Implemented `RevisionDialog` to generate new release revisions based on prior successful generation activities.
+- UI/UX: Created `Markdown` and `DiffView` components; enhanced `ActivityDetail` to support structured "generation" and "knowledge" streams.
+- Infrastructure: Added typed API clients in `lib/hub.ts`, `lib/runs.ts`, and `lib/revisions.ts`.
+- Integration: Wired the Knowledge Hub into the Chat page and the case builder/run manager/revision dialog into the Test Cases page.
+
+
 - Virtual environment created and dependencies installed
 - FastAPI app imports and starts correctly (all routes verified)
 - PostgreSQL-backed unit and persistence tests pass (21/21)
@@ -240,3 +248,58 @@ Mode: Act
 ### Known limitations
 - No true overlay drawer in Streamlit; chat and revision detail use columns and
   modals. A docked drawer needs the React path.
+
+## Frontend Migration: Next.js and TypeScript (In Progress)
+
+### Status
+- Scaffolded a Next.js App Router application under `web/` with TypeScript, Tailwind CSS, and an accessible design foundation.
+- Added `web/Dockerfile` for a multi-stage standalone production build.
+- Extended `docker-compose.yml` with a `web` service on port 3000 and kept Streamlit as `frontend-legacy` on port 8501.
+- Updated the `Makefile` with `install-web`, `run-local-web`, and revised `setup` commands.
+
+### Connectivity
+- The Next.js app proxies `/api` and `/health` to the FastAPI backend through `next.config.ts` rewrites, using `BACKEND_URL` (default `http://localhost:8000`).
+- `web/src/lib/api.ts` is a typed fetch client with relative endpoints, so browser traffic stays same-origin and avoids CORS entirely.
+- `ProjectProvider` in `web/src/context/ProjectContext.tsx` lists projects from `GET /api/v1/projects` and exposes the selected project to every workspace view.
+
+### Shared Design System
+- Ported the light palette from `frontend/styles/tokens.py` into `web/src/app/globals.css` as CSS custom properties.
+- Mapped semantic tokens to Tailwind names: `canvas`, `rail`, `panel`, `panel-alt`, `elevated`, `overlay`, `hover`, `active`, `line`, `text`, `text-dim`, `text-mute`, `accent`, `ok`, `warn`, `bad`, and `info`.
+- Preserved radius spacing for parity with the Streamlit UI.
+
+### Migrated Views
+- **API Workspace** (`web/src/app/workspace/api/page.tsx`): cURL parsing, request composer, execution, and response viewer.
+- **Test Cases** (`web/src/app/workspace/test-cases/page.tsx`): Single, Flow, and General generation, saved case list, HTTP execution, and manual outcomes.
+- **Project Chat** (`web/src/app/workspace/chat/page.tsx`): thread rail, message transcript, and pinned composer. Knowledge Hub remains a follow-up.
+- **Activity Logs** (`web/src/app/workspace/activity/page.tsx`): paged generation and Knowledge Extraction activity with total counts.
+
+### Verification
+- `tsc --noEmit` passes with zero errors.
+- `npm run build` compiles every App Router route in Turbopack.
+- No non-ASCII characters appear outside intentional UI icons.
+
+### Deferred
+- Contract preview, import, and dependency discovery.
+- Playwright smoke coverage and removal of the legacy Streamlit service.
+
+## Web frontend status
+... [rest of the content] ...
+
+## Web frontend status
+
+The Next.js app in `web/` is the migration target, not the default UI yet.
+
+- Migrated: `/workspace/api` (draft tabs, collections, cURL parse, params, headers, body, auth, checks, response inspector, Postman export) and `/workspace/test-cases` (Single, General and Flow generation, examples, brief and thread context, clarifications, coverage, revision and collection filters, per-case assertions, history and flaky signal, batch run, CSV export).
+- Migrated: `/workspace/chat` (thread rail with search and scope filter, rename, archive/restore, confirmed delete, transcript with role, time, ordinal, collapse and cited sources, day dividers, non-scrolling composer) and `/workspace/activity` (two streams, page size, real total, boundary-aware pager, detail dialog).
+- One token source: `web/src/app/tokens.css` is generated from `frontend/styles/tokens.py` by `scripts/gen_tokens.py`. Dark is the shipped default with a light toggle.
+- Generated contracts: `scripts/gen_types.py` writes `web/openapi.json` and `web/src/types/api.generated.ts`. Response types stay hand written because the routes return dictionaries without `response_model`.
+- Lazy backend: `app.main` builds the repository through `get_database()` on first use, so it imports without PostgreSQL.
+- Verified: `npm run lint` clean, `npm run build` green, `pytest tests/test_theme_tokens.py tests/test_frontend.py` 33 passed.
+
+### Remaining before cutover
+
+- Chat: thread search, rename, archive, delete, source disclosure, day dividers, pinned composer (current page is a status card).
+- Remove `frontend/` and `Dockerfile.frontend` only after those pass the parity matrix.
+
+- Streamlit is now optional at runtime: the legacy service is behind the compose profile `legacy` and starts only with `make docker-legacy`. Every surface exists in `web/`.
+- `next start` is incompatible with `output: "standalone"`; use `make serve-web`, which stages `.next/static` (and `public` when present) into the standalone directory before running it.
