@@ -9,6 +9,7 @@ import {
   Badge, Button, Card, Checkbox, EmptyState, Field, IconButton, Input, Menu, MethodBadge, Modal,
   Notice, Select, Spinner, StatusPill, Tabs, Textarea, cx,
 } from '@/components/ui/primitives';
+import Icon from '@/components/ui/Icon';
 import { useProject } from '@/context/ProjectContext';
 import { ApiError, LLM_TIMEOUT_MS, api, apiDownload } from '@/lib/api';
 import { formatBytes, formatLatency, isJsonPayload, prettyPayload, truncate } from '@/lib/format';
@@ -427,6 +428,7 @@ export default function ApiWorkspacePage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [methodFilter, setMethodFilter] = useState('All');
+  const [collapsedCollections, setCollapsedCollections] = useState<Record<string, boolean>>({});
   const [tab, setTab] = useState('params');
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState<{ tone: 'ok' | 'bad' | 'info'; text: string } | null>(null);
@@ -1335,6 +1337,7 @@ export default function ApiWorkspacePage() {
                   const on = (collection.requests || []).filter(
                     (request) => request.include_for_generation ?? request.include,
                   ).length;
+                  const collapsed = Boolean(collapsedCollections[collection.id]);
                   return (
                     <div key={collection.id} className="rounded-md border border-line bg-panel-alt">
                       <div className="flex items-center gap-1.5 border-b border-line px-2 py-1.5">
@@ -1343,9 +1346,19 @@ export default function ApiWorkspacePage() {
                           aria-label={'Include all ' + collection.name + ' requests'}
                           onChange={(event) => void toggleCollection(collection, event.target.checked)}
                         />
-                        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-text">
-                          {collection.name}
-                        </span>
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-[12px] font-semibold text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                          aria-expanded={!collapsed}
+                          aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${collection.name} requests`}
+                          onClick={() => setCollapsedCollections((current) => ({
+                            ...current,
+                            [collection.id]: !current[collection.id],
+                          }))}
+                        >
+                          <Icon name={collapsed ? 'chevronRight' : 'chevronDown'} size={12} className="shrink-0 text-text-mute" />
+                          <span className="truncate">{collection.name}</span>
+                        </button>
                         <span className="shrink-0 font-mono text-[10px] text-text-mute">
                           {String(on) + '/' + String(total)}
                         </span>
@@ -1360,7 +1373,7 @@ export default function ApiWorkspacePage() {
                         />
                       </div>
 
-                      <ul className="flex flex-col">
+                      {!collapsed ? <ul className="flex flex-col">
                         {visible.length === 0 ? (
                           <li className="px-2 py-1.5 text-[10.5px] text-text-mute">No matching requests.</li>
                         ) : null}
@@ -1396,7 +1409,7 @@ export default function ApiWorkspacePage() {
                             </li>
                           );
                         })}
-                      </ul>
+                      </ul> : null}
                     </div>
                   );
                 })}
