@@ -120,29 +120,47 @@
 }
 
 .aa-md table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
+  table-layout: auto;
   font-size: 11.5px;
 }
 
 .aa-md-scroll {
+  display: block;
+  max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
   margin: 0 0 .7em;
+  border: 1px solid var(--aa-line);
+  border-radius: var(--aa-radius-sm);
   overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aa-line-strong) transparent;
 }
 
 .aa-md th,
 .aa-md td {
-  padding: .3rem .55rem;
+  min-width: 5.5rem;
+  max-width: 24rem;
+  padding: .45rem .6rem;
   border: 1px solid var(--aa-line);
   text-align: left;
   vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .aa-md th {
   background: var(--aa-surface);
   font-weight: 700;
   white-space: nowrap;
+  border-bottom: 2px solid var(--aa-line);
+}
+
+.aa-md tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--aa-line-soft) 5%, transparent);
 }
 
 .aa-md img {

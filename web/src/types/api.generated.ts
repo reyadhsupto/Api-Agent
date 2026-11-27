@@ -15,6 +15,23 @@ export interface ApiRequest {
   timeout_seconds?: number;
 }
 
+/** Credentials for the configured local account. */
+export interface AuthLoginRequest {
+  username: string;
+  password: string;
+}
+
+/** Opaque refresh credential to rotate or revoke. */
+export interface AuthRefreshRequest {
+  refresh_token: string;
+}
+
+export interface Body_preview_contract_upload_api_v1_contracts_upload_preview_post {
+  file: string;
+  format_hint?: string;
+  base_url?: string;
+}
+
 /** Reviewed requests and destination collection for an atomic import. Attributes: collection_id: Project collection receiving the requests. endpoints: Reviewed endpoint records selected for persistence. */
 export interface ContractImportRequest {
   collection_id: string;

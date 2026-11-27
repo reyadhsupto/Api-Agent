@@ -44,6 +44,8 @@ export default function TestCasesPage() {
 
   const [mode, setMode] = useState<'Single' | 'General' | 'Flow'>('Single');
   const [endpointIds, setEndpointIds] = useState<string[]>([]);
+  const [draggingEndpointId, setDraggingEndpointId] = useState<string | null>(null);
+  const [dropEndpointId, setDropEndpointId] = useState<string | null>(null);
   const [exampleIds, setExampleIds] = useState<string[]>([]);
   const [briefIds, setBriefIds] = useState<string[]>([]);
   const [threadId, setThreadId] = useState('');
@@ -90,10 +92,27 @@ export default function TestCasesPage() {
 
   const savedCases = project?.test_cases;
   const endpoints = project?.endpoints || [];
+  const eligibleEndpoints = endpoints.filter((item) => item.include_for_generation ?? item.include ?? false);
+  const eligibleEndpointIds = eligibleEndpoints.map((item) => item.id);
   const collections = project?.collections || [];
   const revisions = project?.test_case_revisions || [];
   const order = project?.generation_order_ids || [];
   const runs = project?.test_runs || [];
+
+  // Use API Workspace eligibility as the source of truth for generation scope.
+  // A handoff may pass repeated `endpoint` query parameters to preselect a subset.
+  useEffect(() => {
+    if (!projectId) return;
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.getAll('endpoint');
+    const initial = params.has('endpoint')
+      ? requested.filter((id) => eligibleEndpointIds.includes(id))
+      : eligibleEndpointIds;
+    setEndpointIds([...new Set(initial)]);
+    // This initializes once per project; refreshing project data must not
+    // overwrite the user's current selection or Flow order.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   // Seed the result filter from recorded executions. Without this a reload reports
   // every saved case as unrun, including cases that failed and are still failing.
@@ -105,7 +124,7 @@ export default function TestCasesPage() {
       const status = typeof item.status === 'string' ? item.status : '';
       if (caseId && status) seeded[caseId] = status;
     });
-    if (Object.keys(seeded).length > 0) setStatuses(seeded);
+    setStatuses(seeded);
   }, [project]);
 
   /** True when the view shows history, which is read only. */
@@ -191,13 +210,20 @@ export default function TestCasesPage() {
     else statusCounts.not_run += 1;
   });
 
-  const selectedEndpoints = endpoints
-    .filter((item) => endpointIds.includes(item.id))
-    .sort((left, right) => {
-      const li = order.indexOf(left.id);
-      const ri = order.indexOf(right.id);
-      return (li < 0 ? 1e9 : li) - (ri < 0 ? 1e9 : ri);
-    });
+  const eligibleById = new Map(eligibleEndpoints.map((item) => [item.id, item]));
+  const selectedEndpoints = endpointIds
+    .map((id) => eligibleById.get(id))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const generationList = [
+    ...endpointIds.map((id) => eligibleById.get(id)).filter((item): item is NonNullable<typeof item> => Boolean(item)),
+    ...eligibleEndpoints
+      .filter((item) => !endpointIds.includes(item.id))
+      .sort((left, right) => {
+        const li = order.indexOf(left.id);
+        const ri = order.indexOf(right.id);
+        return (li < 0 ? 1e9 : li) - (ri < 0 ? 1e9 : ri);
+      }),
+  ];
 
   const allExpanded = visibleCases.length > 0
     && visibleCases.every((item) => expanded.includes(item.id));
@@ -206,6 +232,40 @@ export default function TestCasesPage() {
   const toggle = (list: string[], id: string) => (
     list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
   );
+
+  /** Move a selected request within a Flow and persist the project order. */
+  const reorderFlowEndpoints = async (sourceId: string, targetId: string) => {
+    if (!projectId || sourceId === targetId) return;
+    const selectedOrder = endpointIds.filter((id) => eligibleById.has(id));
+    const from = selectedOrder.indexOf(sourceId);
+    const to = selectedOrder.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    const reorderedSelection = [...selectedOrder];
+    const [moved] = reorderedSelection.splice(from, 1);
+    reorderedSelection.splice(to, 0, moved);
+    setEndpointIds((previous) => {
+      const selection = previous.filter((id) => eligibleById.has(id));
+      const untouched = previous.filter((id) => !eligibleById.has(id));
+      return [...reorderedSelection, ...untouched, ...selection.filter((id) => !reorderedSelection.includes(id))];
+    });
+
+    const allIds = endpoints.map((item) => item.id);
+    const oldOrder = [...new Set([...order.filter((id) => allIds.includes(id)), ...allIds])];
+    const selectedSet = new Set(selectedOrder);
+    let selectedIndex = 0;
+    const nextOrder = oldOrder.map((id) => {
+      if (!selectedSet.has(id)) return id;
+      const nextId = reorderedSelection[selectedIndex];
+      selectedIndex += 1;
+      return nextId || id;
+    });
+    try {
+      await api.put('/api/v1/projects/' + projectId + '/generation-order', { request_ids: nextOrder });
+      await refreshProject();
+    } catch (caught) {
+      setFlash(caught instanceof Error ? caught.message : 'Could not save Flow order');
+    }
+  };
 
   /** Merge a generation envelope into the local case list. */
   const mergeResponse = (response: GenerationResponse) => {
@@ -223,7 +283,7 @@ export default function TestCasesPage() {
 
   /** Ask the configured providers for a new suite. */
   const generate = async () => {
-    if (!projectId || selectedEndpoints.length === 0 || phase === 'running') return;
+    if (!projectId || (mode !== 'General' && selectedEndpoints.length === 0) || phase === 'running') return;
     setPhase('running');
     setNote('Generating with the configured providers.');
     setFlash(null);
@@ -452,23 +512,52 @@ export default function TestCasesPage() {
 
             <p className="mt-1.5 text-[10.5px] text-text-mute">
               {mode === 'Flow'
-                ? 'Checked requests run in order, following the saved generation order.'
+                ? 'Drag selected requests into the order they should run. Order is saved to this project.'
                 : mode === 'General'
                   ? 'Requirements-only scenarios, recorded manually after a tester runs them.'
                   : 'Choose one or more saved requests to generate focused tests for.'}
             </p>
 
-            <div className="aa-scroll mt-2 max-h-[11rem] overflow-y-auto rounded-md border border-line bg-panel-alt p-1.5">
-              {endpoints.length === 0 ? (
-                <p className="px-1 py-1 text-[11px] text-text-mute">No saved requests yet.</p>
+            <div className="aa-scroll mt-2 max-h-[8rem] overflow-y-auto rounded-md border border-line bg-panel-alt p-1.5">
+              {eligibleEndpoints.length === 0 ? (
+                <p className="px-1 py-1 text-[11px] text-text-mute">
+                  No requests are enabled for generation. Enable requests in API Workspace first.
+                </p>
               ) : null}
-              {endpoints.map((endpoint) => {
+              {generationList.map((endpoint) => {
                 const checked = endpointIds.includes(endpoint.id);
-                const position = order.indexOf(endpoint.id);
+                const position = endpointIds.indexOf(endpoint.id);
                 return (
-                  <label
+                  <div
                     key={endpoint.id}
-                    className="flex cursor-pointer items-center gap-1.5 rounded px-1 py-1 hover:bg-hover"
+                    draggable={mode === 'Flow' && checked}
+                    onDragStart={(event) => {
+                      if (mode !== 'Flow' || !checked) return;
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', endpoint.id);
+                      setDraggingEndpointId(endpoint.id);
+                    }}
+                    onDragOver={(event) => {
+                      if (mode === 'Flow' && checked && draggingEndpointId) {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = 'move';
+                        setDropEndpointId(endpoint.id);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const sourceId = event.dataTransfer.getData('text/plain') || draggingEndpointId;
+                      if (sourceId) void reorderFlowEndpoints(sourceId, endpoint.id);
+                      setDraggingEndpointId(null);
+                      setDropEndpointId(null);
+                    }}
+                    onDragEnd={() => { setDraggingEndpointId(null); setDropEndpointId(null); }}
+                    className={cx(
+                      'flex items-center gap-1.5 rounded px-1 py-1 hover:bg-hover',
+                      mode === 'Flow' && checked ? 'cursor-grab active:cursor-grabbing' : '',
+                      draggingEndpointId === endpoint.id ? 'opacity-40' : '',
+                      dropEndpointId === endpoint.id ? 'outline outline-1 outline-accent' : '',
+                    )}
                   >
                     <Checkbox
                       checked={checked}
@@ -476,15 +565,42 @@ export default function TestCasesPage() {
                       onChange={() => setEndpointIds(toggle(endpointIds, endpoint.id))}
                     />
                     {mode === 'Flow' ? (
-                      <span className="w-4 shrink-0 text-center font-mono text-[9.5px] text-text-mute">
-                        {position >= 0 ? String(position + 1) : '-'}
+                      <span className="w-5 shrink-0 text-center font-mono text-[9.5px] text-text-mute" title="Selected Flow position">
+                        {checked ? String(position + 1) : '–'}
                       </span>
                     ) : null}
                     <MethodBadge method={endpoint.method} />
                     <span className="min-w-0 flex-1 truncate text-[11.5px] text-text">
                       {endpoint.name || endpoint.url}
                     </span>
-                  </label>
+                    {mode === 'Flow' && checked ? (
+                      <span className="flex shrink-0 items-center gap-1">
+                        <Button
+                          small
+                          disabled={position <= 0}
+                          aria-label="Move Flow endpoint earlier"
+                          onClick={() => {
+                            const previousId = endpointIds[position - 1];
+                            if (previousId) void reorderFlowEndpoints(endpoint.id, previousId);
+                          }}
+                        >
+                          Up
+                        </Button>
+                        <Button
+                          small
+                          disabled={position < 0 || position >= selectedEndpoints.length - 1}
+                          aria-label="Move Flow endpoint later"
+                          onClick={() => {
+                            const nextId = endpointIds[position + 1];
+                            if (nextId) void reorderFlowEndpoints(endpoint.id, nextId);
+                          }}
+                        >
+                          Down
+                        </Button>
+                        <span aria-hidden="true" className="select-none px-0.5 text-text-mute">⠿</span>
+                      </span>
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
@@ -526,7 +642,7 @@ export default function TestCasesPage() {
               <summary className="cursor-pointer list-none text-[11px] font-semibold text-text-dim [&::-webkit-details-marker]:hidden">
                 {'Project context (' + String(briefIds.length + (threadId ? 1 : 0)) + ')'}
               </summary>
-              <div className="mt-1.5 flex flex-col gap-1.5">
+                               <div className="aa-scroll mt-1.5 flex max-h-[13rem] flex-col gap-1.5 overflow-y-auto">
                 <p className="text-[10px] text-text-mute">
                   The project overview page is always included.
                 </p>
@@ -567,6 +683,7 @@ export default function TestCasesPage() {
               className="mt-2 text-[11.5px]"
               value={requirements}
               aria-label="Business requirements"
+              title="Requirements for this generation action only. Saved project and feature knowledge is included separately; this field does not update it."
               placeholder="Business rules, edge cases, or expected behavior..."
               onChange={(event) => setRequirements(event.target.value)}
             />
@@ -575,6 +692,7 @@ export default function TestCasesPage() {
               <Select
                 value={coverage}
                 aria-label="Knowledge coverage"
+                title="Changed knowledge focuses on recent approved updates; full knowledge includes all relevant saved context."
                 className="h-8 w-36"
                 onChange={(event) => setCoverage(event.target.value as 'changed' | 'full')}
               >
@@ -584,7 +702,7 @@ export default function TestCasesPage() {
               <Button
                 tone="primary"
                 icon="sparkles"
-                disabled={phase === 'running' || cooldown || selectedEndpoints.length === 0}
+                disabled={phase === 'running' || cooldown || (mode !== 'General' && selectedEndpoints.length === 0)}
                 onClick={() => void generate()}
               >
                 {phase === 'running' ? 'Generating' : cooldown ? 'Wait a moment' : 'Generate cases'}
@@ -807,6 +925,7 @@ export default function TestCasesPage() {
                 key={item.id}
                 testCase={item}
                 projectId={projectId}
+                latestStatus={statuses[item.id]}
                 selected={selected.includes(item.id)}
                 expanded={expanded.includes(item.id)}
                 onSelect={(next) => setSelected((prev) => (

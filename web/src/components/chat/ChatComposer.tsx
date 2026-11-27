@@ -59,6 +59,7 @@ export default function ChatComposer({
           rows={1}
           placeholder="Message the project assistant"
           aria-label="Message"
+          title="Ask about product behavior, share requirements, or clarify an earlier answer in this project thread."
           disabled={disabled || archived}
           className="min-h-9"
         />

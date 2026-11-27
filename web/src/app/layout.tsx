@@ -13,15 +13,14 @@ export const metadata: Metadata = {
 /**
  * Wrap every route in the theme and project providers.
  *
- * The dark class is server rendered so the first paint is already black, and the
- * boot script only removes it when a stored light preference exists.
+ * The boot script applies a stored palette before first paint; first visits use light.
  *
  * @param props - Route children.
  * @returns Document shell.
  */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
       </head>

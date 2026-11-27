@@ -12,6 +12,19 @@ from pydantic import BaseModel, Field
 from typing import Any, Literal, Optional
 
 
+class AuthLoginRequest(BaseModel):
+    """Credentials for the configured local account."""
+
+    username: str
+    password: str
+
+
+class AuthRefreshRequest(BaseModel):
+    """Opaque refresh credential to rotate or revoke."""
+
+    refresh_token: str
+
+
 class CurlParseRequest(BaseModel):
     curl: str
 

@@ -12,13 +12,15 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 
 const FOCUS = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent';
 
-type Tone = 'primary' | 'secondary' | 'ghost' | 'danger';
+type Tone = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success' | 'dangerSolid';
 
 const BUTTON_TONE: Record<Tone, string> = {
   primary: 'border border-accent bg-accent text-on-accent hover:bg-accent-hover',
   secondary: 'border border-line-strong bg-panel-alt text-text hover:bg-hover',
   ghost: 'border border-transparent bg-transparent text-text-dim hover:bg-hover hover:text-text',
- danger: 'border border-bad/40 bg-bad/10 text-bad hover:bg-bad/20',
+  danger: 'border border-bad/40 bg-bad/10 text-bad hover:bg-bad/20',
+  success: 'border border-ok bg-ok text-white hover:bg-ok-strong',
+  dangerSolid: 'border border-bad bg-bad text-white hover:bg-bad-strong',
 };
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -100,16 +102,19 @@ const FIELD = cx(
 export function Field({
   label,
   hint,
+  tooltip,
   children,
 }: {
   label: React.ReactNode;
   hint?: React.ReactNode;
+  tooltip?: string;
   children: React.ReactNode;
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-1.5">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em] text-text-mute">
+      <span className="flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-text-mute">
         {label}
+        {tooltip ? <abbr title={tooltip} aria-label={tooltip} tabIndex={0} className="cursor-help no-underline text-accent">?</abbr> : null}
       </span>
       {children}
       {hint ? <span className="text-[11px] text-text-mute">{hint}</span> : null}
@@ -251,6 +256,28 @@ export function StatusPill({ status, className }: { status?: number | null; clas
   );
 }
 
+/**
+ * Render a label on hover.
+ *
+ * Uses a simple CSS-based approach. The label is hidden by default
+ * and shown when the parent is hovered.
+ */
+export function Tooltip({ children, label }: { children: React.ReactNode; label: string }) {
+  return (
+    <div className="group relative flex items-center">
+      {children}
+      <span
+        className={cx(
+          'pointer-events-none absolute bottom-full mb-2 w-max max-w-xs rounded bg-text text-white px-2 py-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100',
+          'z-50 text-center whitespace-nowrap'
+        )}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
 /** Render a small spinner with a label. */
 export function Spinner({ label = 'Loading' }: { label?: string }) {
   return (
@@ -325,14 +352,64 @@ export function Menu({
   label?: string;
   className?: string;
 }) {
-  const holder = useRef<HTMLDetailsElement>(null);
-  const close = () => holder.current?.removeAttribute('open');
+  const holder = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, right: 8 });
+  const close = () => setOpen(false);
+
+  const toggle = () => {
+    if (open) {
+      close();
+      return;
+    }
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) {
+      const estimatedHeight = Math.min(items.length * 34 + 8, 260);
+      setPosition({
+        top: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - estimatedHeight - 8)),
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    }
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    const element = holder.current;
+    if (!open || !element) return undefined;
+    const dismissOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (!element.contains(event.target) && !menu.current?.contains(event.target)) close();
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        close();
+        trigger.current?.focus();
+      }
+    };
+    const dismissOnViewportChange = () => close();
+    document.addEventListener('pointerdown', dismissOutside, true);
+    document.addEventListener('keydown', dismissEscape, true);
+    window.addEventListener('resize', dismissOnViewportChange);
+    window.addEventListener('scroll', dismissOnViewportChange, true);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside, true);
+      document.removeEventListener('keydown', dismissEscape, true);
+      window.removeEventListener('resize', dismissOnViewportChange);
+      window.removeEventListener('scroll', dismissOnViewportChange, true);
+    };
+  }, [open]);
 
   return (
-    <details ref={holder} className={cx('relative', className)}>
-      <summary
+    <div ref={holder} className={cx('relative', className)}>
+      <button
+        ref={trigger}
+        type="button"
+        aria-expanded={open}
         aria-label={label}
         title={label}
+        onClick={toggle}
         className={cx(
           'flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md text-text-dim',
           'transition-colors hover:bg-hover hover:text-text [&::-webkit-details-marker]:hidden',
@@ -340,29 +417,36 @@ export function Menu({
         )}
       >
         <Icon name="more" size={15} />
-      </summary>
-      <div className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-md border border-line-strong bg-elevated py-1 shadow-3">
-        {items.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            disabled={item.disabled}
-            onClick={() => {
-              close();
-              item.onSelect();
-            }}
-            className={cx(
-              'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
-              'hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40',
-              item.danger ? 'text-bad' : 'text-text',
-            )}
-          >
-            {item.icon ? <Icon name={item.icon} size={13} /> : null}
-            {item.label}
-          </button>
-        ))}
-      </div>
-    </details>
+      </button>
+      {open ? createPortal(
+        <div
+          ref={menu}
+          style={{ top: position.top, right: position.right }}
+          className="fixed z-[100] max-h-[min(16rem,calc(100dvh-1rem))] w-52 overflow-y-auto rounded-md border border-line-strong bg-elevated py-1 shadow-3"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              disabled={item.disabled}
+              onClick={() => {
+                close();
+                item.onSelect();
+              }}
+              className={cx(
+                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
+                'hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40',
+                item.danger ? 'text-bad' : 'text-text',
+              )}
+            >
+              {item.icon ? <Icon name={item.icon} size={13} /> : null}
+              {item.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      ) : null}
+    </div>
   );
 }
 

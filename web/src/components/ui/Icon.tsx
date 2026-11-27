@@ -5,6 +5,7 @@ import React from 'react';
 /** Icon names used across the workspace chrome. */
 export type IconName =
   | 'plug'
+  | 'home'
   | 'flask'
   | 'chat'
   | 'pulse'
@@ -42,6 +43,7 @@ export type IconName =
   | 'ban';
 
 const GLYPHS: Record<IconName, React.ReactNode> = {
+  home: <><path d="M3 10.5L12 3l9 7.5" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-7h5v7" /></>,
   plug: <><path d="M9 3v6M15 3v6" /><path d="M6 9h12v2a6 6 0 0 1-12 0z" /><path d="M12 17v4" /></>,
   flask: <><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" /><path d="M8 15h8" /></>,
   chat: <path d="M20 12a8 8 0 0 1-8 8H8l-4 2 1.5-4.5A8 8 0 1 1 20 12z" />,

@@ -26,6 +26,9 @@ from frontend.core import (  # noqa: E402
     _flush_toasts,
     _hero,
     _queue_toast,
+    clear_streamlit_auth,
+    streamlit_authenticate,
+    streamlit_session_valid,
     api_delete,
     api_get,
     api_post,
@@ -59,8 +62,22 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     initialize_session_state()
-    _flush_toasts()
     inject_styles()
+    if not streamlit_session_valid():
+        st.title("Api-Agent")
+        st.caption("Sign in to your local QA workbench.")
+        with st.form("streamlit_login"):
+            username = st.text_input("Username", autocomplete="username")
+            password = st.text_input("Password", type="password", autocomplete="current-password")
+            submitted = st.form_submit_button("Sign in", type="primary")
+        if submitted:
+            try:
+                streamlit_authenticate(username, password)
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        st.stop()
+    _flush_toasts()
     modes = ("API Workspace", "Test Cases", "Project Chat", "Activity Logs")
     st.sidebar.markdown(
         "<div class='aa-rail-brand'><span class='aa-rail-mark'>AA</span>"
@@ -70,6 +87,20 @@ def main() -> None:
     if st.session_state.get("ui_mode") == "Generation Activity":
         st.session_state["ui_mode"] = "Activity Logs"
     st.sidebar.radio("Workspace mode", modes, key="ui_mode", label_visibility="collapsed")
+    st.sidebar.caption("Signed in as " + str(st.session_state.get("auth_username") or "local user"))
+    if st.sidebar.button("Sign out", key="streamlit_sign_out"):
+        refresh_token = st.session_state.get("auth_refresh_token")
+        if refresh_token:
+            try:
+                import requests
+                requests.post(
+                    f"{_core.BACKEND_URL}/api/v1/auth/logout",
+                    json={"refresh_token": refresh_token}, timeout=10,
+                )
+            except requests.RequestException:
+                pass
+        clear_streamlit_auth()
+        st.rerun()
     st.sidebar.divider()
     current_project = st.session_state.get("current_project") or {}
     _hero("Api-Agent", "Compose API requests, generate test cases, and inspect execution results.")

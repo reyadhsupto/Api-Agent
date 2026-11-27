@@ -3,13 +3,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 import DiffView from '@/components/ui/DiffView';
-import Icon from '@/components/ui/Icon';
 import Markdown from '@/components/ui/Markdown';
 import {
-  Badge, Button, Card, Checkbox, EmptyState, Field, Input, Modal, Notice, Select,
+  Badge, Button, Checkbox, EmptyState, Field, Input, Modal, Notice, Select,
   Spinner, Tabs, Textarea, cx,
 } from '@/components/ui/primitives';
-import { formatTimestamp, relativeTime, shortId, truncate } from '@/lib/format';
+import { formatTimestamp, relativeTime, shortId } from '@/lib/format';
 import {
   compareVersions, createBrief, draftFromThread, linkFeatureServices, listBriefs, listBriefVersions,
   restoreBriefVersion, saveBriefVersion, saveHubDraft,
@@ -31,35 +30,6 @@ const SCOPE_LABEL: Record<string, string> = {
  * @param props - Page, selection state, and actions.
  * @returns Page row.
  */
-function PageRow({
-  page, active, onOpen,
-}: {
-  page: BriefScope;
-  active: boolean;
-  onOpen: () => void;
-}) {
-  const scopeType = String(page.scope_type || 'feature');
-  const locked = scopeType === 'project';
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={cx('aa-row', active ? 'aa-row-selected' : 'border-line-soft bg-panel')}
-    >
-      {locked ? <Icon name="lock" size={12} className="shrink-0 text-text-mute" /> : null}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12px] font-semibold text-text">{page.name}</span>
-        <span className="block truncate text-[10px] text-text-mute">
-          {scopeType === 'project' ? 'Always included in generation' : 'v' + String(page.current_version_number || 1) + ' - ' + String(page.version_count || 0) + ' version(s)'}
-        </span>
-      </span>
-      <Badge tone={locked ? 'accent' : scopeType === 'feature' ? 'info' : 'neutral'} dot={false}>
-        {SCOPE_LABEL[scopeType] || scopeType}
-      </Badge>
-    </button>
-  );
-}
-
 /**
  * Render the project briefs and Knowledge Hub workspace.
  *
@@ -114,7 +84,6 @@ export default function KnowledgeHubPanel({
 
   const services = pages.filter((item) => item.scope_type === 'microservice');
   const overview = pages.find((item) => item.scope_type === 'project') || null;
-  const others = pages.filter((item) => item.scope_type !== 'project');
 
   /**
    * Reload every page in the project.
@@ -404,40 +373,53 @@ export default function KnowledgeHubPanel({
         />
       ) : null}
 
-      {overview ? (
-        <Card className="p-2.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Icon name="lock" size={12} className="text-accent" />
-            <span className="text-[12.5px] font-bold text-text">{overview.name}</span>
-            <Badge tone="accent" dot={false}>project</Badge>
-            <Badge tone="neutral" dot={false}>{'v' + String(overview.current_version_number || 1)}</Badge>
-            <span className="ml-auto flex gap-1">
-              <Button small onClick={() => openPage(overview)}>Open</Button>
-              <Button
-                small
-                icon="sparkles"
-                onClick={() => { setDraftScopeIds([overview.id]); setDraftOpen(true); }}
-              >
-                Draft
-              </Button>
-            </span>
-          </div>
-          <p className="mt-1 whitespace-pre-wrap text-[11px] text-text-dim">
-            {overview.current_content ? truncate(overview.current_content, 320) : '(empty overview)'}
-          </p>
-        </Card>
-      ) : null}
-
-      {others.length > 0 ? (
-        <div className="flex flex-col gap-1">
-          {others.map((item) => (
-            <PageRow
-              key={item.id}
-              page={item}
-              active={item.id === openScopeId}
-              onOpen={() => openPage(item)}
-            />
-          ))}
+      {pages.length > 0 ? (
+        <div className="aa-scroll max-h-[30rem] overflow-auto rounded-md border border-line bg-panel">
+          <table className="w-full min-w-[40rem] border-collapse text-left">
+            <thead className="bg-panel-alt border-b border-line">
+              <tr className="sticky top-0 z-10 bg-panel-alt text-[10.5px] font-bold uppercase tracking-wider text-text-mute">
+                <th className="px-3 py-2">Name</th>
+                <th className="px-3 py-2">Type</th>
+                <th className="px-3 py-2 text-center">Versions</th>
+                <th className="px-3 py-2">Latest</th>
+                <th className="px-3 py-2 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line-soft">
+              {pages.map((item) => (
+                <tr
+                  key={item.id}
+                  className={cx(
+                    'text-[12px] transition-colors hover:bg-hover',
+                    item.id === openScopeId ? 'bg-accent-wash' : 'bg-transparent'
+                  )}
+                >
+                  <td className="max-w-[18rem] px-3 py-2">
+                    <button type="button" className="block max-w-full truncate text-left font-semibold text-text hover:text-accent" title={item.name} onClick={() => openPage(item)}>{item.name}</button>
+                    {item.scope_type === 'project' ? <span className="block text-[9.5px] text-text-mute">Always included in generation</span> : null}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge tone={item.scope_type === 'project' ? 'accent' : item.scope_type === 'feature' ? 'info' : 'neutral'} dot={false}>
+                      {SCOPE_LABEL[String(item.scope_type)] || item.scope_type}
+                    </Badge>
+                  </td>
+                  <td className="px-3 py-2 text-center font-mono text-[11px] text-text-dim">
+                    {String(item.version_count || 0)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-[10.5px] text-text-dim">
+                    {'v' + String(item.current_version_number || 1)}
+                    {item.current_version_created_at ? ' · ' + formatTimestamp(item.current_version_created_at) : ''}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <span className="inline-flex gap-1">
+                      <Button small tone="ghost" onClick={() => openPage(item)}>Open</Button>
+                      <Button small tone="ghost" icon="sparkles" onClick={() => { setDraftScopeIds([item.id]); setDraftOpen(true); }}>Draft</Button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : null}
 

@@ -5,8 +5,8 @@ import React, { useState } from 'react';
 import AssertionsEditor, { countEnabled, emptyAssertions } from '@/components/ui/AssertionsEditor';
 import Icon from '@/components/ui/Icon';
 import {
-  Badge, Button, Card, Checkbox, Input, Menu, MethodBadge, Notice, Spinner, StatusPill,
-  Tabs, Textarea,
+  Badge, Button, Card, Checkbox, Input, Menu, MethodBadge, Modal, Notice, Spinner, StatusPill,
+  Tabs, Textarea, cx,
 } from '@/components/ui/primitives';
 import { formatLatency, prettyPayload, truncate } from '@/lib/format';
 import { api } from '@/lib/api';
@@ -48,6 +48,8 @@ export interface TestCaseCardProps {
   onSelect: (next: boolean) => void;
   /** Report a new execution status to the parent. */
   onStatus?: (id: string, status: string) => void;
+  /** Latest persisted outcome, used for the left-edge result accent. */
+  latestStatus?: string;
   /** Toggle the detail tabs. */
   onToggle: () => void;
   /** Remove the case from the workspace after a successful delete. */
@@ -61,6 +63,7 @@ export interface TestCaseCardProps {
  */
 export default function TestCaseCard({
   testCase, projectId, selected, expanded, onSelect, onToggle, onDeleted, onSaved, onStatus,
+  latestStatus,
 }: TestCaseCardProps) {
   const [tab, setTab] = useState('assertions');
   const [name, setName] = useState(testCase.name);
@@ -77,11 +80,26 @@ export default function TestCaseCard({
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [manualBusy, setManualBusy] = useState(false);
+  const [manualDialogOpen, setManualDialogOpen] = useState(false);
+  const [manualOutcome, setManualOutcome] = useState<'passed' | 'failed' | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saved' | 'dirty'>('idle');
 
   const flag = isFlaky(history || undefined);
   const isGeneral = testCase.case_kind === 'general';
   const isFlow = Boolean(testCase.is_flow || testCase.steps);
+  const visibleLatestStatus = latestStatus || (isGeneral ? testCase.manual_status : undefined);
+  const orderedFlowSteps = [...(testCase.steps || [])]
+    .map((step, sourceIndex) => ({ step, sourceIndex }))
+    .sort((left, right) => {
+      const leftOrder = Number(left.step.step_order);
+      const rightOrder = Number(right.step.step_order);
+      const safeLeft = Number.isFinite(leftOrder) ? leftOrder : left.sourceIndex;
+      const safeRight = Number.isFinite(rightOrder) ? rightOrder : right.sourceIndex;
+      return safeLeft - safeRight || left.sourceIndex - right.sourceIndex;
+    })
+    .map(({ step }) => step);
+  const manualSteps = (testCase.manual_steps || []).map((step) => String(step).trim()).filter(Boolean);
+  const processStepCount = isGeneral ? manualSteps.length : isFlow ? orderedFlowSteps.length : 0;
 
   /** Mark the card dirty after any local edit. */
   const touch = () => setSaveState('dirty');
@@ -153,10 +171,6 @@ export default function TestCaseCard({
 
   /** Record a manual outcome for a requirements-only general case. */
   const recordManual = async (status: 'passed' | 'failed') => {
-    if (status === 'failed' && !reason.trim()) {
-      setError('Add a failure reason before recording a failed outcome.');
-      return;
-    }
     setManualBusy(true);
     setError(null);
     try {
@@ -164,6 +178,9 @@ export default function TestCaseCard({
       setResult(response);
       onStatus?.(testCase.id, response.status);
       setReason('');
+      setManualOutcome(null);
+      setManualDialogOpen(false);
+      setHistory(null);
       onSaved();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not record the outcome');
@@ -186,7 +203,20 @@ export default function TestCaseCard({
   };
 
   return (
-    <Card className="overflow-hidden">
+    <>
+    <Card className={cx(
+      'relative overflow-hidden',
+    )}>
+      <span
+        aria-label={visibleLatestStatus ? 'Latest execution: ' + visibleLatestStatus : undefined}
+        title={visibleLatestStatus ? 'Latest execution: ' + visibleLatestStatus : undefined}
+        className={cx(
+          'absolute inset-y-0 left-0 z-10 w-1',
+          visibleLatestStatus === 'passed' ? 'bg-ok' :
+            visibleLatestStatus === 'failed' ? 'bg-bad' :
+              visibleLatestStatus === 'error' ? 'bg-warn' : 'bg-transparent',
+        )}
+      />
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
         <Checkbox
           checked={selected}
@@ -207,11 +237,45 @@ export default function TestCaseCard({
         {flag ? <Badge tone="warn">flaky</Badge> : null}
         {saveState === 'dirty' ? <Badge tone="neutral">unsaved</Badge> : null}
         <span className="ml-auto flex items-center gap-1.5">
+          {visibleLatestStatus ? (
+            <span className="sr-only">Latest execution: {visibleLatestStatus}</span>
+          ) : null}
           {result ? <StatusPill status={result.response_status ?? null} /> : null}
           {result?.latency_ms ? <Badge tone="neutral">{formatLatency(result.latency_ms)}</Badge> : null}
-          <Button small tone="primary" icon="play" disabled={busy} onClick={() => void run()}>
-            Run
-          </Button>
+          {isGeneral ? (
+            <>
+              <Button
+                small
+                tone="success"
+                icon="check"
+                disabled={busy || manualBusy}
+                onClick={() => {
+                  setError(null);
+                  setManualOutcome('passed');
+                  setManualDialogOpen(true);
+                }}
+              >
+                Pass
+              </Button>
+              <Button
+                small
+                tone="dangerSolid"
+                icon="close"
+                disabled={busy || manualBusy}
+                onClick={() => {
+                  setError(null);
+                  setManualOutcome('failed');
+                  setManualDialogOpen(true);
+                }}
+              >
+                Fail
+              </Button>
+            </>
+          ) : (
+            <Button small tone="primary" icon="play" disabled={busy} onClick={() => void run()}>
+              Run
+            </Button>
+          )}
           <Menu
             label={'Actions for ' + testCase.name}
             items={[
@@ -223,13 +287,70 @@ export default function TestCaseCard({
       </div>
 
       {testCase.description ? (
-        <p className="px-3 pb-2 text-[11px] text-text-dim">{testCase.description}</p>
+        <div className="mx-3 mb-2 rounded-md border border-line-soft bg-panel-alt px-2.5 py-2">
+          <p className="mb-0.5 text-[9px] font-bold uppercase tracking-[0.08em] text-text-mute">Overview</p>
+          <p className="text-[11px] leading-relaxed text-text-dim">{testCase.description}</p>
+        </div>
       ) : null}
 
       {error ? (
         <div className="px-3 pb-2">
           <Notice tone="bad">{error}</Notice>
         </div>
+      ) : null}
+
+      {expanded && processStepCount > 0 ? (
+        <section className="mx-3 mb-2 overflow-hidden rounded-lg border border-line-strong bg-panel-alt">
+          <header className="flex items-center justify-between gap-2 border-b border-line-soft px-3 py-2">
+            <div className="min-w-0">
+              <h3 className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-text">Test process</h3>
+              <p className="mt-0.5 text-[9.5px] text-text-mute">
+                {'Follow these steps in order: 1 through ' + String(processStepCount)}
+              </p>
+            </div>
+            <Badge tone="neutral" dot={false}>
+              {String(processStepCount) + (processStepCount === 1 ? ' step' : ' steps')}
+            </Badge>
+          </header>
+          <ol className="divide-y divide-line-soft">
+            {isGeneral ? manualSteps.map((step, index) => (
+              <li key={String(index)} className="grid grid-cols-[1.6rem_minmax(0,1fr)] gap-2 px-3 py-2.5">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong bg-panel text-[10px] font-bold text-accent">
+                  {index + 1}
+                </span>
+                <p className="min-w-0 self-center whitespace-pre-wrap text-[11.5px] leading-relaxed text-text">
+                  {step}
+                </p>
+              </li>
+            )) : orderedFlowSteps.map((step, index) => {
+              const endpoint = step.endpoint || {};
+              const endpointName = String(endpoint.name || '').trim();
+              const method = String(endpoint.method || '').trim().toUpperCase();
+              const url = String(endpoint.url || '').trim();
+              const endpointLabel = [method, url].filter(Boolean).join(' ');
+              const instruction = String(
+                step.description || endpointName || endpointLabel || 'Follow the request configured for this step.',
+              );
+              return (
+                <li key={String(step.step_id || step.step_order || index)} className="grid grid-cols-[1.6rem_minmax(0,1fr)] gap-2 px-3 py-2.5">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong bg-panel text-[10px] font-bold text-accent">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 self-center">
+                    <p className="whitespace-pre-wrap text-[11.5px] font-medium leading-relaxed text-text">
+                      {instruction}
+                    </p>
+                    {endpointLabel ? (
+                      <p className="mt-0.5 aa-wrap-anywhere font-mono text-[9.5px] text-text-mute">
+                        {endpointLabel}
+                      </p>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
       ) : null}
 
       {expanded ? (
@@ -241,6 +362,7 @@ export default function TestCaseCard({
               else setTab(next);
             }}
             tabs={[
+              { id: 'details', label: 'Details' },
               { id: 'assertions', label: 'Assertions', badge: countEnabled(assertions) },
               { id: 'request', label: 'Request' },
               { id: 'result', label: 'Result', badge: result?.status },
@@ -249,53 +371,37 @@ export default function TestCaseCard({
           />
 
           <div className="pt-2.5">
-            {tab === 'assertions' ? (
-              <div className="flex flex-col gap-2.5">
-                <div className="flex flex-col gap-1.5">
+            {tab === 'details' ? (
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-text-mute">
+                  Case title
                   <Input
                     value={name}
-                    aria-label="Case name"
-                    placeholder="Case name"
+                    aria-label="Case title"
+                    placeholder="Case title"
                     onChange={(event) => { setName(event.target.value); touch(); }}
                   />
-                  <Input
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-text-mute sm:col-span-2">
+                  Overview
+                  <Textarea
+                    rows={3}
                     value={description}
-                    aria-label="Case description"
-                    placeholder="Description"
+                    aria-label="Case overview"
+                    placeholder="Describe the purpose of this case"
                     onChange={(event) => { setDescription(event.target.value); touch(); }}
                   />
-                </div>
+                </label>
+              </div>
+            ) : null}
 
+            {tab === 'assertions' ? (
+              <div className="flex flex-col gap-2.5">
                 {isGeneral ? (
                   <div className="flex flex-col gap-2 rounded-md border border-line bg-panel-alt p-2.5">
                     <p className="text-[11px] text-text-dim">
-                      General scenarios are executed by a tester and recorded here.
+                      Run opens a prompt to record this scenario as passed or failed.
                     </p>
-                    <Input
-                      value={reason}
-                      aria-label="Failure reason"
-                      placeholder="Failure reason, required only when recording a failure"
-                      onChange={(event) => setReason(event.target.value)}
-                    />
-                    <div className="flex items-center gap-1.5">
-                      <Button
-                        small
-                        icon="check"
-                        disabled={manualBusy}
-                        onClick={() => void recordManual('passed')}
-                      >
-                        Passed
-                      </Button>
-                      <Button
-                        small
-                        tone="danger"
-                        icon="close"
-                        disabled={manualBusy}
-                        onClick={() => void recordManual('failed')}
-                      >
-                        Failed
-                      </Button>
-                    </div>
                   </div>
                 ) : null}
 
@@ -414,5 +520,55 @@ export default function TestCaseCard({
         </div>
       ) : null}
     </Card>
+    <Modal
+      open={manualDialogOpen}
+      title="Record manual outcome"
+      description={testCase.name}
+      onClose={() => {
+        if (manualBusy) return;
+        setManualDialogOpen(false);
+        setManualOutcome(null);
+      }}
+      footer={(
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            small
+            onClick={() => {
+              setManualDialogOpen(false);
+              setManualOutcome(null);
+            }}
+            disabled={manualBusy}
+          >
+            Cancel
+          </Button>
+          <Button
+            small
+            tone={manualOutcome === 'failed' ? 'dangerSolid' : 'success'}
+            disabled={!manualOutcome || manualBusy}
+            onClick={() => { if (manualOutcome) void recordManual(manualOutcome); }}
+          >
+            {manualBusy ? 'Recording…' : manualOutcome === 'passed' ? 'Confirm pass' : 'Confirm failure'}
+          </Button>
+        </div>
+      )}
+    >
+      <div className="flex flex-col gap-3">
+        <p className="text-[11px] text-text-dim">
+          {'Confirm marking this case as ' + (manualOutcome === 'passed' ? 'passed.' : 'failed.')}
+        </p>
+        {manualOutcome === 'failed' ? (
+          <Textarea
+            rows={3}
+            value={reason}
+            aria-label="Optional failure reason"
+            placeholder="Failure reason (optional)"
+            onChange={(event) => setReason(event.target.value)}
+            disabled={manualBusy}
+          />
+        ) : null}
+        {error ? <Notice tone="bad">{error}</Notice> : null}
+      </div>
+    </Modal>
+    </>
   );
 }

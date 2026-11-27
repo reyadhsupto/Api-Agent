@@ -15,7 +15,7 @@ import { useTheme } from '@/lib/theme';
  *
  * @returns A pressable theme switch with the active palette named.
  */
-export default function ThemeToggle({ className }: { className?: string }) {
+export default function ThemeToggle({ className, compact = false }: { className?: string; compact?: boolean }) {
   const { theme, toggleTheme } = useTheme();
   const dark = theme === 'dark';
   const next = dark ? 'light' : 'dark';
@@ -28,19 +28,21 @@ export default function ThemeToggle({ className }: { className?: string }) {
       aria-label={'Switch to ' + next + ' theme'}
       title={'Switch to ' + next + ' theme'}
       className={cx(
-        'flex w-full items-center justify-between gap-2 rounded-md border border-line-strong',
-        'bg-panel-alt px-2.5 py-1.5 text-[11.5px] font-semibold text-text-dim transition-colors',
+        'flex items-center gap-2 rounded-md border border-line-strong bg-panel-alt font-semibold text-text-dim transition-colors',
+        compact ? 'h-8 w-8 justify-center p-1.5 text-[11px]' : 'w-full justify-between px-2.5 py-1.5 text-[11.5px]',
         'hover:border-line-contrast hover:bg-hover hover:text-text',
         className,
       )}
     >
       <span className="inline-flex items-center gap-2">
         <Icon name={dark ? 'moon' : 'sun'} size={14} />
-        Appearance
+        {!compact ? 'Appearance' : null}
       </span>
-      <span className="rounded-pill border border-chip-line bg-chip-fill px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-text">
-        {dark ? 'Dark' : 'Light'}
-      </span>
+      {!compact ? (
+        <span className="rounded-pill border border-chip-line bg-chip-fill px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-text">
+          {dark ? 'Dark' : 'Light'}
+        </span>
+      ) : null}
     </button>
   );
 }

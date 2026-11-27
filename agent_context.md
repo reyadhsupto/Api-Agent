@@ -258,8 +258,8 @@ Mode: Act
 - Updated the `Makefile` with `install-web`, `run-local-web`, and revised `setup` commands.
 
 ### Connectivity
-- The Next.js app proxies `/api` and `/health` to the FastAPI backend through `next.config.ts` rewrites, using `BACKEND_URL` (default `http://localhost:8000`).
-- `web/src/lib/api.ts` is a typed fetch client with relative endpoints, so browser traffic stays same-origin and avoids CORS entirely.
+- The Next.js app proxies `/api/v1/*` to FastAPI through authenticated Route Handlers, using `BACKEND_URL` (default `http://localhost:8000`).
+- `web/src/lib/api.ts` is a typed same-origin fetch client; bearer tokens remain in HttpOnly cookies and are added only by the server handler.
 - `ProjectProvider` in `web/src/context/ProjectContext.tsx` lists projects from `GET /api/v1/projects` and exposes the selected project to every workspace view.
 
 ### Shared Design System
@@ -270,16 +270,24 @@ Mode: Act
 ### Migrated Views
 - **API Workspace** (`web/src/app/workspace/api/page.tsx`): cURL parsing, request composer, execution, and response viewer.
 - **Test Cases** (`web/src/app/workspace/test-cases/page.tsx`): Single, Flow, and General generation, saved case list, HTTP execution, and manual outcomes.
-- **Project Chat** (`web/src/app/workspace/chat/page.tsx`): thread rail, message transcript, and pinned composer. Knowledge Hub remains a follow-up.
-- **Activity Logs** (`web/src/app/workspace/activity/page.tsx`): paged generation and Knowledge Extraction activity with total counts.
+- **Project Chat and Knowledge Hub** (`web/src/app/workspace/chat/page.tsx`): thread rail, message transcript, reviewed page updates, version history, diffs, and a pinned composer.
+- **Activity Logs** (`web/src/app/workspace/activity/page.tsx`): paged generation and Knowledge Extraction activity in a table with details.
+- **API imports** (`web/src/app/workspace/api/page.tsx`): reviewed file/text/URL endpoint previews and collection import.
 
 ### Verification
 - `tsc --noEmit` passes with zero errors.
+- `npm run lint` passes with zero warnings and zero errors.
 - `npm run build` compiles every App Router route in Turbopack.
-- No non-ASCII characters appear outside intentional UI icons.
+- Corrupted escaped-quote sequences fixed in KnowledgeHubPanel.tsx, Sidebar.tsx, and primitives.tsx.
+- Unused imports removed: `prettyPayload` (activity/page.tsx), `truncate` (ActivityDetail.tsx), `Tooltip` (KnowledgeHubPanel.tsx), `PageRowDeleted` function (KnowledgeHubPanel.tsx).
+
+### UI polish completed
+- Scrollable excluded-APIs list uses a compact height-bounded region.
+- Modal click-outside close: Modal component handles backdrop click via `onMouseDown` target check.
+- Sidebar collapse wiring: collapse button toggles `setCollapsed` state; width switches between `w-16` and `w-64`.
+- Theme persistence: ThemeProvider reads/writes `aa-theme` localStorage; DEFAULT_THEME is `light`; boot script applies stored preference before first paint.
 
 ### Deferred
-- Contract preview, import, and dependency discovery.
 - Playwright smoke coverage and removal of the legacy Streamlit service.
 
 ## Web frontend status
@@ -289,17 +297,35 @@ Mode: Act
 
 The Next.js app in `web/` is the migration target, not the default UI yet.
 
-- Migrated: `/workspace/api` (draft tabs, collections, cURL parse, params, headers, body, auth, checks, response inspector, Postman export) and `/workspace/test-cases` (Single, General and Flow generation, examples, brief and thread context, clarifications, coverage, revision and collection filters, per-case assertions, history and flaky signal, batch run, CSV export).
-- Migrated: `/workspace/chat` (thread rail with search and scope filter, rename, archive/restore, confirmed delete, transcript with role, time, ordinal, collapse and cited sources, day dividers, non-scrolling composer) and `/workspace/activity` (two streams, page size, real total, boundary-aware pager, detail dialog).
-- One token source: `web/src/app/tokens.css` is generated from `frontend/styles/tokens.py` by `scripts/gen_tokens.py`. Dark is the shipped default with a light toggle.
+- Migrated: `/workspace/api` (draft tabs, collections, cURL parse, request editor, assertions, response inspector, Postman export, and reviewed imports) and `/workspace/test-cases` (Single, General and Flow generation, clarification, revisions, execution history, suites, and CSV export).
+- Migrated: `/workspace/chat` (thread management, transcript, source details, reviewed Knowledge Hub updates and versioning) and `/workspace/activity` (two streams, table summaries, pagination, and detail view).
+- One token source: `web/src/app/tokens.css` is generated from `frontend/styles/tokens.py` by `scripts/gen_tokens.py`. Light is the first-visit default; the user's theme preference persists.
 - Generated contracts: `scripts/gen_types.py` writes `web/openapi.json` and `web/src/types/api.generated.ts`. Response types stay hand written because the routes return dictionaries without `response_model`.
 - Lazy backend: `app.main` builds the repository through `get_database()` on first use, so it imports without PostgreSQL.
 - Verified: `npm run lint` clean, `npm run build` green, `pytest tests/test_theme_tokens.py tests/test_frontend.py` 33 passed.
 
 ### Remaining before cutover
 
-- Chat: thread search, rename, archive, delete, source disclosure, day dividers, pinned composer (current page is a status card).
-- Remove `frontend/` and `Dockerfile.frontend` only after those pass the parity matrix.
+- Remove `frontend/` and `Dockerfile.frontend` only after parity and deployment checks pass.
 
 - Streamlit is now optional at runtime: the legacy service is behind the compose profile `legacy` and starts only with `make docker-legacy`. Every surface exists in `web/`.
 - `next start` is incompatible with `output: "standalone"`; use `make serve-web`, which stages `.next/static` (and `public` when present) into the standalone directory before running it.
+
+## Next.js Workspace UX and Local Authentication (2026-11-27)
+
+- Next.js is protected by a single configured local account. Set `AUTH_USERNAME`, `AUTH_PASSWORD`, and a random `AUTH_JWT_SECRET` (at least 32 characters) in `.env`. FastAPI protects `/api/v1/*` except health and auth endpoints. Access tokens last 15 minutes; refresh tokens last 30 days, are stored hashed in PostgreSQL, and rotate on refresh.
+- Next.js keeps credentials in HttpOnly cookies and forwards API requests through `web/src/app/api/v1/[...path]/route.ts`; do not restore direct `/api` rewrites. Streamlit keeps tokens in server-side session state. Both frontends share the same account. This is not multi-user authentication.
+- `AuthGate` always renders workspace route children under an opaque, inert session-check overlay so Next.js instant-navigation validation can inspect each page; the backend remains the authorization boundary.
+- The `/` route redirects to `/workspace`; navigation marks Home active only on the exact workspace landing route. Activity detail separates Summary, Evidence, LLM prompt, raw LLM response, and Raw JSON, displaying `N/A` for missing scalar and payload values.
+- In collapsed navigation, the project icon opens a searchable project-selection modal and navigation icons expose their names on hover. Activity Evidence lays out each coverage gap and clarification as a labeled card with status, detail/context, and answer state.
+- Test case cards show a green or red left-edge marker for the latest pass/fail result. General cases have direct Pass and Fail actions that open a confirmation dialog; the failure reason is optional and appears only for Fail, with each outcome retained in execution history.
+- Expanded Flow and General case cards separate the overview from a numbered, ordered Test process. Case action menus render in a viewport portal so card overflow cannot clip them.
+- API Workspace's **Generate eligible** action opens Test Cases with enabled endpoints selected; excluded endpoints are hidden from the generation picker. Selected Flow endpoints can be dragged to reorder, and the project generation order is updated. Requirements-only General generation does not require endpoints.
+- API Workspace success, error, and informational feedback notices clear themselves after three seconds.
+- Light is the first-visit theme; the selected theme persists in localStorage. Sidebar collapse state persists as well. The collapsed rail retains navigation icons, Home, project selection, theme toggle, and sign-out. Mobile navigation exposes sign-out in the header.
+- API Workspace imports JSON/YAML OpenAPI or Swagger, Postman JSON, Markdown, TXT, PDF, DOCX, and public documentation URLs. The user reviews endpoints and selects a destination collection before import. Uploads are limited to 5 MB, extracted text to 5 MB, and PDFs to 500 pages; `pypdf` is required for PDFs.
+- Activity uses a table with a bottom page-size/pagination row and a detail dialog. The Knowledge Hub lists every page with type, total versions, latest version/time, and actions. Release revision input is labeled **New requirement changes** while retaining the existing API payload field for compatibility.
+- The Test Cases endpoint-exclusion chooser is height-bounded and independently scrollable. Markdown tables use GFM and horizontal overflow. Menus dismiss on outside click or Escape. Important request, generation, import, and revision inputs have contextual tooltips.
+- LLM-backed requests use 20-minute timeouts in the Python provider client and Next.js browser API client. Keep these aligned with any proxy/server timeout configured by a deployment platform.
+- Local backend and Streamlit Make targets use `python` from the caller's active environment; activate `.venv` before running them. Dependency installation, test, and Docker targets keep their existing behavior.
+- `technical_documentation.md` documents auth token lifetimes/storage, the BFF flow, file import limits, and current UX behavior. `README.md` contains local auth configuration and supported import formats.

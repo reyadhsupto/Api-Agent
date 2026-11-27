@@ -1,7 +1,5 @@
 import type { NextConfig } from "next";
 
-const backendUrl = process.env.BACKEND_URL || "http://localhost:8000";
-
 const nextConfig: NextConfig = {
   /* config options here */
   output: "standalone",
@@ -15,18 +13,6 @@ const nextConfig: NextConfig = {
         as: "*.css",
       },
     },
-  },
-  async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${backendUrl}/api/:path*`,
-      },
-      {
-        source: "/health",
-        destination: `${backendUrl}/health`,
-      },
-    ];
   },
 };
 

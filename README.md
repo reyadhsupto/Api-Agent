@@ -6,7 +6,7 @@ Api-Agent is a local workspace for building API requests, generating tests with 
 
 - **Compose and send requests:** Create temporary request tabs, edit methods, URLs, query parameters, headers, and bodies, or paste cURL into the URL field. Recognized cURL is parsed automatically after three seconds without typing.
 - **Check responses in the playground:** Add repeatable status, body text, JSONPath field-value, and JSON Schema assertions. Run all enabled checks with one request or run an individual check.
-- **Import API definitions:** Review endpoints from OpenAPI 3.x, Swagger 2.0, Postman Collection 2.1, Markdown, prose, or a public documentation URL. Edit request details before saving them into a collection.
+- **Import API definitions:** Review endpoints from OpenAPI 3.x, Swagger 2.0, Postman Collection 2.1, Markdown, prose, PDF, DOCX, or a public documentation URL. Select endpoints and a destination collection before saving.
 - **Discover dependent flows:** For OpenAPI and Swagger contracts, find normalized response-field matches in downstream path or body fields, review the evidence, and ask the LLM to turn selected paths into named scenarios. Generic `id` matches are ignored.
 - **Generate test cases:** Choose eligible saved requests, reorder them, and generate independent Single tests, sequential Flows, or requirements-only General scenarios. General scenarios can be assigned to a saved project collection or a newly created collection before generation. Mark a General scenario **Failed** with an optional failure reason; it appears as its assertion result and is retained in execution history. Newly generated cases and flows receive backend UUIDs; existing saved and manual case IDs remain unchanged.
 - **Edit and execute tests:** Update generated requests, flow steps, mappings, and assertions. Run one case or a selected batch, inspect request and response details, and save changes to the project.
@@ -23,6 +23,8 @@ Api-Agent is a local workspace for building API requests, generating tests with 
 - **Modern frontend:** The default UI is a Next.js App Router application in `web/` with TypeScript, Tailwind CSS, and shared design tokens. The legacy Streamlit UI in `frontend/` remains available during the migration.
 
 The frontend is built with Next.js (App Router, TypeScript, Tailwind CSS), the API with FastAPI, and request execution uses Python `requests`. LLM providers include AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face; the backend tries configured providers in `LLM_PROVIDER_ORDER` and records which provider/model answered.
+
+The Next.js and legacy Streamlit frontends share one locally configured account. FastAPI protects `/api/v1` routes with short-lived JWT access tokens and rotating refresh tokens; Next.js stores them in HttpOnly cookies and Streamlit stores them in its server-side session. Configure `AUTH_USERNAME`, `AUTH_PASSWORD`, and a random `AUTH_JWT_SECRET` of at least 32 characters in `.env` before starting the app. This is a single-account local sign-in, not multi-user account management.
 
 ## Typical workflow
 
@@ -62,6 +64,9 @@ Edit `.env` and add at least one provider API key. Set the PostgreSQL values for
 AMD_API_KEY=your_amd_token_lab_api_key
 AMD_MODEL=Gemma-4-31B-IT
 LLM_PROVIDER_ORDER=amd,openrouter,groq,cohere,huggingface
+AUTH_USERNAME=admin
+AUTH_PASSWORD=change_this_local_password
+AUTH_JWT_SECRET=replace_with_a_random_secret_at_least_32_characters
 GROQ_API_KEY=your_groq_free_tier_key
 OPENROUTER_API_KEY=your_openrouter_api_key
 OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
@@ -77,17 +82,20 @@ PROJECT_CHAT_CONTEXT_CHAR_BUDGET=24000
 PROJECT_BRIEF_DRAFT_CHAR_BUDGET=48000
 ```
 
-Configure one or more provider keys. `LLM_PROVIDER_ORDER` controls precedence; its default tries AMD Token Lab, OpenRouter, Groq, Cohere, then Hugging Face, skipping providers without keys. Set `AMD_MODEL` in `.env` to choose the AMD model (default `Gemma-4-31B-IT`); `OPENROUTER_MODEL` and `API_AGENT_LLM_MAX_OUTPUT_TOKENS` configure their respective provider/output limit. Generation, Project Chat, and Knowledge Hub model calls share this fallback. A provider/API failure advances to the next provider; malformed generated JSON is reported without another model call. Activity records and chat replies retain provider/model metadata. Normal chat turns do not trigger a separate extraction call. `PROJECT_CHAT_RECENT_MESSAGES` controls recent messages sent with the rolling summary. `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` bounds chat turns; `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` bounds multi-page Hub drafting. Full transcripts and page versions remain in PostgreSQL. Compose sets the backend database host to `postgres`; local processes normally use `DATABASE_URL` with host `localhost`.
+Configure one or more provider keys. `LLM_PROVIDER_ORDER` controls precedence; its default tries AMD Token Lab, OpenRouter, Groq, Cohere, then Hugging Face, skipping providers without keys. Set `AMD_MODEL` in `.env` to choose the AMD model (default `Gemma-4-31B-IT`); `OPENROUTER_MODEL` and `API_AGENT_LLM_MAX_OUTPUT_TOKENS` configure their respective provider/output limit. Generation, Project Chat, and Knowledge Hub model calls share this fallback. A provider/API failure advances to the next provider; malformed generated JSON is reported without another model call. Activity records and chat replies retain provider/model metadata. LLM-backed requests allow up to 20 minutes in the Python backend and Next.js client; deployment proxies must allow at least that long. Normal chat turns do not trigger a separate extraction call. `PROJECT_CHAT_RECENT_MESSAGES` controls recent messages sent with the rolling summary. `PROJECT_CHAT_CONTEXT_CHAR_BUDGET` bounds chat turns; `PROJECT_BRIEF_DRAFT_CHAR_BUDGET` bounds multi-page Hub drafting. Full transcripts and page versions remain in PostgreSQL. Compose sets the backend database host to `postgres`; local processes normally use `DATABASE_URL` with host `localhost`.
+
+Generate the signing key with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Keep all three authentication values private. The Next.js browser receives only HttpOnly cookies; the backend stores refresh-token hashes and rotates refresh tokens when a session renews.
 
 ### Run locally
 
-Start PostgreSQL, then start the backend and the Next.js frontend in separate terminals:
+Start PostgreSQL, activate the project virtual environment in the backend and Streamlit terminals, then start the services separately:
 
 ```bash
 make docker-db-up
 ```
 
 ```bash
+source .venv/bin/activate
 make run-local-backend
 ```
 
@@ -97,11 +105,12 @@ make run-local-web
 
 Open [http://localhost:3000](http://localhost:3000). FastAPI's interactive API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
 
-The Next.js app proxies `/api` and `/health` to the FastAPI backend, so the browser only talks to one origin. Set `BACKEND_URL` if the backend is not on `http://localhost:8000`.
+The Next.js app proxies `/api/v1` through authenticated Route Handlers to FastAPI, so the browser only talks to one origin. Access and refresh JWT credentials remain in HttpOnly cookies, and expired access tokens renew automatically. Set `BACKEND_URL` if the backend is not on `http://localhost:8000`.
 
 The legacy Streamlit UI remains available during the migration:
 
 ```bash
+source .venv/bin/activate
 make run-local-frontend
 ```
 
@@ -269,6 +278,7 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
   config.toml          Streamlit's native light theme and server settings
 app/
   main.py              FastAPI routes and application setup
+  auth.py              Local account, JWT signing, and refresh token helpers
   storage.py           PostgreSQL persistence and history
   parser.py            cURL parsing
   contracts.py         Contract import and dependency discovery
@@ -278,17 +288,19 @@ app/
 web/
   Dockerfile           Next.js image; standalone output
   package.json         Next.js dependencies and scripts
-  next.config.ts       Backend proxy rewrites and Turbopack rules
+  next.config.ts       Standalone build and Turbopack configuration
   src/
     app/               App Router pages and layout
+      api/             Auth handlers and authenticated FastAPI proxy
+      login/           Single-account sign-in
       workspace/
         api/           API Workspace composer and response viewer
         test-cases/    Generation list and execution detail
         chat/          Project Chat thread rail and conversation
         activity/      Generation and Knowledge activity logs
-    components/        Feature UI and shared layout components
+    components/        Feature UI, auth gate, and shared layout/components
     context/           Global project selection state
-    lib/               Typed fetch client
+    lib/               Typed fetch client, server-side auth, and domain helpers
     types/             TypeScript contracts shared with FastAPI
 frontend/
   app.py               Legacy Streamlit entry point
@@ -318,9 +330,9 @@ See [technical_documentation.md](technical_documentation.md) for architecture, d
 
 ## Appearance
 
-Api-Agent uses a single light theme. The sidebar does not include a theme
-switch, and Streamlit's native widgets and the app's custom surfaces are both
-configured for light backgrounds.
+Api-Agent starts in the light theme and remembers the user's selection across
+reloads. The Next.js sidebar has a persistent collapsible icon rail; the legacy
+Streamlit UI remains configured for its native light theme.
 
 ## Workspace behaviour
 
@@ -336,16 +348,21 @@ configured for light backgrounds.
 
 ## Next.js frontend (migration target)
 
-`web/` is the new frontend. It talks to the same FastAPI routes through a same-origin rewrite, so there is no CORS step and no second backend.
+`web/` is the Next.js frontend. It talks to FastAPI through same-origin Route
+Handlers that attach the server-held JWT, so browser code does not handle API
+credentials or need cross-origin access.
 
 ```bash
 make install-web
 make docker-db-up
+source .venv/bin/activate
 make run-local-backend     # port 8000
 make run-local-web         # port 3000, separate terminal
 ```
 
-Open `http://localhost:3000`. The legacy Streamlit UI stays available on port 8501 through `make run-local-frontend` while the remaining surfaces are migrated.
+Open `http://localhost:3000` and sign in with `AUTH_USERNAME` and
+`AUTH_PASSWORD`. The legacy Streamlit UI stays available on port 8501 through
+`make run-local-frontend` and uses the same configured account.
 
 ### Appearance
 

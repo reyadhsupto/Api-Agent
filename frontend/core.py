@@ -23,6 +23,9 @@ import html
 import re
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from dotenv import load_dotenv
+
+load_dotenv()
 
 if __package__:
     from .request_controls import render_curl_aware_url, render_request_order_list
@@ -122,7 +125,7 @@ def _raw_get(path: str) -> dict | list:
     Returns:
         dict | list: Decoded JSON response.
     """
-    response = requests.get(f"{BACKEND_URL}{path}", timeout=15)
+    response = _backend_request("GET", path, timeout=15)
     response.raise_for_status()
     return response.json()
 
@@ -381,11 +384,7 @@ def api_post(path: str, payload: dict) -> dict:
     """Send a POST request with a 20-minute timeout and log to browser console."""
     log_to_console(payload, f"REQUEST {path}")
     try:
-        response = requests.post(
-            f"{BACKEND_URL}{path}",
-            json=payload,
-            timeout=API_POST_TIMEOUT_SECONDS,
-        )
+        response = _backend_request("POST", path, json=payload, timeout=API_POST_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
         raise RuntimeError(_api_error_message(exc)) from exc
     try:
@@ -401,7 +400,7 @@ def api_get(path: str) -> dict:
     """Send a GET request to the backend and log to browser console."""
     log_to_console({}, f"REQUEST {path}")
     try:
-        response = requests.get(f"{BACKEND_URL}{path}", timeout=30)
+        response = _backend_request("GET", path, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
@@ -414,7 +413,7 @@ def api_delete(path: str) -> dict:
     """Send a DELETE request to the backend and log to browser console."""
     log_to_console({}, f"REQUEST {path}")
     try:
-        response = requests.delete(f"{BACKEND_URL}{path}", timeout=30)
+        response = _backend_request("DELETE", path, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
@@ -427,13 +426,83 @@ def api_put(path: str, payload: dict) -> dict:
     """Send a PUT request to the backend and log to browser console."""
     log_to_console(payload, f"REQUEST {path}")
     try:
-        response = requests.put(f"{BACKEND_URL}{path}", json=payload, timeout=60)
+        response = _backend_request("PUT", path, json=payload, timeout=60)
         response.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(_api_error_message(exc, getattr(exc, "response", None))) from exc
     result = response.json()
     log_to_console(result, f"RESPONSE {path}")
     return result
+
+
+def _refresh_streamlit_auth() -> bool:
+    """Rotate the Streamlit server-side refresh token in this browser session."""
+    refresh = st.session_state.get("auth_refresh_token")
+    if not refresh:
+        return False
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/api/v1/auth/refresh",
+            json={"refresh_token": refresh}, timeout=15,
+        )
+        if not response.ok:
+            clear_streamlit_auth()
+            return False
+        payload = response.json()
+        st.session_state["auth_access_token"] = payload["access_token"]
+        st.session_state["auth_refresh_token"] = payload["refresh_token"]
+        st.session_state["auth_username"] = payload.get("username", "")
+        return True
+    except (requests.RequestException, ValueError, KeyError):
+        clear_streamlit_auth()
+        return False
+
+
+def _backend_request(method: str, path: str, **kwargs):
+    """Send an API request with bearer auth and one refresh retry on 401."""
+    headers = dict(kwargs.pop("headers", {}) or {})
+    token = st.session_state.get("auth_access_token")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.request(method, f"{BACKEND_URL}{path}", headers=headers, **kwargs)
+    if response.status_code == 401 and _refresh_streamlit_auth():
+        headers["Authorization"] = f"Bearer {st.session_state['auth_access_token']}"
+        response = requests.request(method, f"{BACKEND_URL}{path}", headers=headers, **kwargs)
+    return response
+
+
+def streamlit_authenticate(username: str, password: str) -> None:
+    """Sign in the Streamlit client and retain tokens server-side per session."""
+    response = requests.post(
+        f"{BACKEND_URL}/api/v1/auth/login",
+        json={"username": username, "password": password}, timeout=15,
+    )
+    if not response.ok:
+        raise RuntimeError(_api_error_message(requests.HTTPError(response=response), response))
+    payload = response.json()
+    st.session_state["auth_access_token"] = payload["access_token"]
+    st.session_state["auth_refresh_token"] = payload["refresh_token"]
+    st.session_state["auth_username"] = payload.get("username", username)
+
+
+def clear_streamlit_auth() -> None:
+    """Clear the current Streamlit browser session's credentials."""
+    for key in ("auth_access_token", "auth_refresh_token", "auth_username"):
+        st.session_state.pop(key, None)
+
+
+def streamlit_session_valid() -> bool:
+    """Validate or refresh the current Streamlit login before rendering pages."""
+    if not st.session_state.get("auth_access_token"):
+        return False
+    try:
+        response = _backend_request("GET", "/api/v1/auth/me", timeout=15)
+        if response.ok:
+            return True
+    except requests.RequestException:
+        return False
+    clear_streamlit_auth()
+    return False
 
 
 def display_request_response(label: str, request_info: dict, response_info: dict) -> None:

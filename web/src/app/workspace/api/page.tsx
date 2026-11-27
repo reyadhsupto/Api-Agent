@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 import PageShell, { PageHeader } from '@/components/layout/PageShell';
 import AssertionsEditor, { countEnabled, emptyAssertions, flattenAssertions } from '@/components/ui/AssertionsEditor';
 import {
-  Badge, Button, Card, Checkbox, EmptyState, IconButton, Input, Menu, MethodBadge, Modal,
+  Badge, Button, Card, Checkbox, EmptyState, Field, IconButton, Input, Menu, MethodBadge, Modal,
   Notice, Select, Spinner, StatusPill, Tabs, Textarea, cx,
 } from '@/components/ui/primitives';
 import { useProject } from '@/context/ProjectContext';
@@ -251,6 +252,7 @@ function RowEditor({
             value={row.key}
             placeholder={keyPlaceholder}
             aria-label={'Key ' + String(index + 1)}
+            title={keyPlaceholder === 'Header' ? 'HTTP header name, for example Accept or Authorization.' : 'Query parameter name added to the request URL.'}
             className="h-8 font-mono"
             onChange={(event) => patch(index, { key: event.target.value })}
           />
@@ -258,6 +260,7 @@ function RowEditor({
             value={row.value}
             placeholder={valuePlaceholder}
             aria-label={'Value ' + String(index + 1)}
+            title="Value paired with this header or query parameter name."
             className="h-8 font-mono"
             onChange={(event) => patch(index, { value: event.target.value })}
           />
@@ -418,6 +421,7 @@ function downloadBlob(blob: Blob, filename: string): void {
  * @returns API workspace page element.
  */
 export default function ApiWorkspacePage() {
+  const router = useRouter();
   const { project, isLoadingProject, refreshProject, refreshProjects } = useProject();
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -430,7 +434,30 @@ export default function ApiWorkspacePage() {
   const [confirmCollection, setConfirmCollection] = useState<{ id: string; name: string } | null>(null);
   const [confirmProject, setConfirmProject] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<{
+    source_id: string;
+    source_format: string;
+    endpoints: Array<Record<string, unknown>>;
+    base_url_required: boolean;
+  } | null>(null);
+  const [importSourceType, setImportSourceType] = useState<'file' | 'text' | 'url'>('file');
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importContent, setImportContent] = useState('');
+  const [importSourceName, setImportSourceName] = useState('');
+  const [importFormatHint, setImportFormatHint] = useState<'auto' | 'openapi' | 'postman' | 'text'>('auto');
+  const [importBaseUrl, setImportBaseUrl] = useState('');
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+  const [importDestinationCollection, setImportDestinationCollection] = useState<string>('');
+  const [newImportCollection, setNewImportCollection] = useState('');
   const [newName, setNewName] = useState('');
+
+  // Automatically clear transient API Workspace feedback after three seconds.
+  useEffect(() => {
+    if (!flash) return undefined;
+    const timeout = window.setTimeout(() => setFlash(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [flash]);
 
   const active = drafts.find((item) => item.tabId === activeId) || drafts[0] || null;
 
@@ -786,10 +813,121 @@ export default function ApiWorkspacePage() {
     }
   };
 
+  /** Import contract endpoints into a destination collection. */
+  const importContract = async (payload: {
+    collection_id: string;
+    endpoints: Record<string, unknown>[];
+  }): Promise<boolean> => {
+    if (!project) return false;
+    setBusy(true);
+    try {
+      await api.post(
+        '/api/v1/projects/' + project.id + '/contracts/import',
+        payload,
+      );
+      await refreshProject();
+      setFlash({ tone: 'ok', text: 'Contract imported.' });
+      setImporting(false);
+      return true;
+    } catch (reason) {
+      fail(reason);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Preview a contract document before import. */
+  const previewContract = async () => {
+    if (!project || (importSourceType === 'file' && !importFile)
+      || (importSourceType !== 'file' && !importContent.trim())) return;
+    setBusy(true);
+    setImportPreview(null);
+    setImportSelected(new Set());
+    try {
+      type PreviewResponse = {
+        source_id: string;
+        source_format: string;
+        endpoints: Array<Record<string, unknown>>;
+        base_url_required: boolean;
+      };
+      let preview: PreviewResponse;
+      if (importSourceType === 'file' && importFile) {
+        const form = new FormData();
+        form.append('file', importFile);
+        form.append('format_hint', importFormatHint);
+        form.append('base_url', importBaseUrl);
+        preview = await api.post<PreviewResponse>('/api/v1/contracts/upload-preview', form, { timeoutMs: LLM_TIMEOUT_MS });
+      } else {
+        preview = await api.post<PreviewResponse>('/api/v1/contracts/preview', {
+          source_type: importSourceType,
+          content: importContent,
+          source_name: importSourceName || undefined,
+          format_hint: importFormatHint,
+          base_url: importBaseUrl || undefined,
+        }, { timeoutMs: LLM_TIMEOUT_MS });
+      }
+      setImportPreview(preview);
+      // Select all endpoints by default.
+      setImportSelected(new Set(preview.endpoints.map((endpoint, index) => String(endpoint.id || endpoint.source_id || index))));
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Create a destination collection without leaving the import review. */
+  const createImportCollection = async () => {
+    if (!project || !newImportCollection.trim()) return;
+    setBusy(true);
+    try {
+      const created = await api.post<{ id: string; name: string }>(
+        '/api/v1/projects/' + project.id + '/collections',
+        { name: newImportCollection.trim() },
+      );
+      await refreshProject();
+      setImportDestinationCollection(created.id);
+      setNewImportCollection('');
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Save only the reviewed endpoint rows selected in the preview. */
+  const saveImportedEndpoints = async () => {
+    if (!importPreview || !importDestinationCollection || !project) return;
+    const selected = importPreview.endpoints.filter((item, index) => (
+      importSelected.has(String(item.id || item.source_id || index))
+    ));
+    const succeeded = await importContract({ collection_id: importDestinationCollection, endpoints: selected });
+    if (!succeeded) return;
+    setImportPreview(null);
+    setImportFile(null);
+    setImportContent('');
+    setImportSourceName('');
+  };
+
   const collections = project?.collections || [];
   const requests = project?.endpoints || [];
   const totalSaved = requests.length;
   const eligibleCount = requests.filter((item) => item.include_for_generation ?? item.include).length;
+  const goToGeneration = () => {
+    const order = project?.generation_order_ids || [];
+    const eligible = requests
+      .filter((item) => item.include_for_generation ?? item.include ?? false)
+      .sort((left, right) => {
+        const leftIndex = order.indexOf(left.id);
+        const rightIndex = order.indexOf(right.id);
+        return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex)
+          - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+      });
+    const params = new URLSearchParams();
+    eligible.forEach((item) => params.append('endpoint', item.id));
+    router.push('/workspace/test-cases?' + params.toString());
+  };
 
   const filtered = collections.map((collection) => ({
     collection,
@@ -834,10 +972,23 @@ export default function ApiWorkspacePage() {
           <>
             <Badge tone="neutral">{String(totalSaved)} saved</Badge>
             <Badge tone={eligibleCount > 0 ? 'accent' : 'neutral'}>{String(eligibleCount)} eligible</Badge>
+            <Button
+              small
+              tone="primary"
+              icon="sparkles"
+              disabled={eligibleCount === 0}
+              title="Open Test Cases with the enabled requests preselected."
+              onClick={goToGeneration}
+            >
+              Generate eligible
+            </Button>
             {project ? (
-              <Button small icon="trash" disabled={busy} onClick={() => setConfirmProject(true)}>
-                Delete project
-              </Button>
+              <>
+                <Button small icon="file" onClick={() => setImporting(true)}>Import</Button>
+                <Button small icon="trash" disabled={busy} onClick={() => setConfirmProject(true)}>
+                  Delete project
+                </Button>
+              </>
             ) : null}
           </>
         }
@@ -884,6 +1035,7 @@ export default function ApiWorkspacePage() {
                     <Select
                       value={active.method}
                       aria-label="Method"
+                      title="HTTP method used for this request."
                       onChange={(event) => update({ method: event.target.value as HttpMethod })}
                     >
                       {METHODS.map((method) => (
@@ -893,6 +1045,7 @@ export default function ApiWorkspacePage() {
                     <Input
                       value={active.url}
                       aria-label="Request URL"
+                      title="Full request URL, or paste a cURL command to fill the request fields."
                       placeholder="https://api.example.com/resource or paste a cURL command"
                       className="font-mono"
                       onChange={(event) => update({ url: event.target.value })}
@@ -911,6 +1064,7 @@ export default function ApiWorkspacePage() {
                     <Input
                       value={active.name}
                       aria-label="Request name"
+                      title="Friendly name shown in collections, test cases, and execution history."
                       placeholder="Request name"
                       className="h-8 w-[13rem]"
                       onChange={(event) => update({ name: event.target.value })}
@@ -918,6 +1072,7 @@ export default function ApiWorkspacePage() {
                     <Select
                       value={active.collectionId || ''}
                       aria-label="Collection"
+                      title="Collection where this request is stored and grouped for selection."
                       className="h-8 w-[12rem]"
                       onChange={(event) => update({ collectionId: event.target.value || undefined })}
                     >
@@ -1002,6 +1157,7 @@ export default function ApiWorkspacePage() {
                           <Select
                             value={active.bodyType}
                             aria-label="Body language"
+                            title="Choose how the request body is formatted and sent."
                             className="h-8 w-28"
                             disabled={!active.includeBody}
                             onChange={(event) => update({
@@ -1035,6 +1191,7 @@ export default function ApiWorkspacePage() {
                           rows={9}
                           spellCheck={false}
                           aria-label="Request body"
+                          title="Request payload. JSON is parsed before sending when JSON is selected."
                           placeholder='{"key": "value"}'
                           className="font-mono text-[11.5px]"
                           value={active.body}
@@ -1049,6 +1206,7 @@ export default function ApiWorkspacePage() {
                         <Select
                           value={active.authType}
                           aria-label="Auth type"
+                          title="Choose the authentication scheme to add to this request."
                           className="h-8 w-48"
                           onChange={(event) => update({
                             authType: event.target.value as Draft['authType'],
@@ -1247,6 +1405,102 @@ export default function ApiWorkspacePage() {
           </aside>
         </div>
       )}
+
+      <Modal
+        open={importing}
+        title="Import API definition"
+        description="Upload a contract or documentation file, review the parsed requests, then add the selected endpoints to a collection."
+        onClose={() => { if (!busy) setImporting(false); }}
+        wide
+        footer={importPreview ? (
+          <>
+            <span className="mr-auto text-[10.5px] text-text-mute">
+              {String(importSelected.size)} of {String(importPreview.endpoints.length)} endpoints selected
+            </span>
+            <Button disabled={busy} onClick={() => setImportPreview(null)}>Back to source</Button>
+            <Button tone="primary" icon="save" disabled={busy || !importDestinationCollection || importSelected.size === 0} onClick={() => void saveImportedEndpoints()}>
+              {busy ? 'Importing…' : 'Import selected'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button disabled={busy} onClick={() => setImporting(false)}>Cancel</Button>
+            <Button tone="primary" icon="search" disabled={busy || (importSourceType === 'file' ? !importFile : !importContent.trim())} onClick={() => void previewContract()}>
+              {busy ? 'Reading…' : 'Preview endpoints'}
+            </Button>
+          </>
+        )}
+      >
+        {!importPreview ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Source" tooltip="Import a local OpenAPI, Postman, Markdown, text, PDF, or DOCX file; paste its contents; or fetch a public documentation URL.">
+              <Select value={importSourceType} onChange={(event) => setImportSourceType(event.target.value as 'file' | 'text' | 'url')}>
+                <option value="file">Upload file</option>
+                <option value="text">Paste text</option>
+                <option value="url">Public documentation URL</option>
+              </Select>
+            </Field>
+            <Field label="Document format" tooltip="Auto-detect is recommended. Choose OpenAPI, Postman, or text when automatic detection is not suitable.">
+              <Select value={importFormatHint} onChange={(event) => setImportFormatHint(event.target.value as typeof importFormatHint)}>
+                <option value="auto">Auto detect</option><option value="openapi">OpenAPI / Swagger</option><option value="postman">Postman</option><option value="text">Markdown / prose</option>
+              </Select>
+            </Field>
+            {importSourceType === 'file' ? (
+              <Field label="API definition file" tooltip="Files are limited to 5 MB. PDF and DOCX are converted to text before endpoint extraction.">
+                <Input type="file" accept=".json,.yaml,.yml,.md,.markdown,.txt,.pdf,.docx" onChange={(event) => setImportFile(event.target.files?.[0] || null)} />
+              </Field>
+            ) : importSourceType === 'url' ? (
+              <Field label="Documentation URL" tooltip="The backend fetches this public URL and extracts request details from its content.">
+                <Input type="url" value={importContent} placeholder="https://docs.example.com/api" onChange={(event) => setImportContent(event.target.value)} />
+              </Field>
+            ) : (
+              <Field label="Document content" tooltip="Paste an OpenAPI/Swagger document, Postman collection, or endpoint documentation in Markdown or plain text.">
+                <Textarea rows={8} value={importContent} placeholder="Paste API documentation here" onChange={(event) => setImportContent(event.target.value)} className="font-mono text-[11px]" />
+              </Field>
+            )}
+            <Field label="API base URL" tooltip="Used to resolve relative paths such as /v1/orders. Leave blank when the source already has server URLs.">
+              <Input value={importBaseUrl} placeholder="https://api.example.com" onChange={(event) => setImportBaseUrl(event.target.value)} />
+            </Field>
+            <Field label="Source name" tooltip="Optional label recorded with imported endpoint metadata.">
+              <Input value={importSourceName} placeholder={importFile?.name || 'API documentation'} onChange={(event) => setImportSourceName(event.target.value)} />
+            </Field>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {importPreview.base_url_required ? <Notice tone="warn">Some paths need an API base URL. Enter one above and preview again.</Notice> : null}
+            <div className="flex items-center gap-2">
+              <Badge tone="neutral">{importPreview.source_format}</Badge>
+              <Field label="Destination collection" tooltip="All selected requests are saved to this collection.">
+                <Select value={importDestinationCollection} onChange={(event) => setImportDestinationCollection(event.target.value)}>
+                  <option value="">Choose a collection</option>
+                  {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+                </Select>
+              </Field>
+              <details className="relative shrink-0">
+                <summary className="cursor-pointer whitespace-nowrap rounded px-2 py-2 text-[10.5px] font-semibold text-accent hover:bg-hover">New collection</summary>
+                <div className="absolute right-0 top-full z-20 mt-1 flex w-64 gap-1 rounded-md border border-line-strong bg-elevated p-2 shadow-2">
+                  <Input value={newImportCollection} aria-label="New collection name" placeholder="New collection name" onChange={(event) => setNewImportCollection(event.target.value)} />
+                  <Button small icon="plus" disabled={busy || !newImportCollection.trim()} onClick={() => void createImportCollection()}>Create</Button>
+                </div>
+              </details>
+            </div>
+            <div className="aa-scroll max-h-[55vh] overflow-auto rounded-md border border-line">
+              {importPreview.endpoints.map((endpoint, index) => {
+                const id = String(endpoint.id || endpoint.source_id || index);
+                return <label key={id} className="flex cursor-pointer items-center gap-2 border-b border-line-soft px-3 py-2 last:border-0 hover:bg-hover">
+                  <Checkbox checked={importSelected.has(id)} aria-label={'Import ' + String(endpoint.name || endpoint.url || 'endpoint')} onChange={(event) => setImportSelected((old) => { const next = new Set(old); if (event.target.checked) next.add(id); else next.delete(id); return next; })} />
+                  <Badge tone="neutral" dot={false}>{String(endpoint.method || 'GET')}</Badge>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[11.5px] font-semibold text-text">{String(endpoint.name || 'Untitled request')}</span>
+                    <span className="block truncate font-mono text-[10px] text-text-mute">{String(endpoint.url || '')}</span>
+                  </span>
+                  <span className="max-w-[15rem] truncate text-[10px] text-text-mute">{String(endpoint.description || '')}</span>
+                </label>;
+              })}
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={creating}

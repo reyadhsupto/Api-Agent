@@ -2,6 +2,7 @@ import React from 'react';
 
 import Header from '@/components/layout/Header';
 import Sidebar from '@/components/layout/Sidebar';
+import AuthGate from '@/components/layout/AuthGate';
 
 /**
  * Provide the fixed application shell around every workspace route.
@@ -15,12 +16,14 @@ import Sidebar from '@/components/layout/Sidebar';
  */
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-dvh overflow-hidden bg-canvas text-text">
-      <Sidebar />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <Header />
-        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+    <AuthGate>
+      <div className="flex h-dvh overflow-hidden bg-canvas text-text">
+        <Sidebar />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <Header />
+          <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+        </div>
       </div>
-    </div>
+    </AuthGate>
   );
 }

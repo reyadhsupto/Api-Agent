@@ -17,15 +17,19 @@ import os
 import re
 import time
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 import requests
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas import (
+    AuthLoginRequest,
+    AuthRefreshRequest,
     CurlParseRequest,
     ApiRequest,
     HttpAssertionExecutionRequest,
@@ -51,6 +55,15 @@ from app.schemas import (
     ProjectKnowledgeSubmissionRequest,
     ProjectKnowledgeReviewRequest,
     ProjectKnowledgeQuestionAnswerRequest,
+)
+from app.auth import (
+    ACCESS_TTL_SECONDS,
+    create_access_token,
+    new_refresh_token,
+    refresh_expiry,
+    refresh_token_hash,
+    validate_access_token,
+    verify_credentials,
 )
 from app.parser import parse_curl
 from app.generator import (
@@ -811,6 +824,164 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_project_api_auth(request: Request, call_next):
+    """Require a valid access token for all versioned routes except health/auth."""
+    path = request.url.path
+    auth_public = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/logout",
+        "/api/v1/health",
+    }
+    if path.startswith("/api/v1/") and path not in auth_public:
+        authorization = request.headers.get("authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        username = validate_access_token(token) if scheme.lower() == "bearer" else None
+        if not username:
+            return JSONResponse({"detail": "Authentication required or access token expired."}, status_code=401)
+        request.state.auth_username = username
+    return await call_next(request)
+
+
+def _issue_auth_tokens(username: str) -> dict:
+    """Create access and refresh credentials and persist the refresh-token hash."""
+    access_token, access_expires_at = create_access_token(username)
+    refresh_token = new_refresh_token()
+    refresh_expires_at = refresh_expiry()
+    database.store_refresh_token(refresh_token_hash(refresh_token), username, refresh_expires_at)
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TTL_SECONDS,
+        "access_expires_at": access_expires_at,
+        "refresh_token": refresh_token,
+        "refresh_expires_at": refresh_expires_at,
+        "username": username,
+    }
+
+
+@app.post("/api/v1/auth/login")
+def auth_login(request: AuthLoginRequest) -> dict:
+    """Authenticate the configured local user and issue a token pair."""
+    try:
+        if not verify_credentials(request.username, request.password):
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+        return _issue_auth_tokens(request.username.strip())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/contracts/upload-preview")
+async def preview_contract_upload(
+    file: UploadFile = File(...),
+    format_hint: str = Form("auto"),
+    base_url: str = Form(""),
+) -> dict:
+    """Extract supported API documentation files and return endpoint previews."""
+    raw = await file.read(5_000_001)
+    if len(raw) > 5_000_000:
+        raise HTTPException(status_code=413, detail="Contract content exceeds the 5 MB import limit.")
+    filename = file.filename or "uploaded-document"
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    try:
+        if suffix == "pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw), strict=False)
+            if len(reader.pages) > 500:
+                raise ValueError("PDF has more than 500 pages.")
+            extracted = []
+            size = 0
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                size += len(page_text)
+                if size > 5_000_000:
+                    raise ValueError("Extracted document content exceeds the 5 MB import limit.")
+                extracted.append(page_text)
+            content = "\n\n".join(extracted)
+        elif suffix == "docx":
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                document_info = archive.getinfo("word/document.xml")
+                if document_info.file_size > 5_000_000:
+                    raise ValueError("Extracted document content exceeds the 5 MB import limit.")
+                document_xml = archive.read(document_info)
+            root = ET.fromstring(document_xml)
+            content = "\n".join(
+                "".join(node.itertext()).strip()
+                for node in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p")
+            )
+        elif suffix in {"json", "yaml", "yml", "md", "markdown", "txt"}:
+            content = raw.decode("utf-8-sig")
+        else:
+            raise ValueError("Choose an OpenAPI/Swagger, Postman, Markdown, TXT, PDF, or DOCX file.")
+        if len(content.encode("utf-8")) > 5_000_000:
+            raise ValueError("Extracted document content exceeds the 5 MB import limit.")
+        selected_format = format_hint
+        if selected_format == "auto" and suffix in {"yaml", "yml"}:
+            selected_format = "openapi"
+        result = parse_contract_document(
+            content=content,
+            source_name=filename,
+            format_hint=selected_format,
+            base_url=base_url,
+        )
+    except (ValueError, UnicodeDecodeError, zipfile.BadZipFile, KeyError, ET.ParseError) as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read API documentation: {exc}") from exc
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="PDF upload requires pypdf. Reinstall backend dependencies.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not extract endpoints with the configured LLM: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read API documentation: {exc}") from exc
+    if not result.get("endpoints"):
+        raise HTTPException(status_code=422, detail="The document did not contain any API endpoints.")
+    return result
+
+
+@app.post("/api/v1/auth/refresh")
+def auth_refresh(request: AuthRefreshRequest) -> dict:
+    """Rotate a valid refresh token and return a fresh access/refresh pair."""
+    if not request.refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token is required.")
+    new_refresh = new_refresh_token()
+    expiry = refresh_expiry()
+    username = database.rotate_refresh_token(
+        refresh_token_hash(request.refresh_token),
+        refresh_token_hash(new_refresh),
+        expiry,
+        int(time.time()),
+    )
+    if not username:
+        raise HTTPException(status_code=401, detail="Refresh token is invalid, expired, or already used.")
+    access, access_expiry = create_access_token(username)
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TTL_SECONDS,
+        "access_expires_at": access_expiry,
+        "refresh_token": new_refresh,
+        "refresh_expires_at": expiry,
+        "username": username,
+    }
+
+
+@app.post("/api/v1/auth/logout")
+def auth_logout(request: AuthRefreshRequest) -> dict:
+    """Revoke the presented refresh credential."""
+    if request.refresh_token:
+        database.revoke_refresh_token(refresh_token_hash(request.refresh_token))
+    return {"logged_out": True}
+
+
+@app.get("/api/v1/auth/me")
+def auth_me(request: Request) -> dict:
+    """Return the identity authenticated by the access-token middleware."""
+    username = getattr(request.state, "auth_username", None)
+    if not username:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return {"username": username}
 
 
 @app.get("/health")

@@ -401,15 +401,19 @@ export default function RevisionDialog({
               onChange={(event) => setLabel(event.target.value)}
             />
           </Field>
-          <Field label="Release notes">
+          <Field
+            label="New requirement changes"
+            tooltip="Describe changed behavior, new rules, and release context. Previous generation requirements are carried forward separately and remain read-only."
+          >
             <Textarea
               rows={3}
               value={notes}
-              aria-label="Release notes"
+              aria-label="New requirement changes"
+              placeholder="What changed in this release?"
               onChange={(event) => setNotes(event.target.value)}
             />
           </Field>
-          <Field label="Chat thread context">
+          <Field label="Chat thread context" tooltip="Optionally include the selected project conversation as additional context for this revision.">
             <Select
               value={threadId}
               aria-label="Chat thread context"
@@ -424,7 +428,7 @@ export default function RevisionDialog({
               ))}
             </Select>
           </Field>
-          <Field label="Knowledge coverage">
+          <Field label="Knowledge coverage" tooltip="Changed knowledge emphasizes recent approved updates; full knowledge includes all relevant saved context.">
             <Select
               value={coverage}
               aria-label="Knowledge coverage"

@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/primitives';
 import { useProject } from '@/context/ProjectContext';
 import { api } from '@/lib/api';
-import { formatTimestamp, prettyPayload } from '@/lib/format';
+import { formatTimestamp } from '@/lib/format';
 
 /** The two history streams the backend records. */
 type Stream = 'generation' | 'knowledge';
@@ -220,37 +220,11 @@ export default function ActivityPage() {
             </button>
           ))}
         </div>
-
-        <Select
-          value={String(pageSize)}
-          aria-label="Page size"
-          className="h-7 w-20 text-[10.5px]"
-          onChange={(event) => {
-            setPageSize(Number(event.target.value));
-            setOffset(0);
-          }}
-        >
-          {[10, 25, 50, 100].map((size) => (
-            <option key={size} value={size}>{String(size)}</option>
-          ))}
-        </Select>
-
-        <span className="ml-auto flex items-center gap-1">
-          <Button small disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - pageSize))}>
-            Previous
-          </Button>
-          <span className="px-1 font-mono text-[10px] text-text-mute">
-            {'Page ' + String(page) + ' of ' + String(pages)}
-          </span>
-          <Button small disabled={offset + pageSize >= total || loading} onClick={() => setOffset(offset + pageSize)}>
-            Next
-          </Button>
-        </span>
       </div>
 
       {error ? <div className="mb-3"><Notice tone="bad">{error}</Notice></div> : null}
 
-      <Card className="divide-y divide-line-soft p-0">
+      <Card className="overflow-hidden p-0">
         {loading ? <div className="p-3"><Spinner label="Loading activity" /></div> : null}
 
         {!loading && rows.length === 0 ? (
@@ -259,7 +233,20 @@ export default function ActivityPage() {
           </div>
         ) : null}
 
-        {!loading && rows.map((row) => {
+        {!loading && rows.length > 0 ? (
+          <div className="aa-scroll overflow-x-auto">
+          <table className="w-full min-w-[44rem] border-collapse text-left">
+            <thead className="border-b border-line bg-panel-alt text-[9.5px] font-bold uppercase tracking-[0.08em] text-text-mute">
+              <tr>
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Activity</th>
+                <th className="px-3 py-2">State</th>
+                <th className="px-3 py-2">Source / context</th>
+                <th className="px-3 py-2 text-right">Details</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line-soft">
+            {rows.map((row) => {
           const created = String(row.created_at || '');
           const status = stream === 'generation' ? generationLabel(row).status : knowledgeStatus(row);
           const label = stream === 'generation' ? generationLabel(row).label : knowledgeLabel(row);
@@ -268,29 +255,42 @@ export default function ActivityPage() {
             : String(row.source_name || '');
 
           return (
-            <button
-              key={String(row.id)}
-              type="button"
-              onClick={() => void openDetail(row)}
-              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-hover"
-            >
-              <span className="font-mono text-[9.5px] text-text-mute">
-                {formatTimestamp(created)}
-              </span>
-              <Badge tone={status === 'failed' ? 'bad' : status === 'superseded' ? 'warn' : 'ok'}>
-                {status}
-              </Badge>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-text">{label}</span>
-              {source ? (
-                <span className="hidden shrink-0 truncate text-[9.5px] text-text-mute sm:block">
-                  {source}
-                </span>
-              ) : null}
-              <span className="shrink-0 text-[9.5px] font-semibold text-accent">View</span>
-            </button>
+            <tr key={String(row.id)} className="group hover:bg-hover">
+              <td className="whitespace-nowrap px-3 py-2 font-mono text-[10px] text-text-mute">{formatTimestamp(created)}</td>
+              <td className="max-w-[23rem] px-3 py-2 text-[11.5px] font-semibold text-text">
+                <span className="block truncate">{label}</span>
+                <span className="block truncate text-[9.5px] font-normal text-text-mute">{stream === 'generation' ? 'Generation action' : String(row.event_type || 'Knowledge event').replace(/_/g, ' ')}</span>
+              </td>
+              <td className="px-3 py-2"><Badge tone={status === 'failed' ? 'bad' : status === 'superseded' ? 'warn' : 'ok'}>{status}</Badge></td>
+              <td className="max-w-[16rem] truncate px-3 py-2 text-[10.5px] text-text-dim">{source || 'Project context'}</td>
+              <td className="px-3 py-2 text-right"><button type="button" onClick={(event) => { event.stopPropagation(); void openDetail(row); }} className="rounded px-2 py-1 text-[10.5px] font-semibold text-accent hover:bg-accent-soft">View details</button></td>
+            </tr>
           );
-        })}
+            })}
+            </tbody>
+          </table>
+          </div>
+        ) : null}
       </Card>
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-line-soft pt-2">
+        <label className="flex items-center gap-2 text-[10.5px] font-semibold text-text-mute">
+          Per page
+          <Select
+            value={String(pageSize)}
+            aria-label="Activity records per page"
+            className="h-8 w-[4.5rem] text-[10.5px]"
+            onChange={(event) => { setPageSize(Number(event.target.value)); setOffset(0); }}
+          >
+            {[10, 25, 50, 100].map((size) => <option key={size} value={size}>{String(size)}</option>)}
+          </Select>
+        </label>
+        <span className="ml-auto flex items-center gap-1">
+          <span className="mr-1 font-mono text-[10px] text-text-mute">{'Page ' + String(page) + ' of ' + String(pages)}</span>
+          <Button small disabled={offset === 0 || loading} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</Button>
+          <Button small disabled={offset + pageSize >= total || loading} onClick={() => setOffset(offset + pageSize)}>Next</Button>
+        </span>
+      </div>
 
       <Modal open={Boolean(detail)} title="Activity detail" onClose={() => setDetail(null)} wide>
         {detail ? <ActivityDetail stream={stream} row={detail} /> : null}

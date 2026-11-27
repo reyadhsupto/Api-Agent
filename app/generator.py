@@ -19,6 +19,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 
 logger = logging.getLogger(__name__)
+LLM_HTTP_TIMEOUT_SECONDS = 20 * 60
 
 
 _STRICT_JSON_INSTRUCTION = (
@@ -560,7 +561,7 @@ def _openai_compatible_call(
             "temperature": 0.3,
             "max_tokens": max_tokens,
         },
-        timeout=600,
+        timeout=LLM_HTTP_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     payload = response.json()
@@ -598,7 +599,7 @@ def _call_provider(provider: str, messages: list[dict], api_key: str, max_tokens
             "https://api.cohere.ai/v1/generate",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"model": model, "prompt": prompt, "temperature": 0.3, "max_tokens": max_tokens},
-            timeout=600,
+            timeout=LLM_HTTP_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
@@ -609,7 +610,7 @@ def _call_provider(provider: str, messages: list[dict], api_key: str, max_tokens
             f"https://api-inference.huggingface.co/models/{model}",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"inputs": prompt, "parameters": {"max_new_tokens": max_tokens, "temperature": 0.3}},
-            timeout=600,
+            timeout=LLM_HTTP_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
@@ -751,7 +752,7 @@ def _openrouter_call(prompt: str, api_key: str, url: str) -> str:
         "temperature": 0.3,
         "max_tokens": _output_token_limit(),
     }
-    response = requests.post(url, headers=headers, json=payload, timeout=600)
+    response = requests.post(url, headers=headers, json=payload, timeout=LLM_HTTP_TIMEOUT_SECONDS)
     response.raise_for_status()
     print(response.json()["choices"][0]["message"]["content"])
     return response.json()["choices"][0]["message"]["content"]

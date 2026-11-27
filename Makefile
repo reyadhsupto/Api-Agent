@@ -65,11 +65,11 @@ install-web:
 setup: install install-frontend install-web
 	@echo "Setup complete. Copy .env.example to .env and add LLM keys."
 
-run-local-backend: venv
-	@$(VENV_PYTHON) -m uvicorn app.main:app --reload --port 8000
+run-local-backend:
+	@python -m uvicorn app.main:app --reload --port 8000
 
-run-local-frontend: venv
-	@$(VENV_PYTHON) -m streamlit run frontend/app.py --server.port 8501
+run-local-frontend:
+	@python -m streamlit run frontend/app.py --server.port 8501
 
 run-local-web:
 	@cd web && npm run dev

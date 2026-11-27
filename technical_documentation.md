@@ -423,7 +423,15 @@ and Next at the boundaries.
 
 ## Next.js frontend and shared design tokens
 
-`web/` is a Next.js App Router and TypeScript application served on port 3000. It reads the same FastAPI routes as the Streamlit UI, through a same-origin rewrite: `web/next.config.ts` forwards `/api/:path*` to `BACKEND_URL` (default `http://localhost:8000`), so the browser never needs a backend origin and there is no CORS preflight.
+`web/` is a Next.js App Router and TypeScript application served on port 3000. Browser requests use same-origin Route Handlers under `web/src/app/api/`; the catch-all handler forwards `/api/v1/*` to `BACKEND_URL` (default `http://localhost:8000`) after reading the HttpOnly access-token cookie. The browser never sees bearer credentials or contacts the backend origin directly.
+
+### Local authentication
+
+Set `AUTH_USERNAME`, `AUTH_PASSWORD`, and `AUTH_JWT_SECRET` for the single local account. The signing secret must contain at least 32 characters; generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. FastAPI middleware protects versioned API routes, with health and the login, refresh, and logout endpoints public. Access JWTs expire after 15 minutes. Refresh credentials are opaque, stored as hashes in `auth_refresh_tokens`, expire after 30 days, and rotate transactionally on use. Next.js stores both values in HttpOnly, SameSite=Lax cookies and retries one API call after refresh. Streamlit holds the same token pair only in server-side session state. This local single-account mechanism is not a user/role system.
+
+### Contract file import
+
+`POST /api/v1/contracts/upload-preview` accepts multipart uploads up to 5 MB for OpenAPI/Swagger JSON or YAML, Postman JSON, Markdown, TXT, PDF, and DOCX. PDF text is extracted with `pypdf`; DOCX paragraphs are read from the document XML. The resulting text is passed through the existing contract parser, so prose extraction can use the configured LLM. The API Workspace displays the parsed endpoint list for review and imports only selected endpoints into the chosen collection. The ordinary preview route continues to accept pasted content and public URLs. File parsing limits extracted text to 5 MB and PDFs to 500 pages.
 
 ### One token source
 
@@ -434,7 +442,7 @@ The colour contract lives in `frontend/styles/tokens.py` (`DARK`, `LIGHT`, `RADI
 - both blocks declare the same names, asserted by the generator
 - `@theme inline` maps the names onto Tailwind v4 `--color-*`, `--radius-*`, `--shadow-*`, and `--font-*`
 
-Dark is the shipped default: `<html class="dark">` is server rendered and a small pre-paint script removes the class only when `localStorage['aa-theme']` is `light`. The sidebar Appearance control toggles the class, writes the preference, and repaints without a reload.
+Light is the first-visit default. A pre-paint script applies the saved `localStorage['aa-theme']` choice before rendering, and the sidebar Appearance control persists changes across reloads.
 
 Run `make gen-tokens` after changing a token; `make check-tokens` fails when the generated stylesheet is stale.
 
@@ -448,10 +456,12 @@ Run `make gen-tokens` after changing a token; `make check-tokens` fails when the
 
 | Route | Status |
 | --- | --- |
-| `/workspace/api` | Migrated: draft tabs, collections, cURL parse, params/headers/body/auth editors, checks, response inspector, Postman export |
+| `/workspace/api` | Migrated: draft tabs, collections, cURL parse, params/headers/body/auth editors, checks, response inspector, Postman export, and reviewed imports from OpenAPI/Swagger, Postman, Markdown, TXT, PDF, DOCX, or public documentation URLs |
 | `/workspace/test-cases` | Migrated: Single/General/Flow generation, examples and briefs context, clarifications, coverage, revision and collection filters, per-case assertions, history and flaky signal, batch run, CSV export |
 | `/workspace/chat` | Migrated: thread rail with search and Active/All/Archived scope, per-thread rename, archive/restore and confirmed delete, transcript with role, local time, ordinal, 900-character collapse and a cited-source disclosure per message, day dividers, and a composer that is a flex sibling of the transcript so it never scrolls |
 | `/workspace/activity` | Migrated: Generation and Knowledge extraction streams, page sizes 10/25/50/100, real total from COUNT(*), Previous and Next with boundary disabling, offset clamping when history shrinks, and a detail dialog that fetches the full knowledge event |
+
+The activity list uses a compact table with details in a drill-down dialog and a bottom pager. Revision generation labels its run-specific input **New requirement changes**. Knowledge Hub pages are listed together with scope type, version count, latest version/date, and page actions. Request-exclusion lists are height-bounded and scroll independently. Markdown rendering uses GFM, including horizontally scrollable tables. Menus close on outside clicks and Escape. The workspace rail collapses to icon navigation, includes a Home link, and persists its width. Important form fields expose concise native or labelled tooltips.
 
 ### Serving the production build
 

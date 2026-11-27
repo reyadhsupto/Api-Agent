@@ -86,6 +86,14 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     void refreshProjects();
   }, [refreshProjects]);
 
+  // The provider remains mounted while LoginPage transitions into the workspace.
+  // Reload project data after sign-in if its initial unauthenticated fetch failed.
+  useEffect(() => {
+    const onAuthenticated = () => { void refreshProjects(); };
+    window.addEventListener('aa-authenticated', onAuthenticated);
+    return () => window.removeEventListener('aa-authenticated', onAuthenticated);
+  }, [refreshProjects]);
+
   useEffect(() => {
     if (selectedProjectId) window.localStorage.setItem(STORAGE_KEY, selectedProjectId);
     void refreshProject();
