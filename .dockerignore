@@ -6,3 +6,7 @@ __pycache__
 *.pyc
 .pytest_cache
 tests
+web/node_modules
+web/.next
+web/tsconfig.tsbuildinfo
+web/npm-debug.log*

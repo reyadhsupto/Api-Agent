@@ -36,17 +36,15 @@ services:
       timeout: 5s
       retries: 10
 
-  frontend:
+  web:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: web/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      API_BACKEND_URL: http://backend:8000
+      BACKEND_URL: http://backend:8000
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-8501}:8501"
+      - "127.0.0.1:3000:3000"
     depends_on:
       backend:
         condition: service_healthy

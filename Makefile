@@ -1,108 +1,125 @@
 # Makefile for Api-Agent
-# Use the project virtual environment consistently, even when it is not activated.
 
-VENV_PYTHON := .venv/bin/python
+VENV := .venv
+VENV_PYTHON := $(VENV)/bin/python
 PIP := $(VENV_PYTHON) -m pip
 
-.PHONY: help install install-frontend setup run-backend run-frontend run-local-backend run-local-frontend docker-up docker-up-build docker-down docker-db-up docker-db-reset docker-logs test clean venv
+.PHONY: help venv install install-web setup \
+        run-backend run-local-backend run-local-web serve-web \
+        test gen-tokens gen-types check-tokens check-types check-web build-web \
+        docker-up docker-up-build docker-down docker-db-up docker-db-reset docker-logs \
+        clean-cache clean
 
-help: ## Show available make commands
+help:
 	@echo "Api-Agent - Make Commands"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make setup          Create venv and install all dependencies (backend + frontend)"
-	@echo "  make install        Install backend dependencies only"
-	@echo "  make install-frontend Install frontend dependencies only"
+	@echo "  make setup            Create venv and install backend and web deps"
+	@echo "  make install          Install backend dependencies"
+	@echo "  make install-web      Install Next.js dependencies"
 	@echo ""
 	@echo "Run:"
-	@echo "  make run-local-backend  Start backend locally on port 8000"
-	@echo "  make run-local-frontend Start frontend locally on port 8501"
-	@echo "  make docker-up          Start the Docker stack using existing images"
-	@echo "  make docker-up-build    Rebuild images and start the Docker stack"
-	@echo "  make docker-db-up       Run only PostgreSQL for local app development"
-	@echo "  make docker-db-reset    Delete this Compose project's PostgreSQL data and recreate the stack"
-	@echo "  make docker-down        Stop Docker Compose services"
-	@echo "  make docker-logs        Follow Docker Compose logs"
+	@echo "  make run-local-backend  FastAPI on port 8000"
+	@echo "  make run-local-web      Next.js on port 3000"
+	@echo "  make docker-db-up       PostgreSQL only, for local app processes"
+	@echo "  make docker-up          Start postgres, backend, and Next.js web"
+	@echo "  make docker-up-build    Rebuild images and start the stack"
+	@echo "  make docker-down        Stop services and keep PostgreSQL data"
+	@echo "  make docker-logs        Follow service logs"
 	@echo ""
-	@echo "Test:"
-	@echo "  make test           Run unit tests with pytest"
+	@echo "Generate and check:"
+	@echo "  make gen-tokens       web/src/app/tokens.css from design/tokens.py"
+	@echo "  make gen-types        web/openapi.json and web/src/types/api.generated.ts"
+	@echo "  make check-tokens     Fail when tokens.css is stale"
+	@echo "  make check-types      Fail when the OpenAPI snapshot or types are stale"
+	@echo "  make check-web        Typecheck and lint the Next.js frontend"
+	@echo "  make build-web        Production build of the Next.js frontend"
+	@echo "  make serve-web        Serve the production build on PORT (default 3000)"
 	@echo ""
-	@echo "Clean:"
-	@echo "  make clean-cache     Clean cache files only (keeps venv)"
+	@echo "Tests and cleanup:"
+	@echo "  make test             Backend tests"
+	@echo "  make clean-cache      Caches only (keeps venv and node_modules)"
+	@echo "  make clean            Remove venv and caches"
 
-venv: ## Create Python virtual environment
-	@if [ ! -d ".venv" ]; then \
+venv:
+	@if [ ! -d "$(VENV)" ]; then \
 		echo "Creating virtual environment..."; \
-		python3 -m venv .venv; \
+		python3 -m venv $(VENV); \
 	else \
 		echo "Virtual environment already exists."; \
 	fi
 
-install: venv ## Install backend dependencies
-	@echo "Installing backend dependencies..."
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
+install: venv
+	@$(PIP) install --upgrade pip
+	@$(PIP) install -r requirements.txt
 
-install-frontend: venv ## Install frontend dependencies
-	@echo "Installing frontend dependencies..."
-	$(PIP) install -r frontend/requirements.txt
+install-web:
+	@cd web && npm install
 
-setup: install install-frontend ## Full setup: create venv and install all dependencies
-	@echo "Setup complete."
-	@echo ""
-	@echo "Next steps:"
-	@echo "  1. Copy .env.example to .env and add your LLM API keys"
-	@echo "  2. Run: make docker-db-up"
-	@echo "  3. Run make run-local-backend and make run-local-frontend in separate terminals"
-	@echo "  4. Open http://localhost:8501"
+setup: install install-web
+	@echo "Setup complete. Copy .env.example to .env and add LLM keys."
 
-run-backend: run-local-backend ## Backward-compatible alias for local backend
+run-local-backend:
+	@python -m uvicorn app.main:app --reload --port 8000
 
-run-frontend: run-local-frontend ## Backward-compatible alias for local frontend
+run-local-web:
+	@cd web && npm run dev
 
-run-local-backend: ## Start FastAPI backend locally on port 8000
-	@echo "Starting FastAPI backend on http://localhost:8000"
-	uvicorn app.main:app --reload --port 8000
+run-backend: run-local-backend
 
-run-local-frontend: ## Start Streamlit frontend locally on port 8501
-	@echo "Starting Streamlit frontend on http://localhost:8501"
-	streamlit run frontend/app.py --server.port 8501
+test: venv
+	@$(PIP) install pytest 2>/dev/null
+	@$(VENV_PYTHON) -m pytest tests/ -v
 
-docker-up: ## Start the Docker stack using existing images
-	docker compose up --no-build -d
+gen-tokens: venv
+	@$(VENV_PYTHON) scripts/gen_tokens.py
 
-docker-up-build: ## Rebuild images and start PostgreSQL, backend, and frontend
-	docker compose up --build -d
+gen-types: venv
+	@$(VENV_PYTHON) scripts/gen_types.py
 
-docker-db-up: ## Run PostgreSQL only for locally run app processes
-	docker compose up -d postgres
+check-tokens: venv
+	@$(VENV_PYTHON) scripts/gen_tokens.py --check
 
-docker-db-reset: ## Destructively reset this Compose project's PostgreSQL volume (requires typing RESET)
-	bash scripts/reset_local_database.sh
+check-types: venv
+	@$(VENV_PYTHON) scripts/gen_types.py --check
 
-docker-down: ## Stop Docker Compose services and retain PostgreSQL data
-	docker compose down
+check-web:
+	@cd web && ./node_modules/.bin/tsc --noEmit
+	@cd web && npm run lint
 
-docker-logs: ## Follow Docker Compose service logs
-	docker compose logs -f
+build-web:
+	@cd web && npm run build
 
-test: venv ## Run unit tests
-	@echo "Running unit tests..."
-	$(PIP) install pytest 2>/dev/null
-	$(VENV_PYTHON) -m pytest tests/ -v
+docker-up:
+	@docker compose up --no-build -d
 
-clean-cache: ## Clean cache files only (keeps venv and dependencies)
-	@echo "Cleaning cache files..."
-	rm -rf __pycache__
-	rm -rf app/__pycache__
-	rm -rf tests/__pycache__
-	rm -rf frontend/__pycache__
-	rm -rf .pytest_cache
-	rm -rf .ruff_cache
-	rm -rf .mypy_cache
-	rm -rf *.egg-info
-	rm -rf build
-	rm -rf dist
-	find . -name "*.pyc" -delete
-	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
+docker-up-build:
+	@docker compose up --build -d
+
+docker-db-up:
+	@docker compose up -d postgres
+
+docker-db-reset:
+	@bash scripts/reset_local_database.sh
+
+docker-down:
+	@docker compose down
+
+docker-logs:
+	@docker compose logs -f
+
+clean-cache:
+	@rm -rf __pycache__ app/__pycache__ design/__pycache__ tests/__pycache__
+	@rm -rf .pytest_cache .ruff_cache .mypy_cache *.egg-info build dist
+	@find . -name "*.pyc" -delete
+	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
 	@echo "Cache clean complete."
+
+clean:
+	@rm -rf $(VENV) node_modules web/node_modules
+	@$(MAKE) clean-cache
+
+serve-web: build-web ## Serve the production build on PORT (default 3000)
+	@cd web && mkdir -p .next/standalone/.next && rm -rf .next/standalone/.next/static && cp -R .next/static .next/standalone/.next/static
+	@cd web && if [ -d public ]; then rm -rf .next/standalone/public && cp -R public .next/standalone/public; fi
+	@cd web && BACKEND_URL=$${BACKEND_URL:-http://127.0.0.1:8000} PORT=$${PORT:-3000} HOSTNAME=127.0.0.1 node .next/standalone/server.js

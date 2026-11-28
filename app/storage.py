@@ -53,6 +53,10 @@ class Database:
     def initialize(self) -> None:
         """Create normalized tables and indexes if this is a fresh database."""
         with self.session() as connection:
+            # Serialise DDL across processes and test workers. Two concurrent
+            # initialisations otherwise take ALTER TABLE locks in different
+            # orders and PostgreSQL reports a deadlock.
+            _execute(connection, "SELECT pg_advisory_xact_lock(?)", (866421,))
             schema = """
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
@@ -297,6 +301,15 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    expires_at BIGINT NOT NULL,
+                    revoked BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_auth_refresh_expiry
+                    ON auth_refresh_tokens(expires_at);
                 """
             for statement in schema.split(";"):
                 if statement.strip():
@@ -2366,3 +2379,37 @@ class Database:
                 (project_id,),
             ).fetchone()
         return int(row["total"]) if row else 0
+
+    def store_refresh_token(self, token_hash: str, username: str, expires_at: int) -> None:
+        """Persist only the hash of a refresh credential."""
+        with self.session() as connection:
+            _execute(connection,
+                "INSERT INTO auth_refresh_tokens(token_hash,username,expires_at,revoked,created_at) VALUES(?,?,?,FALSE,?)",
+                (token_hash, username, int(expires_at), _now()),
+            )
+
+    def rotate_refresh_token(
+        self, old_hash: str, new_hash: str, expires_at: int, now: int,
+    ) -> str | None:
+        """Atomically consume one valid token and store its replacement."""
+        with self.session() as connection:
+            row = _execute(connection,
+                "UPDATE auth_refresh_tokens SET revoked=TRUE WHERE token_hash=? AND revoked=FALSE AND expires_at>? RETURNING username",
+                (old_hash, int(now)),
+            ).fetchone()
+            if not row:
+                return None
+            username = str(row["username"])
+            _execute(connection,
+                "INSERT INTO auth_refresh_tokens(token_hash,username,expires_at,revoked,created_at) VALUES(?,?,?,FALSE,?)",
+                (new_hash, username, int(expires_at), _now()),
+            )
+            return username
+
+    def revoke_refresh_token(self, token_hash: str) -> None:
+        """Revoke a refresh credential if it is present."""
+        with self.session() as connection:
+            _execute(connection,
+                "UPDATE auth_refresh_tokens SET revoked=TRUE WHERE token_hash=? AND revoked=FALSE",
+                (token_hash,),
+            )

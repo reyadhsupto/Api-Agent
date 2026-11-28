@@ -1,0 +1,5468 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Api-Agent",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "summary": "Auth Login",
+        "description": "Authenticate the configured local user and issue a token pair.",
+        "operationId": "auth_login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Auth Login Api V1 Auth Login Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/contracts/upload-preview": {
+      "post": {
+        "summary": "Preview Contract Upload",
+        "description": "Extract supported API documentation files and return endpoint previews.",
+        "operationId": "preview_contract_upload_api_v1_contracts_upload_preview_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_contract_upload_api_v1_contracts_upload_preview_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Preview Contract Upload Api V1 Contracts Upload Preview Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "summary": "Auth Refresh",
+        "description": "Rotate a valid refresh token and return a fresh access/refresh pair.",
+        "operationId": "auth_refresh_api_v1_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Auth Refresh Api V1 Auth Refresh Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "summary": "Auth Logout",
+        "description": "Revoke the presented refresh credential.",
+        "operationId": "auth_logout_api_v1_auth_logout_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Auth Logout Api V1 Auth Logout Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "summary": "Auth Me",
+        "description": "Return the identity authenticated by the access-token middleware.",
+        "operationId": "auth_me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Auth Me Api V1 Auth Me Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Return application health status.\n\nReturns:\n    dict: {\"status\": \"ok\"}",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "summary": "Api Health",
+        "description": "Return liveness under the versioned prefix used by the web proxy.\n\nThe Next.js rewrite and any future gateway only forward ``/api/*``, so the\nunprefixed route above is not reachable from the browser. This alias answers\nthe same question without touching the database.\n\nReturns:\n    dict: {\"status\": \"ok\"}",
+        "operationId": "api_health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Api Health Api V1 Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/generation-activity": {
+      "get": {
+        "summary": "Get Generation Activity",
+        "description": "List recent generation actions for a project with pagination.\n\nArgs:\n    project_id (str): The project ID.\n    limit (int): Maximum number of records to return (default 100).\n    offset (int): Number of records to skip (default 0).\n\nReturns:\n    dict: {\"activities\": list, \"total\": int, \"limit\": int, \"offset\": int}",
+        "operationId": "get_generation_activity_api_v1_projects__project_id__generation_activity_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Generation Activity Api V1 Projects  Project Id  Generation Activity Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/generation-activity/{activity_id}/dismiss-clarifications": {
+      "post": {
+        "summary": "Dismiss Generation Clarifications",
+        "description": "Hide pending clarification prompts while retaining the generation activity.",
+        "operationId": "dismiss_generation_clarifications_api_v1_projects__project_id__generation_activity__activity_id__dismiss_clarifications_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "activity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Activity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Dismiss Generation Clarifications Api V1 Projects  Project Id  Generation Activity  Activity Id  Dismiss Clarifications Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/chat/threads": {
+      "get": {
+        "summary": "List Project Chat Threads",
+        "description": "List persistent conversations belonging to one project.",
+        "operationId": "list_project_chat_threads_api_v1_projects__project_id__chat_threads_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Project Chat Threads Api V1 Projects  Project Id  Chat Threads Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Project Chat Thread",
+        "description": "Create a chat thread; its model field is informational, not a provider pin.",
+        "operationId": "create_project_chat_thread_api_v1_projects__project_id__chat_threads_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectChatThreadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Project Chat Thread Api V1 Projects  Project Id  Chat Threads Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/chat/threads/{thread_id}": {
+      "get": {
+        "summary": "Get Project Chat Thread",
+        "description": "Load a project-owned thread and its complete persisted transcript.",
+        "operationId": "get_project_chat_thread_api_v1_projects__project_id__chat_threads__thread_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Project Chat Thread Api V1 Projects  Project Id  Chat Threads  Thread Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Project Chat Thread",
+        "description": "Update supported metadata on a project-owned chat thread.",
+        "operationId": "update_project_chat_thread_api_v1_projects__project_id__chat_threads__thread_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectChatThreadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Project Chat Thread Api V1 Projects  Project Id  Chat Threads  Thread Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Project Chat Thread",
+        "description": "Permanently delete a project-owned chat thread and its transcript.",
+        "operationId": "delete_project_chat_thread_api_v1_projects__project_id__chat_threads__thread_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Chat Thread Api V1 Projects  Project Id  Chat Threads  Thread Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/chat/threads/{thread_id}/messages": {
+      "post": {
+        "summary": "Send Project Chat Message",
+        "description": "Retrieve bounded context, call the configured provider order, and persist the exchange.",
+        "operationId": "send_project_chat_message_api_v1_projects__project_id__chat_threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectChatMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Send Project Chat Message Api V1 Projects  Project Id  Chat Threads  Thread Id  Messages Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/pages": {
+      "get": {
+        "summary": "List Knowledge Hub Pages",
+        "description": "List versioned project, feature, and microservice knowledge pages.",
+        "operationId": "list_knowledge_hub_pages_api_v1_projects__project_id__knowledge_hub_pages_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Knowledge Hub Pages Api V1 Projects  Project Id  Knowledge Hub Pages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Knowledge Hub Page",
+        "description": "Create a named feature or microservice knowledge page.",
+        "operationId": "create_knowledge_hub_page_api_v1_projects__project_id__knowledge_hub_pages_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBriefScopeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Knowledge Hub Page Api V1 Projects  Project Id  Knowledge Hub Pages Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/features/{feature_id}/microservices": {
+      "put": {
+        "summary": "Set Knowledge Hub Feature Microservices",
+        "description": "Replace a feature's reusable microservice associations.",
+        "operationId": "set_knowledge_hub_feature_microservices_api_v1_projects__project_id__knowledge_hub_features__feature_id__microservices_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "feature_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Feature Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeHubFeatureServicesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Knowledge Hub Feature Microservices Api V1 Projects  Project Id  Knowledge Hub Features  Feature Id  Microservices Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions": {
+      "get": {
+        "summary": "List Knowledge Hub Page Versions",
+        "description": "Return immutable versions for one Hub page.",
+        "operationId": "list_knowledge_hub_page_versions_api_v1_projects__project_id__knowledge_hub_pages__scope_id__versions_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Knowledge Hub Page Versions Api V1 Projects  Project Id  Knowledge Hub Pages  Scope Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/versions/{version_id}/restore": {
+      "post": {
+        "summary": "Restore Knowledge Hub Page Version",
+        "description": "Restore old Hub content as a new immutable version.",
+        "operationId": "restore_knowledge_hub_page_version_api_v1_projects__project_id__knowledge_hub_pages__scope_id__versions__version_id__restore_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Restore Knowledge Hub Page Version Api V1 Projects  Project Id  Knowledge Hub Pages  Scope Id  Versions  Version Id  Restore Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/pages/{scope_id}/compare": {
+      "post": {
+        "summary": "Compare Knowledge Hub Versions",
+        "description": "Compare two immutable versions of a project-owned Hub page by section.",
+        "operationId": "compare_knowledge_hub_versions_api_v1_projects__project_id__knowledge_hub_pages__scope_id__compare_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeHubVersionCompareRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Compare Knowledge Hub Versions Api V1 Projects  Project Id  Knowledge Hub Pages  Scope Id  Compare Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/chat/threads/{thread_id}/knowledge-draft": {
+      "post": {
+        "summary": "Draft Knowledge Hub Update",
+        "description": "Prepare separate unsaved page drafts and section-level diffs from chat.",
+        "operationId": "draft_knowledge_hub_update_api_v1_projects__project_id__chat_threads__thread_id__knowledge_draft_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeHubDraftRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Draft Knowledge Hub Update Api V1 Projects  Project Id  Chat Threads  Thread Id  Knowledge Draft Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge-hub/updates": {
+      "post": {
+        "summary": "Save Knowledge Hub Update",
+        "description": "Save all user-reviewed page versions in one database transaction.",
+        "operationId": "save_knowledge_hub_update_api_v1_projects__project_id__knowledge_hub_updates_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KnowledgeHubUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Knowledge Hub Update Api V1 Projects  Project Id  Knowledge Hub Updates Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/brief-scopes": {
+      "get": {
+        "summary": "List Project Brief Scopes",
+        "description": "List the current project overview and all feature or microservice briefs.",
+        "operationId": "list_project_brief_scopes_api_v1_projects__project_id__brief_scopes_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Project Brief Scopes Api V1 Projects  Project Id  Brief Scopes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Project Brief Scope",
+        "description": "Create a named feature or microservice scope for durable briefs.",
+        "operationId": "create_project_brief_scope_api_v1_projects__project_id__brief_scopes_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBriefScopeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Project Brief Scope Api V1 Projects  Project Id  Brief Scopes Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions": {
+      "get": {
+        "summary": "List Project Brief Versions",
+        "description": "List immutable versions of one brief scope owned by the project.",
+        "operationId": "list_project_brief_versions_api_v1_projects__project_id__brief_scopes__scope_id__versions_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Project Brief Versions Api V1 Projects  Project Id  Brief Scopes  Scope Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Save Project Brief Version",
+        "description": "Append a user-reviewed brief version and make it the current version.",
+        "operationId": "save_project_brief_version_api_v1_projects__project_id__brief_scopes__scope_id__versions_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBriefVersionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Project Brief Version Api V1 Projects  Project Id  Brief Scopes  Scope Id  Versions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/brief-scopes/{scope_id}/versions/{version_id}/restore": {
+      "post": {
+        "summary": "Restore Project Brief Version",
+        "description": "Set an existing immutable version as current without deleting newer versions.",
+        "operationId": "restore_project_brief_version_api_v1_projects__project_id__brief_scopes__scope_id__versions__version_id__restore_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Scope Id"
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Restore Project Brief Version Api V1 Projects  Project Id  Brief Scopes  Scope Id  Versions  Version Id  Restore Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/chat/threads/{thread_id}/brief-draft": {
+      "post": {
+        "summary": "Draft Project Brief",
+        "description": "Draft an unsaved consolidated brief from one project chat thread.",
+        "operationId": "draft_project_brief_api_v1_projects__project_id__chat_threads__thread_id__brief_draft_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectBriefDraftRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Draft Project Brief Api V1 Projects  Project Id  Chat Threads  Thread Id  Brief Draft Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge": {
+      "get": {
+        "summary": "List Project Knowledge",
+        "description": "List the project's knowledge hub entries.",
+        "operationId": "list_project_knowledge_api_v1_projects__project_id__knowledge_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "include_retired",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Retired"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Project Knowledge Api V1 Projects  Project Id  Knowledge Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Save Project Knowledge",
+        "description": "Create or update a project-scoped knowledge entry.",
+        "operationId": "save_project_knowledge_api_v1_projects__project_id__knowledge_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectKnowledgeEntryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Project Knowledge Api V1 Projects  Project Id  Knowledge Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/ledger": {
+      "get": {
+        "summary": "Get Project Knowledge Ledger",
+        "description": "Return source-tracked facts and review queues for a project.",
+        "operationId": "get_project_knowledge_ledger_api_v1_projects__project_id__knowledge_ledger_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Project Knowledge Ledger Api V1 Projects  Project Id  Knowledge Ledger Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/activity": {
+      "get": {
+        "summary": "List Project Knowledge Activity",
+        "description": "Return a paged summary of extraction and Knowledge Hub events.",
+        "operationId": "list_project_knowledge_activity_api_v1_projects__project_id__knowledge_activity_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response List Project Knowledge Activity Api V1 Projects  Project Id  Knowledge Activity Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/activity/{event_id}": {
+      "get": {
+        "summary": "Get Project Knowledge Activity",
+        "description": "Return the full prompt, response, and payload for one knowledge event.",
+        "operationId": "get_project_knowledge_activity_api_v1_projects__project_id__knowledge_activity__event_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Project Knowledge Activity Api V1 Projects  Project Id  Knowledge Activity  Event Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/submissions": {
+      "post": {
+        "summary": "Submit Project Knowledge",
+        "description": "Save user-provided text, extract proposals, and leave them pending review.",
+        "operationId": "submit_project_knowledge_api_v1_projects__project_id__knowledge_submissions_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectKnowledgeSubmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Submit Project Knowledge Api V1 Projects  Project Id  Knowledge Submissions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/submissions/{submission_id}/retry": {
+      "post": {
+        "summary": "Retry Project Knowledge Extraction",
+        "description": "Retry extraction from the retained original source text.",
+        "operationId": "retry_project_knowledge_extraction_api_v1_projects__project_id__knowledge_submissions__submission_id__retry_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Retry Project Knowledge Extraction Api V1 Projects  Project Id  Knowledge Submissions  Submission Id  Retry Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/submissions/{submission_id}/review": {
+      "post": {
+        "summary": "Review Project Knowledge",
+        "description": "Apply per-proposal approve/reject decisions and return the refreshed ledger.",
+        "operationId": "review_project_knowledge_api_v1_projects__project_id__knowledge_submissions__submission_id__review_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectKnowledgeReviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Review Project Knowledge Api V1 Projects  Project Id  Knowledge Submissions  Submission Id  Review Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/questions/{question_id}/answer": {
+      "post": {
+        "summary": "Answer Project Knowledge Question",
+        "description": "Treat an answer as a new source submission; it resolves only after review.",
+        "operationId": "answer_project_knowledge_question_api_v1_projects__project_id__knowledge_questions__question_id__answer_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Question Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectKnowledgeQuestionAnswerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Answer Project Knowledge Question Api V1 Projects  Project Id  Knowledge Questions  Question Id  Answer Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/knowledge/questions/{question_id}/dismiss": {
+      "post": {
+        "summary": "Dismiss Project Knowledge Question",
+        "description": "Dismiss an unresolved project question while retaining its audit event.",
+        "operationId": "dismiss_project_knowledge_question_api_v1_projects__project_id__knowledge_questions__question_id__dismiss_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Question Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Dismiss Project Knowledge Question Api V1 Projects  Project Id  Knowledge Questions  Question Id  Dismiss Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-case-revisions": {
+      "post": {
+        "summary": "Create Test Case Revision",
+        "description": "Generate and persist a complete new release suite without changing its baseline.",
+        "operationId": "create_test_case_revision_api_v1_projects__project_id__test_case_revisions_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestCaseRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Test Case Revision Api V1 Projects  Project Id  Test Case Revisions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/generation-activity/follow-up": {
+      "post": {
+        "summary": "Follow Up Generation",
+        "description": "Create linked refined cases and supersede prior output only after success.",
+        "operationId": "follow_up_generation_api_v1_projects__project_id__generation_activity_follow_up_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationFollowUpRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Follow Up Generation Api V1 Projects  Project Id  Generation Activity Follow Up Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/{test_case_id}/history": {
+      "get": {
+        "summary": "Get Test Case History",
+        "description": "Return project-scoped execution history for one saved test case.",
+        "operationId": "get_test_case_history_api_v1_projects__project_id__test_cases__test_case_id__history_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "test_case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Test Case Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Test Case History Api V1 Projects  Project Id  Test Cases  Test Case Id  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "summary": "List Projects",
+        "description": "List all projects.\n\nReturns:\n    list: List of project summaries.",
+        "operationId": "list_projects_api_v1_projects_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {},
+                  "type": "array",
+                  "title": "Response List Projects Api V1 Projects Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Project",
+        "description": "Create a new project with a name.\n\nArgs:\n    request (dict): Contains 'name' and optional 'description'.\n\nReturns:\n    dict: The created project.",
+        "operationId": "create_project_api_v1_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Create Project Api V1 Projects Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}": {
+      "get": {
+        "summary": "Get Project",
+        "description": "Get a project by ID.\n\nArgs:\n    project_id (str): The project ID.\n\nReturns:\n    dict: The project with all endpoints, test cases, and executions.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "get_project_api_v1_projects__project_id__get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Project Api V1 Projects  Project Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Project",
+        "description": "Update a project's name or description.\n\nArgs:\n    project_id (str): The project ID.\n    request (dict): Fields to update (name, description).\n\nReturns:\n    dict: The updated project.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "update_project_api_v1_projects__project_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Project Api V1 Projects  Project Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Project",
+        "description": "Delete a project and all its data.\n\nArgs:\n    project_id (str): The project ID.\n\nReturns:\n    dict: Confirmation message.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "delete_project_api_v1_projects__project_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Api V1 Projects  Project Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/generation-order": {
+      "put": {
+        "summary": "Update Project Generation Order",
+        "description": "Persist the order used to build flows from saved project requests.\n\nArgs:\n    project_id (str): Project whose generation order is being changed.\n    request (dict): Payload containing the ordered `request_ids` list.\n\nReturns:\n    dict: Canonical generation-order request IDs.\n\nRaises:\n    HTTPException: If the project is missing or IDs are invalid.",
+        "operationId": "update_project_generation_order_api_v1_projects__project_id__generation_order_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Project Generation Order Api V1 Projects  Project Id  Generation Order Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-runs": {
+      "get": {
+        "summary": "List Project Test Runs",
+        "description": "List reusable test runs scoped to one project.\n\nArgs:\n    project_id (str): Project whose saved runs should be returned.\n\nReturns:\n    list: Saved run records with ordered case IDs.\n\nRaises:\n    HTTPException: If the project does not exist.",
+        "operationId": "list_project_test_runs_api_v1_projects__project_id__test_runs_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {},
+                  "title": "Response List Project Test Runs Api V1 Projects  Project Id  Test Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Project Test Run",
+        "description": "Create a named reusable selection of project test cases.\n\nArgs:\n    project_id (str): Project that owns the new run.\n    request (dict): Name and ordered list of case IDs.\n\nReturns:\n    dict: Saved run record.",
+        "operationId": "create_project_test_run_api_v1_projects__project_id__test_runs_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Project Test Run Api V1 Projects  Project Id  Test Runs Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-runs/{run_id}": {
+      "put": {
+        "summary": "Update Project Test Run",
+        "description": "Update a named run's name or ordered case membership.\n\nArgs:\n    project_id (str): Project that owns the run.\n    run_id (str): Stable run ID to update.\n    request (dict): Replacement name and ordered list of case IDs.\n\nReturns:\n    dict: Updated run record.",
+        "operationId": "update_project_test_run_api_v1_projects__project_id__test_runs__run_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Project Test Run Api V1 Projects  Project Id  Test Runs  Run Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Project Test Run",
+        "description": "Delete a reusable run without deleting its referenced test cases.\n\nArgs:\n    project_id (str): Project that owns the run.\n    run_id (str): Stable run ID to delete.\n\nReturns:\n    dict: Deletion confirmation.",
+        "operationId": "delete_project_test_run_api_v1_projects__project_id__test_runs__run_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Project Test Run Api V1 Projects  Project Id  Test Runs  Run Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/current": {
+      "get": {
+        "summary": "Get Current Project",
+        "description": "Get the currently selected project.\n\nReturns:\n    dict: The current project.\n\nRaises:\n    HTTPException: If no project selected.",
+        "operationId": "get_current_project_api_v1_projects_current_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Current Project Api V1 Projects Current Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/curl/parse": {
+      "post": {
+        "summary": "Parse Curl Endpoint",
+        "description": "Parse a raw cURL command into structured request components.\n\nArgs:\n    request (CurlParseRequest): Contains the raw cURL string.\n\nReturns:\n    dict: Parsed request components.",
+        "operationId": "parse_curl_endpoint_api_v1_curl_parse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurlParseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Parse Curl Endpoint Api V1 Curl Parse Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/collections": {
+      "get": {
+        "summary": "List Collections",
+        "description": "List a project's saved request collections.",
+        "operationId": "list_collections_api_v1_projects__project_id__collections_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {},
+                  "title": "Response List Collections Api V1 Projects  Project Id  Collections Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Collection",
+        "description": "Create a named request collection in a project.",
+        "operationId": "create_collection_api_v1_projects__project_id__collections_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Collection Api V1 Projects  Project Id  Collections Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/collections/{collection_id}": {
+      "put": {
+        "summary": "Update Collection",
+        "description": "Rename a saved collection.",
+        "operationId": "update_collection_api_v1_projects__project_id__collections__collection_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Collection Api V1 Projects  Project Id  Collections  Collection Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Collection",
+        "description": "Delete a collection and its requests.",
+        "operationId": "delete_collection_api_v1_projects__project_id__collections__collection_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Collection Api V1 Projects  Project Id  Collections  Collection Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/collections/{collection_id}/requests": {
+      "post": {
+        "summary": "Save Collection Request",
+        "description": "Save or update a request in a collection.",
+        "operationId": "save_collection_request_api_v1_projects__project_id__collections__collection_id__requests_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Collection Request Api V1 Projects  Project Id  Collections  Collection Id  Requests Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/collections/{collection_id}/requests/{request_id}": {
+      "put": {
+        "summary": "Update Collection Request",
+        "description": "Update a saved request without changing its collection membership.",
+        "operationId": "update_collection_request_api_v1_projects__project_id__collections__collection_id__requests__request_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Collection Request Api V1 Projects  Project Id  Collections  Collection Id  Requests  Request Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Collection Request",
+        "description": "Delete a saved request from its collection.",
+        "operationId": "delete_collection_request_api_v1_projects__project_id__collections__collection_id__requests__request_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Collection Request Api V1 Projects  Project Id  Collections  Collection Id  Requests  Request Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/collections/{collection_id}/export": {
+      "get": {
+        "summary": "Export Collection",
+        "description": "Export a saved collection in Postman Collection v2.1 format.",
+        "operationId": "export_collection_api_v1_projects__project_id__collections__collection_id__export_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Export Collection Api V1 Projects  Project Id  Collections  Collection Id  Export Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/contracts/preview": {
+      "post": {
+        "summary": "Preview Contract",
+        "description": "Parse a contract or prose document and return every endpoint for review.\n\nArgs:\n    request (ContractPreviewRequest): Source content/URL and parser options.\n\nReturns:\n    dict: Endpoint previews, source metadata, dependencies, and candidates.\n\nRaises:\n    HTTPException: If source fetching, parsing, or LLM extraction fails.",
+        "operationId": "preview_contract_api_v1_contracts_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Preview Contract Api V1 Contracts Preview Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/contracts/import": {
+      "post": {
+        "summary": "Import Contract Requests",
+        "description": "Persist reviewed endpoints and return their dependency candidates.\n\nArgs:\n    project_id (str): Project receiving the imported requests.\n    request (ContractImportRequest): Destination collection and reviewed endpoints.\n\nReturns:\n    dict: Imported requests, dependency evidence, and candidate paths.\n\nRaises:\n    HTTPException: If the project/collection is missing or data is invalid.",
+        "operationId": "import_contract_requests_api_v1_projects__project_id__contracts_import_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractImportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Import Contract Requests Api V1 Projects  Project Id  Contracts Import Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/contracts/flow-candidates": {
+      "post": {
+        "summary": "Discover Contract Flows",
+        "description": "Rebuild graph edges and ranked paths from saved contract metadata.\n\nArgs:\n    project_id (str): Project owning the imported contract operations.\n    request (FlowDiscoveryRequest): Source ID to analyze.\n\nReturns:\n    dict: Dependency evidence and ranked candidate flows.\n\nRaises:\n    HTTPException: If the project or imported source is missing.",
+        "operationId": "discover_contract_flows_api_v1_projects__project_id__contracts_flow_candidates_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowDiscoveryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Discover Contract Flows Api V1 Projects  Project Id  Contracts Flow Candidates Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/contracts/generate-flows": {
+      "post": {
+        "summary": "Generate Contract Flows",
+        "description": "Generate flow cases from selected dependency paths and persist them.\n\nArgs:\n    project_id (str): Project where generated cases are stored.\n    request (DiscoveredFlowGenerateRequest): Selected candidates and business context.\n\nReturns:\n    list: Validated, persisted flow test cases.\n\nRaises:\n    HTTPException: If candidates are invalid or LLM output cannot form valid flows.",
+        "operationId": "generate_contract_flows_api_v1_projects__project_id__contracts_generate_flows_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoveredFlowGenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Generate Contract Flows Api V1 Projects  Project Id  Contracts Generate Flows Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/http/send": {
+      "post": {
+        "summary": "Send Api Request",
+        "description": "Send one ad hoc HTTP request and return response details without persistence.",
+        "operationId": "send_api_request_api_v1_http_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Send Api Request Api V1 Http Send Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/http/execute-assertions": {
+      "post": {
+        "summary": "Execute Http Assertions",
+        "description": "Send one temporary HTTP request and evaluate supplied assertions.\n\nArgs:\n    request (HttpAssertionExecutionRequest): HTTP request and selected assertions.\n\nReturns:\n    dict: Response metadata and per-assertion plus aggregate results.\n\nRaises:\n    HTTPException: If the URL or method is invalid, or the request fails.",
+        "operationId": "execute_http_assertions_api_v1_http_execute_assertions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HttpAssertionExecutionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Execute Http Assertions Api V1 Http Execute Assertions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/endpoints": {
+      "post": {
+        "summary": "Add Endpoint",
+        "description": "Add an endpoint to a project.\n\nArgs:\n    project_id (str): The project ID.\n    request (dict): The endpoint data.\n\nReturns:\n    dict: The added endpoint.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "add_endpoint_api_v1_projects__project_id__endpoints_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Add Endpoint Api V1 Projects  Project Id  Endpoints Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace Endpoints",
+        "description": "Replace the project's endpoints with the supplied ordered collection.",
+        "operationId": "replace_endpoints_api_v1_projects__project_id__endpoints_put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Replace Endpoints Api V1 Projects  Project Id  Endpoints Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/endpoints/{endpoint_id}": {
+      "put": {
+        "summary": "Update Endpoint",
+        "description": "Update an endpoint in a project.\n\nArgs:\n    project_id (str): The project ID.\n    endpoint_id (str): The endpoint ID.\n    request (dict): Fields to update.\n\nReturns:\n    dict: The updated endpoint.\n\nRaises:\n    HTTPException: If project or endpoint not found.",
+        "operationId": "update_endpoint_api_v1_projects__project_id__endpoints__endpoint_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Endpoint Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Endpoint Api V1 Projects  Project Id  Endpoints  Endpoint Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Endpoint",
+        "description": "Delete an endpoint from a project.\n\nArgs:\n    project_id (str): The project ID.\n    endpoint_id (str): The endpoint ID.\n\nReturns:\n    dict: Confirmation message.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "delete_endpoint_api_v1_projects__project_id__endpoints__endpoint_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Endpoint Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Endpoint Api V1 Projects  Project Id  Endpoints  Endpoint Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/test-cases/generate": {
+      "post": {
+        "summary": "Generate Test Cases Endpoint",
+        "description": "Generate test cases for one or more request definitions in one LLM action.\n\nArgs:\n    request (TestCaseGenerateRequest): One legacy request or a request batch.\n\nReturns:\n    list: Generated test cases.",
+        "operationId": "generate_test_cases_endpoint_api_v1_test_cases_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestCaseGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Generate Test Cases Endpoint Api V1 Test Cases Generate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/test-cases/generate-flow": {
+      "post": {
+        "summary": "Generate Flow Test Cases Standalone",
+        "description": "Generate flow test cases without a project (standalone mode).\n\nArgs:\n    request (dict): Contains 'endpoints' (list of endpoint dicts) and optional 'business_requirements'.\n\nReturns:\n    list: Generated flow test cases.",
+        "operationId": "generate_flow_test_cases_standalone_api_v1_test_cases_generate_flow_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Generate Flow Test Cases Standalone Api V1 Test Cases Generate Flow Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/generate-flow": {
+      "post": {
+        "summary": "Generate Flow Test Cases Project",
+        "description": "Generate flow test cases for a project (sequence of endpoints).\n\nArgs:\n    project_id (str): The project ID.\n    request (dict): Contains endpoint_ids (ordered list), endpoints (full data), and optional business_requirements.\n\nReturns:\n    list: Generated flow test cases.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "generate_flow_test_cases_project_api_v1_projects__project_id__test_cases_generate_flow_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlowGenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Generate Flow Test Cases Project Api V1 Projects  Project Id  Test Cases Generate Flow Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/save": {
+      "post": {
+        "summary": "Save Test Cases",
+        "description": "Save generated test cases to a project.\n\nArgs:\n    project_id (str): The project ID.\n    request (dict): Contains 'test_cases' list.\n\nReturns:\n    dict: Confirmation with count.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "save_test_cases_api_v1_projects__project_id__test_cases_save_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Test Cases Api V1 Projects  Project Id  Test Cases Save Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/general-case-collections": {
+      "get": {
+        "summary": "List General Case Collections",
+        "description": "List project-scoped collections used by requirements-only scenarios.",
+        "operationId": "list_general_case_collections_api_v1_projects__project_id__general_case_collections_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List General Case Collections Api V1 Projects  Project Id  General Case Collections Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create General Case Collection",
+        "description": "Create a named General scenario collection before generating cases.",
+        "operationId": "create_general_case_collection_api_v1_projects__project_id__general_case_collections_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create General Case Collection Api V1 Projects  Project Id  General Case Collections Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases": {
+      "get": {
+        "summary": "Get Test Cases",
+        "description": "Get paginated test cases for a project.\n\nArgs:\n    project_id (str): The project ID.\n    limit (int): Maximum number of test cases to return (default 50).\n    offset (int): Number of test cases to skip (default 0).\n\nReturns:\n    dict: {\"test_cases\": list, \"total\": int, \"limit\": int, \"offset\": int}\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "get_test_cases_api_v1_projects__project_id__test_cases_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Test Cases Api V1 Projects  Project Id  Test Cases Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Clear Test Cases",
+        "description": "Clear saved test cases and their execution history from a project.",
+        "operationId": "clear_test_cases_api_v1_projects__project_id__test_cases_delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Clear Test Cases Api V1 Projects  Project Id  Test Cases Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/export": {
+      "get": {
+        "summary": "Export Test Cases",
+        "description": "Export test cases as CSV for a project.\n\nArgs:\n    project_id (str): The project ID.\n    limit (int): Maximum number of test cases to export (default 1000).\n    offset (int): Number of test cases to skip (default 0).\n    selected_case_ids (list[str] | None): Optional case IDs to export.\n\nReturns:\n    StreamingResponse: CSV containing test case definitions; flow steps are JSON in one cell.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "export_test_cases_api_v1_projects__project_id__test_cases_export_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1000,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "selected_case_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Selected Case Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/{test_case_id}": {
+      "delete": {
+        "summary": "Delete Test Case",
+        "description": "Delete a test case from a project.\n\nArgs:\n    project_id (str): The project ID.\n    test_case_id (str): The test case ID.\n\nReturns:\n    dict: Confirmation message.\n\nRaises:\n    HTTPException: If project not found.",
+        "operationId": "delete_test_case_api_v1_projects__project_id__test_cases__test_case_id__delete",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "test_case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Test Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Delete Test Case Api V1 Projects  Project Id  Test Cases  Test Case Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Test Case",
+        "description": "Update a test case in a project.\n\nArgs:\n    project_id (str): The project ID.\n    test_case_id (str): The test case ID.\n    request (dict): Fields to update.\n\nReturns:\n    dict: The updated test case.\n\nRaises:\n    HTTPException: If project or test case not found.",
+        "operationId": "update_test_case_api_v1_projects__project_id__test_cases__test_case_id__put",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "test_case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Test Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Test Case Api V1 Projects  Project Id  Test Cases  Test Case Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/test-cases/{test_case_id}/manual-result": {
+      "post": {
+        "summary": "Mark Manual Test Result",
+        "description": "Append a manual outcome and optional failure reason for a general case.",
+        "operationId": "mark_manual_test_result_api_v1_projects__project_id__test_cases__test_case_id__manual_result_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "test_case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Test Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualTestResultRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mark Manual Test Result Api V1 Projects  Project Id  Test Cases  Test Case Id  Manual Result Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/test-cases/execute": {
+      "post": {
+        "summary": "Execute Test Case Endpoint",
+        "description": "Execute a single test case and capture full request/response details.\n\nArgs:\n    request (dict): Contains test_case_id, project_id, and optional assertions.\n\nReturns:\n    dict: Execution result with assertion detail.\n\nRaises:\n    HTTPException: If test case or project not found.",
+        "operationId": "execute_test_case_endpoint_api_v1_test_cases_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Execute Test Case Endpoint Api V1 Test Cases Execute Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/memory/state": {
+      "get": {
+        "summary": "Memory State",
+        "description": "Return persisted state for UI hydration.\n\nReturns:\n    dict: projects, current_project_id.",
+        "operationId": "memory_state_api_v1_memory_state_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Memory State Api V1 Memory State Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiRequest": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": "GET"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "query_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Query Params"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "maximum": 120.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "default": 60
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "ApiRequest"
+      },
+      "AuthLoginRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "AuthLoginRequest",
+        "description": "Credentials for the configured local account."
+      },
+      "AuthRefreshRequest": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "AuthRefreshRequest",
+        "description": "Opaque refresh credential to rotate or revoke."
+      },
+      "Body_preview_contract_upload_api_v1_contracts_upload_preview_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "format_hint": {
+            "type": "string",
+            "title": "Format Hint",
+            "default": "auto"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_contract_upload_api_v1_contracts_upload_preview_post"
+      },
+      "ContractImportRequest": {
+        "properties": {
+          "collection_id": {
+            "type": "string",
+            "title": "Collection Id"
+          },
+          "endpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Endpoints"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection_id"
+        ],
+        "title": "ContractImportRequest",
+        "description": "Reviewed requests and destination collection for an atomic import.\n\nAttributes:\n    collection_id: Project collection receiving the requests.\n    endpoints: Reviewed endpoint records selected for persistence."
+      },
+      "ContractPreviewRequest": {
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "url"
+            ],
+            "title": "Source Type"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name",
+            "default": ""
+          },
+          "format_hint": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "openapi",
+              "postman",
+              "text"
+            ],
+            "title": "Format Hint",
+            "default": "auto"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "default": ""
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_type",
+          "content"
+        ],
+        "title": "ContractPreviewRequest",
+        "description": "Source text or anonymous URL used to preview imported API requests.\n\nAttributes:\n    source_type: Whether content is pasted/uploaded text or a public URL.\n    content: Source document, prose, or URL.\n    source_name: Friendly source label shown in review.\n    format_hint: Optional parser selection; auto-detect by default.\n    base_url: Optional override for relative operation URLs.\n    source_id: Existing source ID used to retain identity on re-preview."
+      },
+      "CurlParseRequest": {
+        "properties": {
+          "curl": {
+            "type": "string",
+            "title": "Curl"
+          }
+        },
+        "type": "object",
+        "required": [
+          "curl"
+        ],
+        "title": "CurlParseRequest"
+      },
+      "DiscoveredFlowGenerateRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Ids"
+          },
+          "business_requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Requirements"
+          },
+          "project_brief_scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Project Brief Scope Ids"
+          },
+          "project_chat_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Thread Id"
+          },
+          "knowledge_coverage": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "full"
+            ],
+            "title": "Knowledge Coverage",
+            "default": "changed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "DiscoveredFlowGenerateRequest",
+        "description": "Selected dependency paths and optional business context for LLM generation.\n\nAttributes:\n    source_id: Stable identifier shared by imported contract requests.\n    candidate_ids: Ranked dependency paths selected by the user.\n    business_requirements: Optional domain context for scenario generation."
+      },
+      "FlowDiscoveryRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "FlowDiscoveryRequest",
+        "description": "Source contract identifier used to recalculate dependency candidates.\n\nAttributes:\n    source_id: Stable identifier shared by imported contract requests."
+      },
+      "FlowGenerateRequest": {
+        "properties": {
+          "endpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Endpoints"
+          },
+          "endpoint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Endpoint Ids"
+          },
+          "business_requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Requirements"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "example_test_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Example Test Case Ids"
+          },
+          "scenario_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Count"
+          },
+          "project_chat_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Thread Id"
+          },
+          "project_chat_brief": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Brief"
+          },
+          "project_brief_scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Project Brief Scope Ids"
+          },
+          "knowledge_coverage": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "full"
+            ],
+            "title": "Knowledge Coverage",
+            "default": "changed"
+          }
+        },
+        "type": "object",
+        "title": "FlowGenerateRequest"
+      },
+      "GenerationFollowUpRequest": {
+        "properties": {
+          "source_activity_id": {
+            "type": "string",
+            "title": "Source Activity Id"
+          },
+          "answers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Answers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_activity_id"
+        ],
+        "title": "GenerationFollowUpRequest",
+        "description": "Answers to clarification questions from a prior generation activity."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HttpAssertionExecutionRequest": {
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/ApiRequest"
+          },
+          "assertions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Assertions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request"
+        ],
+        "title": "HttpAssertionExecutionRequest",
+        "description": "One temporary HTTP request and the assertions to evaluate on its response."
+      },
+      "KnowledgeHubDraftRequest": {
+        "properties": {
+          "scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Scope Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope_ids"
+        ],
+        "title": "KnowledgeHubDraftRequest",
+        "description": "Choose one or more Hub pages to update from a reviewed chat thread."
+      },
+      "KnowledgeHubFeatureServicesRequest": {
+        "properties": {
+          "microservice_scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Microservice Scope Ids"
+          }
+        },
+        "type": "object",
+        "title": "KnowledgeHubFeatureServicesRequest",
+        "description": "Set reusable microservice pages associated with one feature."
+      },
+      "KnowledgeHubPageVersionInput": {
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "title": "Scope Id"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope_id",
+          "content"
+        ],
+        "title": "KnowledgeHubPageVersionInput",
+        "description": "One user-reviewed page version in an atomic Hub update."
+      },
+      "KnowledgeHubUpdateRequest": {
+        "properties": {
+          "source_thread_id": {
+            "type": "string",
+            "title": "Source Thread Id"
+          },
+          "draft_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Event Id"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeHubPageVersionInput"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Pages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_thread_id",
+          "pages"
+        ],
+        "title": "KnowledgeHubUpdateRequest",
+        "description": "Save reviewed versions for several Hub pages as one operation."
+      },
+      "KnowledgeHubVersionCompareRequest": {
+        "properties": {
+          "from_version_id": {
+            "type": "string",
+            "title": "From Version Id"
+          },
+          "to_version_id": {
+            "type": "string",
+            "title": "To Version Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "from_version_id",
+          "to_version_id"
+        ],
+        "title": "KnowledgeHubVersionCompareRequest",
+        "description": "Choose two versions of one project page to compare."
+      },
+      "KnowledgeProposalDecision": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "assumed",
+              "needs-clarification"
+            ],
+            "title": "Status",
+            "default": "confirmed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "decision"
+        ],
+        "title": "KnowledgeProposalDecision",
+        "description": "Review decision for one proposed fact operation."
+      },
+      "ManualTestResultRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "failure_reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Failure Reason",
+            "default": ""
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ManualTestResultRequest",
+        "description": "A tester-recorded outcome for a requirements-only general case."
+      },
+      "ProjectBriefDraftRequest": {
+        "properties": {
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "create_scope_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "feature",
+                  "microservice"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Create Scope Type"
+          },
+          "create_scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Create Scope Name"
+          }
+        },
+        "type": "object",
+        "title": "ProjectBriefDraftRequest",
+        "description": "Request an unsaved brief draft from a project chat transcript."
+      },
+      "ProjectBriefScopeRequest": {
+        "properties": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "project",
+              "feature",
+              "microservice"
+            ],
+            "title": "Scope Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope_type",
+          "name"
+        ],
+        "title": "ProjectBriefScopeRequest",
+        "description": "Create a named project overview, feature, or microservice brief scope."
+      },
+      "ProjectBriefVersionRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "source_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Thread Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ProjectBriefVersionRequest",
+        "description": "Save an explicitly reviewed immutable version of a project brief."
+      },
+      "ProjectChatMessageRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ProjectChatMessageRequest",
+        "description": "A user message to send in a persistent project chat."
+      },
+      "ProjectChatThreadRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": "New project chat"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "feature_brief": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Brief"
+          },
+          "context_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Summary"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          }
+        },
+        "type": "object",
+        "title": "ProjectChatThreadRequest",
+        "description": "Create or edit a project chat thread."
+      },
+      "ProjectKnowledgeEntryRequest": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category",
+            "default": "Product knowledge"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name",
+            "default": "User authored"
+          },
+          "approved": {
+            "type": "boolean",
+            "title": "Approved",
+            "default": true
+          },
+          "retired": {
+            "type": "boolean",
+            "title": "Retired",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "ProjectKnowledgeEntryRequest",
+        "description": "Create or update a project-scoped knowledge entry."
+      },
+      "ProjectKnowledgeQuestionAnswerRequest": {
+        "properties": {
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "answer"
+        ],
+        "title": "ProjectKnowledgeQuestionAnswerRequest",
+        "description": "Submit an answer as a new source for an open knowledge question."
+      },
+      "ProjectKnowledgeReviewRequest": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/KnowledgeProposalDecision"
+            },
+            "type": "array",
+            "title": "Decisions"
+          }
+        },
+        "type": "object",
+        "title": "ProjectKnowledgeReviewRequest",
+        "description": "Apply explicit decisions to proposed fact operations."
+      },
+      "ProjectKnowledgeSubmissionRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name",
+            "default": "Pasted context"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "question_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ProjectKnowledgeSubmissionRequest",
+        "description": "User-authored text submitted for fact extraction and review."
+      },
+      "TestCaseGenerateRequest": {
+        "properties": {
+          "parsed_curl": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Curl"
+          },
+          "endpoints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Endpoints"
+          },
+          "business_requirements": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Requirements"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "source_endpoint_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Endpoint Id"
+          },
+          "example_test_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Example Test Case Ids"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "Single",
+              "General"
+            ],
+            "title": "Mode",
+            "default": "Single"
+          },
+          "case_collection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Collection Id"
+          },
+          "case_collection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Collection Name"
+          },
+          "project_chat_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Thread Id"
+          },
+          "project_chat_brief": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Brief"
+          },
+          "project_brief_scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Project Brief Scope Ids"
+          },
+          "knowledge_coverage": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "full"
+            ],
+            "title": "Knowledge Coverage",
+            "default": "changed"
+          }
+        },
+        "type": "object",
+        "title": "TestCaseGenerateRequest"
+      },
+      "TestCaseRevisionRequest": {
+        "properties": {
+          "source_activity_id": {
+            "type": "string",
+            "title": "Source Activity Id"
+          },
+          "baseline_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Baseline Case Ids"
+          },
+          "release_label": {
+            "type": "string",
+            "title": "Release Label"
+          },
+          "release_notes": {
+            "type": "string",
+            "title": "Release Notes",
+            "default": ""
+          },
+          "endpoint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Endpoint Ids"
+          },
+          "keep_unchanged_case_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keep Unchanged Case Ids"
+          },
+          "project_chat_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Thread Id"
+          },
+          "project_chat_brief": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Chat Brief"
+          },
+          "project_brief_scope_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Project Brief Scope Ids"
+          },
+          "knowledge_coverage": {
+            "type": "string",
+            "enum": [
+              "changed",
+              "full"
+            ],
+            "title": "Knowledge Coverage",
+            "default": "changed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_activity_id",
+          "release_label"
+        ],
+        "title": "TestCaseRevisionRequest",
+        "description": "Inputs for generating a complete new release revision from saved cases."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

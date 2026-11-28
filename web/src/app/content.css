@@ -1,0 +1,270 @@
+/*
+ * Content styles: rendered Markdown, unified diffs, skeletons, and dense rows.
+ *
+ * Everything here reads the palette tokens from tokens.css. No colour literal
+ * lives in this file, so both palettes come out correct without a second copy.
+ */
+
+/* ---------------------------------------------------------------- Markdown */
+
+.aa-md {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--aa-text);
+  overflow-wrap: anywhere;
+}
+
+.aa-md > :first-child { margin-top: 0; }
+.aa-md > :last-child { margin-bottom: 0; }
+
+.aa-md p { margin: 0 0 .6em; }
+
+.aa-md h1,
+.aa-md h2,
+.aa-md h3,
+.aa-md h4,
+.aa-md h5,
+.aa-md h6 {
+  margin: 1em 0 .45em;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  color: var(--aa-text);
+}
+
+.aa-md h1 { font-size: 16px; }
+.aa-md h2 { font-size: 14.5px; }
+.aa-md h3 { font-size: 13.5px; }
+.aa-md h4,
+.aa-md h5,
+.aa-md h6 { font-size: 12.5px; }
+
+.aa-md h1,
+.aa-md h2 {
+  padding-bottom: .25em;
+  border-bottom: 1px solid var(--aa-line-soft);
+}
+
+.aa-md ul,
+.aa-md ol {
+  margin: 0 0 .6em;
+  padding-left: 1.35em;
+}
+
+.aa-md ul { list-style: disc; }
+.aa-md ol { list-style: decimal; }
+.aa-md ul ul { list-style: circle; }
+
+.aa-md li { margin: .18em 0; }
+
+.aa-md li > p { margin: 0; }
+
+.aa-md li > ul,
+.aa-md li > ol { margin: .18em 0; }
+
+.aa-md input[type="checkbox"] {
+  margin-right: .4em;
+  accent-color: var(--aa-accent);
+}
+
+.aa-md a {
+  color: var(--aa-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.aa-md a:hover { color: var(--aa-accent-hover); }
+
+.aa-md strong { font-weight: 700; color: var(--aa-text); }
+.aa-md em { font-style: italic; }
+
+.aa-md code {
+  padding: .1em .34em;
+  border: 1px solid var(--aa-line-soft);
+  border-radius: var(--aa-radius-xs);
+  background: var(--aa-surface);
+  font-family: var(--aa-font-mono);
+  font-size: .92em;
+}
+
+.aa-md pre {
+  margin: 0 0 .7em;
+  padding: .7rem .8rem;
+  overflow-x: auto;
+  border: 1px solid var(--aa-code-border);
+  border-radius: var(--aa-radius-sm);
+  background: var(--aa-code-bg);
+  overscroll-behavior-x: contain;
+}
+
+.aa-md pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.aa-md blockquote {
+  margin: 0 0 .7em;
+  padding: .15em 0 .15em .8em;
+  border-left: 3px solid var(--aa-line-accent);
+  color: var(--aa-text-dim);
+}
+
+.aa-md hr {
+  margin: .9em 0;
+  border: 0;
+  border-top: 1px solid var(--aa-line);
+}
+
+.aa-md table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 11.5px;
+}
+
+.aa-md-scroll {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0 0 .7em;
+  border: 1px solid var(--aa-line);
+  border-radius: var(--aa-radius-sm);
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--aa-line-strong) transparent;
+}
+
+.aa-md th,
+.aa-md td {
+  min-width: 5.5rem;
+  max-width: 24rem;
+  padding: .45rem .6rem;
+  border: 1px solid var(--aa-line);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.aa-md th {
+  background: var(--aa-surface);
+  font-weight: 700;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--aa-line);
+}
+
+.aa-md tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--aa-line-soft) 5%, transparent);
+}
+
+.aa-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--aa-radius-sm);
+}
+
+/* -------------------------------------------------------------------- diff */
+
+.aa-diff {
+  margin: 0;
+  padding: .35rem 0;
+  overflow: auto;
+  background: var(--aa-code-bg);
+  font-family: var(--aa-font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.aa-diff-line {
+  display: flex;
+  gap: .45rem;
+  padding: 0 .55rem;
+  white-space: pre;
+}
+
+.aa-diff-gutter {
+  width: .6rem;
+  flex: 0 0 .6rem;
+  text-align: center;
+  color: var(--aa-text-mute);
+  user-select: none;
+}
+
+.aa-diff-text { min-width: 0; }
+
+.aa-diff-add {
+  background: color-mix(in srgb, var(--aa-ok) 15%, transparent);
+  box-shadow: inset 2px 0 0 var(--aa-ok);
+}
+
+.aa-diff-add .aa-diff-gutter { color: var(--aa-ok); }
+
+.aa-diff-del {
+  background: color-mix(in srgb, var(--aa-bad) 15%, transparent);
+  box-shadow: inset 2px 0 0 var(--aa-bad);
+}
+
+.aa-diff-del .aa-diff-gutter { color: var(--aa-bad); }
+
+.aa-diff-hunk {
+  background: color-mix(in srgb, var(--aa-info) 14%, transparent);
+  color: var(--aa-info);
+  font-weight: 600;
+}
+
+.aa-diff-meta {
+  color: var(--aa-text-mute);
+  opacity: .8;
+}
+
+/* --------------------------------------------------------------- skeletons */
+
+.aa-skel {
+  border-radius: var(--aa-radius-xs);
+  background:
+    linear-gradient(
+      90deg,
+      var(--aa-surface) 0%,
+      var(--aa-surface-hover) 50%,
+      var(--aa-surface) 100%
+    );
+  background-size: 200% 100%;
+  animation: aa-skel 1200ms ease-in-out infinite;
+}
+
+@keyframes aa-skel {
+  from { background-position: 180% 0; }
+  to { background-position: -20% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aa-skel { animation: none; }
+}
+
+/* ------------------------------------------------------------ dense rows */
+
+.aa-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+  padding: .35rem .6rem;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--aa-radius-xs);
+  transition: background-color var(--aa-fast) var(--aa-ease),
+    border-color var(--aa-fast) var(--aa-ease);
+}
+
+.aa-row:hover { background: var(--aa-hover); }
+
+.aa-row-selected {
+  background: var(--aa-accent-wash);
+  border-color: var(--aa-line-accent);
+}
