@@ -1,55 +1,35 @@
-# Api-Agent Web (Next.js)
+# Api-Agent Web
 
-The default frontend for Api-Agent. It talks to the FastAPI backend in `app/`
-and ships alongside the legacy Streamlit UI in `frontend/` during the migration.
+The only frontend for Api-Agent. It uses Next.js App Router, TypeScript, and Tailwind CSS, and communicates with the FastAPI backend through authenticated same-origin Route Handlers.
 
 ## Run locally
 
-Start the backend from the repository root:
+From the repository root, start PostgreSQL and the backend, then start the web app:
 
 ```bash
 make docker-db-up
 make run-local-backend
-```
-
-Then start this app:
-
-```bash
 make run-local-web
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
-
-## Backend proxy
-
-`next.config.ts` rewrites `/api/:path*` and `/health` to the FastAPI service.
-The target defaults to `http://localhost:8000` and is overridden with
-`BACKEND_URL`. The browser therefore only ever calls this Next.js origin.
+Open [http://localhost:3000](http://localhost:3000). The API proxy uses `BACKEND_URL`, defaulting to `http://localhost:8000`.
 
 ## Docker
-
-The image uses a multi-stage standalone build:
 
 ```bash
 make docker-up-build
 ```
 
-`docker-compose.yml` starts `postgres`, `backend`, `web` (port 3000), and the
-temporary `frontend-legacy` Streamlit service (port 8501).
+Compose starts PostgreSQL, FastAPI, and this Next.js app. Use `make docker-up` to start existing images and `make docker-down` to stop the stack.
 
 ## Workspace routes
 
-- `/` - backend connectivity check
-- `/workspace` - module picker
-- `/workspace/api` - request composer and response viewer
-- `/workspace/test-cases` - generation, saved list, execution, and manual outcomes
-- `/workspace/chat` - persisted conversations with a pinned composer
-- `/workspace/activity` - paged generation and Knowledge Extraction activity
+- `/` and `/workspace` - workspace home
+- `/workspace/api` - request composer, collections, imports, and dependency discovery
+- `/workspace/test-cases` - generation, revisions, saved cases, and execution
+- `/workspace/chat` - project conversations and Knowledge Hub
+- `/workspace/activity` - generation and Knowledge activity logs
 
-## Scripts
+## Commands
 
-- `npm run dev` - development server
-- `npm run build` - production build
-- `npm run start` - production server
-- `npm run lint` - ESLint
-
+From `web/`, `npm run dev`, `npm run build`, `npm run start`, and `npm run lint` provide the standard Next.js workflows. From the repository root, `make check-web` typechecks and lints, while `make build-web` creates the production build.

@@ -4,34 +4,31 @@ VENV := .venv
 VENV_PYTHON := $(VENV)/bin/python
 PIP := $(VENV_PYTHON) -m pip
 
-.PHONY: help venv install install-frontend install-web setup \
-        run-backend run-frontend run-local-backend run-local-frontend run-local-web serve-web \
+.PHONY: help venv install install-web setup \
+        run-backend run-local-backend run-local-web serve-web \
         test gen-tokens gen-types check-tokens check-types check-web build-web \
-        docker-up docker-up-build docker-down docker-legacy docker-db-up docker-db-reset docker-logs \
+        docker-up docker-up-build docker-down docker-db-up docker-db-reset docker-logs \
         clean-cache clean
 
 help:
 	@echo "Api-Agent - Make Commands"
 	@echo ""
 	@echo "Setup:"
-	@echo "  make setup            Create venv and install backend, frontend, and web deps"
+	@echo "  make setup            Create venv and install backend and web deps"
 	@echo "  make install          Install backend dependencies"
-	@echo "  make install-frontend Install legacy Streamlit dependencies"
 	@echo "  make install-web      Install Next.js dependencies"
 	@echo ""
 	@echo "Run:"
 	@echo "  make run-local-backend  FastAPI on port 8000"
 	@echo "  make run-local-web      Next.js on port 3000"
-	@echo "  make run-local-frontend Legacy Streamlit on port 8501"
 	@echo "  make docker-db-up       PostgreSQL only, for local app processes"
-	@echo "  make docker-up          New stack: postgres, backend, Next.js web"
-	@echo "  make docker-legacy      Add the legacy Streamlit UI on port 8501"
+	@echo "  make docker-up          Start postgres, backend, and Next.js web"
 	@echo "  make docker-up-build    Rebuild images and start the stack"
 	@echo "  make docker-down        Stop services and keep PostgreSQL data"
 	@echo "  make docker-logs        Follow service logs"
 	@echo ""
 	@echo "Generate and check:"
-	@echo "  make gen-tokens       web/src/app/tokens.css from frontend/styles/tokens.py"
+	@echo "  make gen-tokens       web/src/app/tokens.css from design/tokens.py"
 	@echo "  make gen-types        web/openapi.json and web/src/types/api.generated.ts"
 	@echo "  make check-tokens     Fail when tokens.css is stale"
 	@echo "  make check-types      Fail when the OpenAPI snapshot or types are stale"
@@ -56,26 +53,19 @@ install: venv
 	@$(PIP) install --upgrade pip
 	@$(PIP) install -r requirements.txt
 
-install-frontend: venv
-	@$(PIP) install -r frontend/requirements.txt
-
 install-web:
 	@cd web && npm install
 
-setup: install install-frontend install-web
+setup: install install-web
 	@echo "Setup complete. Copy .env.example to .env and add LLM keys."
 
 run-local-backend:
 	@python -m uvicorn app.main:app --reload --port 8000
 
-run-local-frontend:
-	@python -m streamlit run frontend/app.py --server.port 8501
-
 run-local-web:
 	@cd web && npm run dev
 
 run-backend: run-local-backend
-run-frontend: run-local-frontend
 
 test: venv
 	@$(PIP) install pytest 2>/dev/null
@@ -112,9 +102,6 @@ docker-db-up:
 docker-db-reset:
 	@bash scripts/reset_local_database.sh
 
-docker-legacy:
-	@docker compose --profile legacy up -d frontend-legacy
-
 docker-down:
 	@docker compose down
 
@@ -122,7 +109,7 @@ docker-logs:
 	@docker compose logs -f
 
 clean-cache:
-	@rm -rf __pycache__ app/__pycache__ tests/__pycache__ frontend/__pycache__
+	@rm -rf __pycache__ app/__pycache__ design/__pycache__ tests/__pycache__
 	@rm -rf .pytest_cache .ruff_cache .mypy_cache *.egg-info build dist
 	@find . -name "*.pyc" -delete
 	@find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null

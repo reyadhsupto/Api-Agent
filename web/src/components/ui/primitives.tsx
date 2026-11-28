@@ -30,6 +30,8 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   small?: boolean;
   /** Optional leading glyph. */
   icon?: IconName;
+  /** Show an animated indicator during a long-running action. */
+  loading?: boolean;
 }
 
 /**
@@ -38,10 +40,11 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
  * @param props - Tone, size, icon, and native button attributes.
  * @returns Button element.
  */
-export function Button({ tone = 'secondary', small = false, icon, className, children, ...rest }: ButtonProps) {
+export function Button({ tone = 'secondary', small = false, icon, loading = false, className, children, ...rest }: ButtonProps) {
   return (
     <button
       type="button"
+      aria-busy={loading || undefined}
       className={cx(
         'inline-flex select-none items-center justify-center gap-1.5 rounded-md font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45',
         small ? 'h-7 px-2 text-[11.5px]' : 'h-9 px-3 text-[12.5px]',
@@ -51,7 +54,15 @@ export function Button({ tone = 'secondary', small = false, icon, className, chi
       )}
       {...rest}
     >
-      {icon ? <Icon name={icon} size={small ? 13 : 15} /> : null}
+      {loading ? (
+        <span
+          aria-hidden="true"
+          className={cx(
+            'inline-block shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent',
+            small ? 'h-3 w-3' : 'h-3.5 w-3.5',
+          )}
+        />
+      ) : icon ? <Icon name={icon} size={small ? 13 : 15} /> : null}
       {children}
     </button>
   );

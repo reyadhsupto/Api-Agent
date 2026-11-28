@@ -2,6 +2,24 @@
 
 Api-Agent is a local workspace for building API requests, generating tests with an LLM, and running those tests against an API. Organize requests into project collections, import endpoints from API contracts, and build multi-step flows that pass values such as an authentication token between requests.
 
+[![Next.js](https://img.shields.io/badge/Next.js-16.4.6-black?logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.162.0-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
+## Tech stack
+
+| Area | Technology | Role |
+| --- | --- | --- |
+| Web application | Next.js App Router, React, TypeScript | Workspace UI, server-rendered routes, and authenticated same-origin API handlers |
+| Styling | Tailwind CSS 4 and shared design tokens | Responsive layouts and consistent light/dark themes |
+| Backend API | Python 3.11+, FastAPI, Pydantic | Project APIs, validation, authentication, and workflow orchestration |
+| Persistence | PostgreSQL 16, psycopg 3 | Projects, collections, requests, cases, knowledge, activity, and execution history |
+| HTTP execution | Python Requests | Sends API test requests and captures responses |
+| LLM providers | AMD Token Lab, OpenRouter, Groq, Cohere, Hugging Face | Configurable provider precedence and fallback for chat and test generation |
+| Local runtime | Docker Compose and Make | Runs PostgreSQL, FastAPI, and the Next.js web app locally |
+
 ## At a glance
 
 - **Compose and send requests:** Create temporary request tabs, edit methods, URLs, query parameters, headers, and bodies, or paste cURL into the URL field. Recognized cURL is parsed automatically after three seconds without typing.
@@ -20,11 +38,11 @@ Api-Agent is a local workspace for building API requests, generating tests with 
 - **Revise a release suite:** Start from a prior generation action, carry forward existing generated or manual cases, keep prior requirements as read-only context, add new requirement changes, and optionally select current endpoints from every collection. Choose **Keep unchanged** for cases to copy into the complete new suite without AI edits. A saved baseline can be revised without endpoint selection; full endpoint snapshots show added or modified request definitions. Each revision is saved separately.
 - **Track execution history:** Each case has a History view with the configuration snapshot used for every run. Flow history also groups outcomes by stable step ID. A case, flow, or step is marked flaky when at least three of its latest ten runs include both passes and failures or errors.
 - **Keep project data:** Projects, collections, saved requests, test cases, named runs, execution history, and generation activity are stored in PostgreSQL. Temporary playground tabs and unsaved edits remain in the frontend session.
-- **Modern frontend:** The default UI is a Next.js App Router application in `web/` with TypeScript, Tailwind CSS, and shared design tokens. The legacy Streamlit UI in `frontend/` remains available during the migration.
+- **Frontend:** The sole UI is a Next.js App Router application in `web/`, built with TypeScript, Tailwind CSS, and shared design tokens.
 
 The frontend is built with Next.js (App Router, TypeScript, Tailwind CSS), the API with FastAPI, and request execution uses Python `requests`. LLM providers include AMD Token Lab, OpenRouter, Groq, Cohere, and Hugging Face; the backend tries configured providers in `LLM_PROVIDER_ORDER` and records which provider/model answered.
 
-The Next.js and legacy Streamlit frontends share one locally configured account. FastAPI protects `/api/v1` routes with short-lived JWT access tokens and rotating refresh tokens; Next.js stores them in HttpOnly cookies and Streamlit stores them in its server-side session. Configure `AUTH_USERNAME`, `AUTH_PASSWORD`, and a random `AUTH_JWT_SECRET` of at least 32 characters in `.env` before starting the app. This is a single-account local sign-in, not multi-user account management.
+FastAPI protects `/api/v1` routes with short-lived JWT access tokens and rotating refresh tokens. Next.js stores them in HttpOnly cookies. Configure `AUTH_USERNAME`, `AUTH_PASSWORD`, and a random `AUTH_JWT_SECRET` of at least 32 characters in `.env` before starting the app. This is a single-account local sign-in, not multi-user account management.
 
 ## Typical workflow
 
@@ -48,6 +66,7 @@ For the full lifecycle from project chat to reviewed, versioned Knowledge Hub pa
 ### Requirements
 
 - Python 3.11 or newer
+- Node.js 20 or newer (unless using Docker for the web app)
 - Docker Desktop with Docker Compose, for PostgreSQL or the full Docker run
 - An API key for at least one supported LLM provider to generate test cases
 
@@ -88,14 +107,13 @@ Generate the signing key with `python -c "import secrets; print(secrets.token_ur
 
 ### Run locally
 
-Start PostgreSQL, activate the project virtual environment in the backend and Streamlit terminals, then start the services separately:
+Start PostgreSQL, activate your preferred Python environment, then start the services separately:
 
 ```bash
 make docker-db-up
 ```
 
 ```bash
-source .venv/bin/activate
 make run-local-backend
 ```
 
@@ -106,15 +124,6 @@ make run-local-web
 Open [http://localhost:3000](http://localhost:3000). FastAPI's interactive API documentation is at [http://localhost:8000/docs](http://localhost:8000/docs).
 
 The Next.js app proxies `/api/v1` through authenticated Route Handlers to FastAPI, so the browser only talks to one origin. Access and refresh JWT credentials remain in HttpOnly cookies, and expired access tokens renew automatically. Set `BACKEND_URL` if the backend is not on `http://localhost:8000`.
-
-The legacy Streamlit UI remains available during the migration:
-
-```bash
-source .venv/bin/activate
-make run-local-frontend
-```
-
-Open [http://localhost:8501](http://localhost:8501) for the Streamlit app.
 
 ### Run the full stack in Docker
 
@@ -127,7 +136,7 @@ Use `make docker-up` for subsequent starts with the built images; it skips image
 
 To permanently erase this Compose project's PostgreSQL data and start with the current schema, run `make docker-db-reset` in an interactive terminal and type `RESET` when prompted. This removes all saved projects and their requests, cases, run history, chat, Knowledge Hub pages, and generation activity. It rebuilds and starts the stack; backend initialization creates the tables and built-in Default Project with its project-wide page. It does not target a local process configured with `DATABASE_URL` or an external PostgreSQL volume. See the [full context and database guide](docs/persistent_context.md) for how context is stored and used.
 
-If a host port is already in use, set `POSTGRES_PORT`, `BACKEND_PORT`, or `FRONTEND_PORT` in `.env`. For local app processes, keep the port in `DATABASE_URL` aligned with `POSTGRES_PORT`.
+If a host port is already in use, set `POSTGRES_PORT` or `BACKEND_PORT` in `.env`. For local app processes, keep the port in `DATABASE_URL` aligned with `POSTGRES_PORT`.
 
 ## How to use the workspace
 
@@ -230,11 +239,11 @@ Variable mappings are scoped to one flow scenario. They pass a value from a prev
 - Query and header row **Send** toggles control outgoing request fields; these are separate from generation eligibility.
 - Projects, collections, saved requests, test cases, release revisions, execution history, generation activity, and generation order persist in PostgreSQL. Execution records retain the run's exact case/flow configuration snapshot.
 - Successful clarification refinements retain archived case payloads and histories while marking them inactive; their IDs are removed from saved test suites and they cannot be edited, used as generation examples, revised, or executed.
-- Playground drafts and their unsaved responses remain in Streamlit session state.
+- Playground drafts and unsaved responses remain in the browser session.
 - Saved request assertions are stored with the request. Generated case and flow-step assertions are stored with their test cases.
 - Existing endpoint records are migrated at startup into each project's **Imported Endpoints** collection. Existing SQLite data is not automatically migrated.
 - Five-second success and error toasts use green and red accents; API failures also retain detailed inline errors.
-- The app uses a single light theme with a pale canvas, white panels, and consistent contrast across requests, assertions, results, and tables.
+- The app supports light and dark themes, defaults to dark, and persists the selected theme across reloads.
 - Project Chat scrolls to each new assistant reply. Long messages open expanded by default and can be collapsed with the disclosure caret; the message-context label is hidden to save space.
 
 ## API overview
@@ -258,10 +267,9 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 
 | Command | Purpose |
 |---|---|
-| `make setup` | Create `.venv`, install backend and legacy frontend dependencies, and install Next.js dependencies |
+| `make setup` | Create `.venv`, install backend dependencies, and install Next.js dependencies |
 | `make run-local-backend` | Run FastAPI locally on port 8000 |
 | `make run-local-web` | Run Next.js locally on port 3000 |
-| `make run-local-frontend` | Run the legacy Streamlit UI locally on port 8501 |
 | `make docker-db-up` | Start PostgreSQL for local app processes |
 | `make docker-db-reset` | Delete this Compose project's PostgreSQL data after typing `RESET`, then rebuild and start the stack |
 | `make docker-up` | Start the full Compose stack without rebuilding images |
@@ -274,118 +282,61 @@ The backend is FastAPI. Visit `/docs` on the backend host for the interactive sc
 ### Project structure
 
 ```text
-.streamlit/
-  config.toml          Streamlit's native light theme and server settings
-app/
-  main.py              FastAPI routes and application setup
-  auth.py              Local account, JWT signing, and refresh token helpers
-  storage.py           PostgreSQL persistence and history
-  parser.py            cURL parsing
-  contracts.py         Contract import and dependency discovery
-  generator.py         LLM prompts, provider routing, and case generation
-  executor.py          HTTP and assertion execution
-  schemas.py           API request and response models
-web/
-  Dockerfile           Next.js image; standalone output
-  package.json         Next.js dependencies and scripts
-  next.config.ts       Standalone build and Turbopack configuration
-  src/
-    app/               App Router pages and layout
-      api/             Auth handlers and authenticated FastAPI proxy
-      login/           Single-account sign-in
-      workspace/
-        api/           API Workspace composer and response viewer
-        test-cases/    Generation list and execution detail
-        chat/          Project Chat thread rail and conversation
-        activity/      Generation and Knowledge activity logs
-    components/        Feature UI, auth gate, and shared layout/components
-    context/           Global project selection state
-    lib/               Typed fetch client, server-side auth, and domain helpers
-    types/             TypeScript contracts shared with FastAPI
-frontend/
-  app.py               Legacy Streamlit entry point
-  core.py              Shared frontend state, API clients, and helpers
-  request_controls.py  Custom URL and request-order components
-  views/
-    ...                Legacy Streamlit views
-  styles/              Design tokens and workspace styles
-docs/
-  persistent_context.md  Project Chat, Knowledge Hub, and generation workflow
-scripts/
-  reset_local_database.sh  Confirmed local Compose database reset
-tests/
-  ...                  API, persistence, execution, generation, and UI tests
-Dockerfile.backend       Backend container image
-Dockerfile.frontend      Legacy Streamlit image; includes Streamlit configuration
-docker-compose.yml       PostgreSQL, backend, Next.js, and legacy frontend services
-Makefile                 Local and Docker workflows
-README.md
-technical_documentation.md
-agent_context.md         Current implementation handoff notes
-agent_rules.md           Repository conventions
-requirement_document.md  Product requirements
+app/                    FastAPI routes, generation, execution, auth, and storage
+design/tokens.py         Shared light/dark theme tokens
+web/                    The only frontend: Next.js, TypeScript, and Tailwind
+  src/app/               Login, authenticated API proxy, and workspace routes
+  src/components/        Workspace, chat, activity, and shared UI components
+  src/context/           Project and theme state
+  src/lib/               Typed API client and domain helpers
+  src/types/             Frontend API contracts
+docs/                   Product and technical guides
+scripts/                Token/type generation and local database reset
+tests/                  Backend, API contract, persistence, and token checks
+Dockerfile.backend       FastAPI image
+docker-compose.yml       PostgreSQL, FastAPI, and Next.js services
+web/Dockerfile           Next.js standalone image
+Makefile                 Local development and Docker workflows
 ```
 
-See [technical_documentation.md](technical_documentation.md) for architecture, data models, mapping behavior, and implementation details. See [agent_rules.md](agent_rules.md) for repository coding and documentation conventions.
+See [technical_documentation.md](technical_documentation.md) for architecture and API details, [docs/persistent_context.md](docs/persistent_context.md) for chat and knowledge workflows, and [agent_rules.md](agent_rules.md) for repository conventions.
 
 ## Appearance
 
-Api-Agent starts in the light theme and remembers the user's selection across
-reloads. The Next.js sidebar has a persistent collapsible icon rail; the legacy
-Streamlit UI remains configured for its native light theme.
-
-## Workspace behaviour
-
-- The collection rail lists collections as cards joined to their requests by a
-  guide line; the open request carries an accent bar, and each row has a quiet
-  three-dot menu for rename, duplicate, export, and delete.
-- Project Chat has a conversation rail with search and an Active/Archived filter,
-  endpoint and Knowledge Hub sources, project/feature/microservice pages,
-  feature-service links, reviewed multi-page drafts, version diffs, and history.
-- Release revisions are created from a modal opened in Test Cases; the saved
-  project and generation history load when the modal opens, not on every rerun.
-- Generation Activity is paged (10, 25, 50, 100 rows) against a real record count.
-
-## Next.js frontend (migration target)
-
-`web/` is the Next.js frontend. It talks to FastAPI through same-origin Route
-Handlers that attach the server-held JWT, so browser code does not handle API
-credentials or need cross-origin access.
-
-```bash
-make install-web
-make docker-db-up
-source .venv/bin/activate
-make run-local-backend     # port 8000
-make run-local-web         # port 3000, separate terminal
-```
-
-Open `http://localhost:3000` and sign in with `AUTH_USERNAME` and
-`AUTH_PASSWORD`. The legacy Streamlit UI stays available on port 8501 through
-`make run-local-frontend` and uses the same configured account.
-
-### Appearance
-
-Black is the default workspace. The sidebar Appearance control switches to light and back without a reload, and remembers the choice in `localStorage`. Both palettes come from one generated stylesheet, `web/src/app/tokens.css`, which is rendered from `frontend/styles/tokens.py`:
+The Next.js workspace defaults to dark mode. Users can switch to light mode; the choice persists across reloads. Both palettes are generated from `design/tokens.py` into `web/src/app/tokens.css`:
 
 ```bash
 make gen-tokens      # regenerate tokens.css
 make check-tokens    # fail when it is stale
 ```
 
-### Generated API types
+## Workspace behaviour
+
+- API Workspace provides request editing, collection management, contract import, dependency discovery, and flow generation.
+- Test Cases supports independent Single cases, sequential Flows, requirements-only General scenarios, release revisions, execution history, flaky status, and CSV export.
+- Project Chat supports persistent threads and a versioned Knowledge Hub for project, feature, and microservice context.
+- Activity Logs show generation and Knowledge Hub activity, with prompts and raw model responses in detail views.
+- The sidebar is collapsible and includes persistent project selection and theme controls.
+
+## Next.js development
+
+The UI talks to FastAPI through authenticated same-origin Route Handlers. Browser code does not handle bearer credentials or call the backend origin directly.
+
+```bash
+make install-web
+make docker-db-up
+make run-local-backend     # port 8000; use your active Python environment
+make run-local-web         # port 3000, separate terminal
+```
+
+Open `http://localhost:3000` and sign in with `AUTH_USERNAME` and `AUTH_PASSWORD`. The Next.js API proxy forwards to `BACKEND_URL` (default `http://localhost:8000`).
 
 ```bash
 make gen-types       # refresh web/openapi.json and request interfaces
-make check-types     # fail on drift
-make check-web       # tsc and eslint
+make check-types     # fail on OpenAPI/type drift
+make check-web       # typecheck and lint
 make build-web       # production build
+make serve-web       # build and serve the standalone production app
 ```
 
-Only request bodies are generated: the FastAPI routes return plain dictionaries without `response_model`, so response shapes are hand written in `web/src/types/api.ts` and covered by `tests/test_api_contract.py`.
-
-### Migrated so far
-
-- API Workspace: draft tabs, collections, cURL parsing, params, headers, body, auth, checks, response inspector, Postman export.
-- Test Cases: Single, General, and Flow generation, examples, brief and thread context, clarifications, coverage, revision and collection filters, per-case assertions, history, flaky signal, batch run, CSV export.
-- Chat and Activity are status pages in `web/`; their full surfaces remain in the Streamlit UI until the next phase.
+FastAPI returns plain dictionaries for most endpoints, so response types are maintained in `web/src/types/api.ts`; API contract checks live in `tests/test_api_contract.py`.

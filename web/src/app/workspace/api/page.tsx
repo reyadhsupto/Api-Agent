@@ -52,6 +52,28 @@ interface Draft {
   busy: boolean;
 }
 
+/** One response-field to request-field dependency found in an imported contract. */
+interface ContractDependency {
+  from: string;
+  to: string;
+  cyclic?: boolean;
+  evidence: Array<{ response_field?: string; request_field?: string; field_name?: string }>;
+}
+
+/** One executable multi-request path from a contract dependency graph. */
+interface ContractFlowCandidate {
+  id: string;
+  endpoint_ids: string[];
+  dependency_count: number;
+  dependencies: ContractDependency[];
+}
+
+/** Dependency graph response returned for one imported contract. */
+interface ContractDiscovery {
+  dependencies: ContractDependency[];
+  candidate_flows: ContractFlowCandidate[];
+}
+
 /** Create a unique identifier for drafts, rows, and assertions. */
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -452,6 +474,13 @@ export default function ApiWorkspacePage() {
   const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
   const [importDestinationCollection, setImportDestinationCollection] = useState<string>('');
   const [newImportCollection, setNewImportCollection] = useState('');
+  const [creatingImportCollection, setCreatingImportCollection] = useState(false);
+  const [dependencyOpen, setDependencyOpen] = useState(false);
+  const [dependencySourceId, setDependencySourceId] = useState('');
+  const [dependencyResult, setDependencyResult] = useState<ContractDiscovery | null>(null);
+  const [dependencySelected, setDependencySelected] = useState<Set<string>>(new Set());
+  const [dependencyRequirements, setDependencyRequirements] = useState('');
+  const [dependencyBusy, setDependencyBusy] = useState(false);
   const [newName, setNewName] = useState('');
 
   // Automatically clear transient API Workspace feedback after three seconds.
@@ -891,6 +920,7 @@ export default function ApiWorkspacePage() {
       await refreshProject();
       setImportDestinationCollection(created.id);
       setNewImportCollection('');
+      setCreatingImportCollection(false);
     } catch (reason) {
       fail(reason);
     } finally {
@@ -914,8 +944,78 @@ export default function ApiWorkspacePage() {
 
   const collections = project?.collections || [];
   const requests = project?.endpoints || [];
+  const contractSources = useMemo(() => {
+    const sources = new Map<string, { name: string; count: number }>();
+    (project?.endpoints || []).forEach((request) => {
+      const contract = request.contract;
+      if (!contract || typeof contract !== 'object') return;
+      const sourceId = String(contract.source_id || '');
+      if (!sourceId) return;
+      const current = sources.get(sourceId);
+      sources.set(sourceId, {
+        name: String(contract.source_name || current?.name || sourceId),
+        count: (current?.count || 0) + 1,
+      });
+    });
+    return Array.from(sources, ([id, source]) => ({ id, ...source }));
+  }, [project?.endpoints]);
   const totalSaved = requests.length;
   const eligibleCount = requests.filter((item) => item.include_for_generation ?? item.include).length;
+  const openDependencyDiscovery = () => {
+    setDependencySourceId(contractSources[0]?.id || '');
+    setDependencyResult(null);
+    setDependencySelected(new Set());
+    setDependencyRequirements('');
+    setDependencyOpen(true);
+  };
+
+  /** Rebuild dependency edges and candidate flows for a saved contract source. */
+  const analyzeDependencies = async () => {
+    if (!project || !dependencySourceId) return;
+    setDependencyBusy(true);
+    setDependencyResult(null);
+    setDependencySelected(new Set());
+    try {
+      const result = await api.post<ContractDiscovery>(
+        '/api/v1/projects/' + project.id + '/contracts/flow-candidates',
+        { source_id: dependencySourceId },
+      );
+      setDependencyResult(result);
+      setDependencySelected(new Set(result.candidate_flows.map((item) => item.id)));
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setDependencyBusy(false);
+    }
+  };
+
+  /** Generate flows from the selected dependency paths and open the saved cases. */
+  const generateDependencyFlows = async () => {
+    if (!project || !dependencySourceId || dependencySelected.size === 0) return;
+    setDependencyBusy(true);
+    try {
+      const result = await api.post<{ test_cases?: unknown[] }>(
+        '/api/v1/projects/' + project.id + '/contracts/generate-flows',
+        {
+          source_id: dependencySourceId,
+          candidate_ids: Array.from(dependencySelected),
+          business_requirements: dependencyRequirements.trim() || null,
+        },
+        { timeoutMs: LLM_TIMEOUT_MS },
+      );
+      await refreshProject();
+      setDependencyOpen(false);
+      setFlash({
+        tone: 'ok',
+        text: 'Generated ' + String(result.test_cases?.length || 0) + ' dependency-based flow(s).',
+      });
+      router.push('/workspace/test-cases');
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setDependencyBusy(false);
+    }
+  };
   const goToGeneration = () => {
     const order = project?.generation_order_ids || [];
     const eligible = requests
@@ -986,6 +1086,15 @@ export default function ApiWorkspacePage() {
             </Button>
             {project ? (
               <>
+                <Button
+                  small
+                  icon="layers"
+                  disabled={contractSources.length === 0}
+                  title={contractSources.length === 0 ? 'Import an API contract first.' : 'Find response-to-request dependencies and generate ordered flows.'}
+                  onClick={openDependencyDiscovery}
+                >
+                  Discover dependencies
+                </Button>
                 <Button small icon="file" onClick={() => setImporting(true)}>Import</Button>
                 <Button small icon="trash" disabled={busy} onClick={() => setConfirmProject(true)}>
                   Delete project
@@ -1003,6 +1112,138 @@ export default function ApiWorkspacePage() {
           </Notice>
         </div>
       ) : null}
+
+      <Modal
+        open={dependencyOpen}
+        title="Discover dependency flows"
+        description="Find response fields that feed later requests, review the resulting paths, and generate flow cases from selected paths."
+        onClose={() => { if (!dependencyBusy) setDependencyOpen(false); }}
+        wide
+        footer={(
+          <>
+            <Button disabled={dependencyBusy} onClick={() => setDependencyOpen(false)}>Close</Button>
+            <Button
+              tone="primary"
+              icon="sparkles"
+              loading={dependencyBusy && Boolean(dependencyResult)}
+              disabled={dependencyBusy || !dependencyResult || dependencySelected.size === 0}
+              onClick={() => void generateDependencyFlows()}
+            >
+              {dependencyBusy && dependencyResult ? 'Generating flows…' : 'Generate selected flows'}
+            </Button>
+          </>
+        )}
+      >
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <Field label="Imported API contract" tooltip="Only saved endpoints from the selected import are analyzed together.">
+            <Select
+              value={dependencySourceId}
+              aria-label="Imported API contract"
+              onChange={(event) => {
+                setDependencySourceId(event.target.value);
+                setDependencyResult(null);
+                setDependencySelected(new Set());
+              }}
+            >
+              {contractSources.map((source) => (
+                <option key={source.id} value={source.id}>{source.name} · {String(source.count)} requests</option>
+              ))}
+            </Select>
+          </Field>
+          <Button
+            icon="search"
+            loading={dependencyBusy && !dependencyResult}
+            disabled={dependencyBusy || !dependencySourceId}
+            onClick={() => void analyzeDependencies()}
+          >
+            {dependencyBusy && !dependencyResult ? 'Analyzing…' : 'Analyze dependencies'}
+          </Button>
+        </div>
+
+        {dependencyBusy && !dependencyResult ? (
+          <div className="mt-3 rounded-md border border-line bg-panel-alt p-3" role="status" aria-live="polite">
+            <div className="flex items-center gap-2 text-[11px] text-text-dim">
+              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-r-transparent" aria-hidden="true" />
+              Comparing response fields with downstream request parameters…
+            </div>
+            <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+            </div>
+          </div>
+        ) : null}
+
+        {dependencyResult ? (
+          <div className="mt-3 flex flex-col gap-3">
+            <div className="flex flex-wrap gap-1.5">
+              <Badge tone="neutral">{String(dependencyResult.dependencies.length)} dependency links</Badge>
+              <Badge tone="neutral">{String(dependencyResult.candidate_flows.length)} candidate flows</Badge>
+              {dependencySelected.size ? <Badge tone="accent">{String(dependencySelected.size)} selected</Badge> : null}
+            </div>
+            {dependencyResult.dependencies.length ? (
+              <details className="rounded-md border border-line bg-panel-alt px-3 py-2">
+                <summary className="cursor-pointer text-[11px] font-semibold text-text">Dependency evidence</summary>
+                <ul className="mt-2 flex flex-col gap-1.5">
+                  {dependencyResult.dependencies.map((edge, index) => {
+                    const producer = requests.find((item) => item.id === edge.from);
+                    const consumer = requests.find((item) => item.id === edge.to);
+                    return (
+                      <li key={`${edge.from}-${edge.to}-${index}`} className="text-[10.5px] text-text-dim">
+                        <span className="font-semibold">{producer?.method || 'API'} {producer?.name || edge.from}</span>
+                        {' → '}
+                        <span className="font-semibold">{consumer?.method || 'API'} {consumer?.name || edge.to}</span>
+                        <span className="ml-1 text-text-mute">
+                          {edge.evidence.map((item) => `${item.response_field || item.field_name || 'response'} → ${item.request_field || 'request'}`).join(', ')}
+                          {edge.cyclic ? ' · cycle edge' : ''}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </details>
+            ) : (
+              <Notice tone="info">No response-to-request field dependencies were found for this contract.</Notice>
+            )}
+
+            {dependencyResult.candidate_flows.length ? (
+              <div className="aa-scroll max-h-[30vh] overflow-y-auto rounded-md border border-line">
+                {dependencyResult.candidate_flows.map((candidate) => {
+                  const path = candidate.endpoint_ids.map((id) => {
+                    const endpoint = requests.find((item) => item.id === id);
+                    return endpoint ? `${endpoint.method} ${endpoint.name || endpoint.url}` : id;
+                  });
+                  return (
+                    <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-line-soft px-3 py-2 last:border-0 hover:bg-hover">
+                      <Checkbox
+                        checked={dependencySelected.has(candidate.id)}
+                        aria-label={`Select flow path ${path.join(' then ')}`}
+                        onChange={(event) => setDependencySelected((current) => {
+                          const next = new Set(current);
+                          if (event.target.checked) next.add(candidate.id);
+                          else next.delete(candidate.id);
+                          return next;
+                        })}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[11px] font-semibold text-text">{path.join(' → ')}</span>
+                        <span className="text-[10px] text-text-mute">{String(candidate.dependency_count)} linked request dependencies</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            <Field label="Business requirements (optional)" tooltip="Additional product behavior to guide flow names, steps, and assertions.">
+              <Textarea
+                rows={3}
+                value={dependencyRequirements}
+                placeholder="Describe business rules or expected outcomes for these flows."
+                onChange={(event) => setDependencyRequirements(event.target.value)}
+              />
+            </Field>
+          </div>
+        ) : null}
+      </Modal>
 
       {!project && !isLoadingProject ? (
         <EmptyState title="No project selected" body="Pick a project in the rail, or create one there." />
@@ -1423,7 +1664,7 @@ export default function ApiWorkspacePage() {
         open={importing}
         title="Import API definition"
         description="Upload a contract or documentation file, review the parsed requests, then add the selected endpoints to a collection."
-        onClose={() => { if (!busy) setImporting(false); }}
+        onClose={() => { if (!busy) { setImporting(false); setCreatingImportCollection(false); } }}
         wide
         footer={importPreview ? (
           <>
@@ -1431,7 +1672,7 @@ export default function ApiWorkspacePage() {
               {String(importSelected.size)} of {String(importPreview.endpoints.length)} endpoints selected
             </span>
             <Button disabled={busy} onClick={() => setImportPreview(null)}>Back to source</Button>
-            <Button tone="primary" icon="save" disabled={busy || !importDestinationCollection || importSelected.size === 0} onClick={() => void saveImportedEndpoints()}>
+            <Button tone="primary" icon="save" disabled={busy || importPreview.base_url_required || !importDestinationCollection || importSelected.size === 0} onClick={() => void saveImportedEndpoints()}>
               {busy ? 'Importing…' : 'Import selected'}
             </Button>
           </>
@@ -1480,23 +1721,59 @@ export default function ApiWorkspacePage() {
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {importPreview.base_url_required ? <Notice tone="warn">Some paths need an API base URL. Enter one above and preview again.</Notice> : null}
+            {importPreview.base_url_required ? (
+              <div className="grid gap-2 rounded-md border border-warn/40 bg-warn/10 p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <Field
+                  label="API base URL"
+                  tooltip="Required to turn relative request paths into complete URLs. This value is applied to requests that do not already have a server URL."
+                  hint="Example: https://api.example.com"
+                >
+                  <Input
+                    type="url"
+                    value={importBaseUrl}
+                    placeholder="https://api.example.com"
+                    onChange={(event) => setImportBaseUrl(event.target.value)}
+                  />
+                </Field>
+                <Button
+                  small
+                  icon="refresh"
+                  disabled={busy || !importBaseUrl.trim()}
+                  onClick={() => void previewContract()}
+                >
+                  Apply and re-preview
+                </Button>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2">
               <Badge tone="neutral">{importPreview.source_format}</Badge>
+              <span className="text-[11px] text-text-mute">Review and choose where to save the selected requests.</span>
+            </div>
+            <div className="grid gap-3 rounded-md border border-line bg-panel-alt p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <Field label="Destination collection" tooltip="All selected requests are saved to this collection.">
-                <Select value={importDestinationCollection} onChange={(event) => setImportDestinationCollection(event.target.value)}>
+                <Select
+                  value={importDestinationCollection}
+                  onChange={(event) => setImportDestinationCollection(event.target.value)}
+                  aria-label="Destination collection"
+                >
                   <option value="">Choose a collection</option>
                   {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
                 </Select>
               </Field>
-              <details className="relative shrink-0">
-                <summary className="cursor-pointer whitespace-nowrap rounded px-2 py-2 text-[10.5px] font-semibold text-accent hover:bg-hover">New collection</summary>
-                <div className="absolute right-0 top-full z-20 mt-1 flex w-64 gap-1 rounded-md border border-line-strong bg-elevated p-2 shadow-2">
-                  <Input value={newImportCollection} aria-label="New collection name" placeholder="New collection name" onChange={(event) => setNewImportCollection(event.target.value)} />
-                  <Button small icon="plus" disabled={busy || !newImportCollection.trim()} onClick={() => void createImportCollection()}>Create</Button>
-                </div>
-              </details>
+              <Button
+                small
+                icon="plus"
+                className="sm:mb-0.5"
+                onClick={() => setCreatingImportCollection(true)}
+              >
+                New collection
+              </Button>
             </div>
+            {importDestinationCollection ? (
+              <p className="-mt-1 text-[10.5px] text-text-mute">
+                New requests will be added to {collections.find((item) => item.id === importDestinationCollection)?.name || 'the selected collection'}.
+              </p>
+            ) : null}
             <div className="aa-scroll max-h-[55vh] overflow-auto rounded-md border border-line">
               {importPreview.endpoints.map((endpoint, index) => {
                 const id = String(endpoint.id || endpoint.source_id || index);
@@ -1513,6 +1790,42 @@ export default function ApiWorkspacePage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={creatingImportCollection}
+        title="Create destination collection"
+        description="Create a collection and use it as the destination for these imported requests."
+        onClose={() => { if (!busy) setCreatingImportCollection(false); }}
+        footer={(
+          <>
+            <Button disabled={busy} onClick={() => setCreatingImportCollection(false)}>Cancel</Button>
+            <Button
+              tone="primary"
+              icon="plus"
+              disabled={busy || !newImportCollection.trim()}
+              onClick={() => void createImportCollection()}
+            >
+              {busy ? 'Creating…' : 'Create collection'}
+            </Button>
+          </>
+        )}
+      >
+        <Field label="Collection name" tooltip="Use a name that identifies the API or service these requests belong to.">
+          <Input
+            autoFocus
+            value={newImportCollection}
+            aria-label="New collection name"
+            placeholder="e.g. Orders API"
+            onChange={(event) => setNewImportCollection(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && newImportCollection.trim() && !busy) {
+                event.preventDefault();
+                void createImportCollection();
+              }
+            }}
+          />
+        </Field>
       </Modal>
 
       <Modal

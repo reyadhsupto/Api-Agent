@@ -107,7 +107,7 @@ export default function ChatPage() {
   // Follow the newest message.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [thread?.messages?.length]);
+  }, [thread?.messages?.length, sending]);
 
   /**
    * Create a thread and select it.
@@ -316,6 +316,22 @@ export default function ChatPage() {
                 </React.Fragment>
               );
             })}
+            {sending ? (
+              <div className="mr-auto max-w-[75%] rounded-lg border border-line bg-panel-alt px-3 py-2 text-[11.5px] text-text-dim" role="status" aria-live="polite">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-accent border-r-transparent" aria-hidden="true" />
+                  <span>Working through the project context</span>
+                  <span aria-hidden="true" className="inline-flex gap-0.5">
+                    {[0, 1, 2].map((dot) => (
+                      <span key={dot} className="animate-bounce font-bold text-accent" style={{ animationDelay: `${dot * 120}ms` }}>·</span>
+                    ))}
+                  </span>
+                </div>
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+                </div>
+              </div>
+            ) : null}
             <div ref={endRef} />
           </div>
         </div>

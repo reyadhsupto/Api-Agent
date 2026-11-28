@@ -49,22 +49,5 @@ services:
       backend:
         condition: service_healthy
 
-  # Legacy Streamlit UI. Opt in with: docker compose --profile legacy up -d
-  frontend-legacy:
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      API_BACKEND_URL: http://backend:8000
-    ports:
-      - "127.0.0.1:${FRONTEND_PORT:-8501}:8501"
-    depends_on:
-      backend:
-        condition: service_healthy
-
 volumes:
   api_agent_pgdata:

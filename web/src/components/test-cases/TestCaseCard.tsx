@@ -26,8 +26,7 @@ function typeTone(type: string): 'ok' | 'bad' | 'warn' | 'info' | 'accent' {
 /**
  * Derive a flaky signal from recent executions.
  *
- * Three or more failures in the last ten runs is the threshold the Streamlit
- * card used, kept here so both surfaces agree.
+ * Three or more non-pass outcomes in the last ten runs mark a case as flaky.
  */
 function isFlaky(executions: ExecutionResult[] | undefined): boolean {
   if (!executions?.length) return false;

@@ -2,7 +2,7 @@
 
 import React from 'react';
 
-import { Button, Spinner, Textarea } from '@/components/ui/primitives';
+import { Button, Textarea } from '@/components/ui/primitives';
 
 /**
  * Render the composer pinned to the bottom of the conversation column.
@@ -67,15 +67,21 @@ export default function ChatComposer({
           tone="primary"
           small
           icon="send"
+          loading={busy}
           onClick={onSend}
           disabled={disabled || archived || busy || !value.trim()}
         >
-          {busy ? 'Sending' : 'Send'}
+          {busy ? 'Thinking…' : 'Send'}
         </Button>
       </div>
       {busy ? (
-        <div className="mt-1.5">
-          <Spinner label="Reading project context" />
+        <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-text-mute" role="status" aria-live="polite">
+          <span>Assistant is thinking</span>
+          <span aria-hidden="true" className="inline-flex gap-0.5">
+            {[0, 1, 2].map((dot) => (
+              <span key={dot} className="animate-bounce font-bold" style={{ animationDelay: `${dot * 120}ms` }}>·</span>
+            ))}
+          </span>
         </div>
       ) : (
         <p className="mt-1 text-[9.5px] text-text-mute">

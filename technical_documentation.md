@@ -1,117 +1,58 @@
 # Technical Documentation - Api-Agent
 
 ## 1. Tech Stack
+
 | Layer | Technology | Reason |
-|-------|-----------|--------|
-| Backend Language | Python 3.11+ | Project convention, rich AI/HTTP ecosystem |
-| Backend Framework | FastAPI | Async support, automatic OpenAPI docs, easy routing |
-| HTTP Client | python requests | User-specified standard for outbound API calls |
-| Frontend | Streamlit + embedded Components v2 | Python UI with browser controls for cURL debounce and sortable request rows |
-| LLM Providers | AMD Token Lab, OpenRouter, Groq, Cohere, Hugging Face | Ordered environment-based fallback |
-| cURL Parsing | shlex + custom logic | No heavy dependency, easy to understand |
-| Contract Parsing | PyYAML + standard JSON parsing | OpenAPI/Swagger YAML and JSON input |
-| Persistence | PostgreSQL + psycopg | Durable storage for local and containerized app runs |
-| Testing | pytest | Unit tests |
+|-------|------------|--------|
+| Backend | Python 3.11+, FastAPI, Pydantic | Typed HTTP API and automatic OpenAPI schema |
+| Web frontend | Next.js App Router, TypeScript, React, Tailwind CSS | Single full-featured browser interface |
+| HTTP clients | Python `requests`; typed browser `fetch` client | Backend provider/API calls and same-origin web calls |
+| LLM providers | AMD Token Lab, OpenRouter, Groq, Cohere, Hugging Face | Environment-configured fallback order |
+| Contract parsing | PyYAML and standard JSON parsing | OpenAPI/Swagger and Postman inputs |
+| Persistence | PostgreSQL and psycopg | Project-owned data, histories, and activity |
+| Local orchestration | Docker Compose and Make | Repeatable local database and full-stack startup |
 
 ## 2. Architecture
+
+```text
+Browser
+  │ same-origin authenticated requests
+  ▼
+Next.js web (port 3000) ── server-side API proxy ── FastAPI (port 8000)
+                                                      ├── PostgreSQL (port 5432)
+                                                      ├── LLM provider dispatcher
+                                                      └── target APIs
 ```
-Streamlit UI (port 8501) <--> FastAPI Backend (port 8000) <--> Target API
-                                               |
-                                               v
-                                        LLM Providers (fallback chain)
-PostgreSQL (port 5432) <--> FastAPI Backend
-```
+
+Next.js stores access and refresh credentials in HttpOnly cookies. Its Route Handlers attach the access token to requests sent to FastAPI and renew expired access credentials. The browser never receives bearer tokens and does not call the backend origin directly. FastAPI is the authorization boundary for persisted project data.
 
 ## 3. Module Responsibilities
 
-### app/main.py
-- FastAPI application instance and CORS middleware
-- API routes for projects, endpoints, generation, and execution
-- Delegates durable reads and writes to the PostgreSQL repository
+### Backend
 
-### app/storage.py
-- PostgreSQL schema initialization and data access through psycopg
-- Projects, collections, saved requests, JSON test-case payloads, named test-run selections, execution history, and active project state
-- Foreign-key cascades and transactional collection updates
+- `app/main.py`: FastAPI routes, API authentication middleware, provider-backed workflows, and orchestration.
+- `app/auth.py`: single-local-account password validation, JWT signing, refresh-token rotation, and token hashing.
+- `app/storage.py`: PostgreSQL schema initialization and project, collection, request, case, execution, chat, Knowledge Hub, and activity persistence.
+- `app/parser.py`: cURL parsing into method, URL, headers, query parameters, and body.
+- `app/contracts.py`: OpenAPI/Swagger/Postman/document parsing and response-to-request dependency graph discovery.
+- `app/generator.py`: prompts, provider dispatch, output parsing, case generation, and validation.
+- `app/executor.py`: HTTP and flow execution, variable mapping, assertion evaluation, and result snapshots.
+- `app/schemas.py`: Pydantic request schemas for the API boundary.
 
-### app/parser.py
-- parse_curl(curl_string) -> dict with method, URL, headers, query parameters, and body
+### Next.js frontend
 
-### app/contracts.py
-- Parses OpenAPI 3.x, Swagger 2.0, Postman Collection 2.1, and public/pasted documentation inputs
-- Stores operation fields and source provenance on saved request JSON and derives normalized dependency edges and maximal candidate paths
+- `web/src/app/`: login, authenticated API proxy routes, workspace shell, and API, Test Cases, Chat, and Activity pages.
+- `web/src/components/`: shared controls and feature components for request editing, cases, chat, the Knowledge Hub, and activity details.
+- `web/src/context/`: selected-project and theme state.
+- `web/src/lib/`: typed same-origin API client, authentication helpers, and domain actions.
+- `web/src/types/api.ts`: hand-maintained response contracts; `api.generated.ts` contains generated request types.
+- `design/tokens.py`: canonical light/dark design tokens; `scripts/gen_tokens.py` emits `web/src/app/tokens.css`.
 
-### app/generator.py
-- generate_test_cases(parsed_curl, business_requirements, example_test_cases) -> list of dicts
-- generate_flow_test_cases(endpoints, business_requirements, example_test_cases) -> list of flow dicts
-- LLM fallback logic inside this module
+### Shared development tools
 
-### app/executor.py
-- execute_test_case(test_case, base_url) -> dict with request/response/latency/assertion
-- Uses python requests
-
-### app/schemas.py
-- Minimal Pydantic models for request/response validation
-
-### frontend (Streamlit UI)
-- `frontend/app.py` is a thin entry point: sys.path bootstrap, explicit imports, and `main()`
-- `frontend/core.py` holds shared state, API clients, CSS constants, and render helpers
-- `frontend/views/{api_workspace,test_cases,chat,activity}.py` render one workspace mode each
-- `frontend/styles/{tokens,base,shell,theme,light,request_tabs,test_cases}.py` own the design tokens and CSS blocks
-- `.streamlit/config.toml` sets the single native light theme (base light, background #f6f7fa, accent #ff6c37)
-- `frontend/styles/theme.py` re-points the native widgets Streamlit paints outside its theme
-  variables (toolbar buttons, popover, tooltip, toast, segmented pill, slider, progress, spinner,
-  tab highlight, notice) at the `--aa-*` tokens so native surfaces match the light palette
-- The left rail switches modes (API Workspace, Test Cases, Project Chat, Activity Logs); Activity Logs has Generation and Knowledge Extraction subviews, and only the selected workspace renders
-- Design tokens are emitted once as CSS custom properties on `:root` by `frontend.styles.inject_styles`; components consume `--aa-*` variables instead of hard-coded colours
-- Import contract: modules use absolute `frontend.*` imports, so the same files load under `streamlit run` and package imports from tests
-- API Workspace provides temporary request tabs, manual editing, debounced cURL parsing in the URL field, quick sends, response display, and saved project collections
-- Single generated tests retain source endpoint metadata and display in endpoint groups; flow scenarios have a separate group
-- Saved requests can be selected and explicitly ordered for generation
-- Test Cases supports single and flow generation/execution with editable assertions
-- Generation controls use a Single/Flow selector, selected saved-request list, optional business requirements, and a primary generation action; no scenario count is requested for flows
-- Project Chat turns only append to the thread; explicit Knowledge Hub drafts are created only after a user action
-- The Knowledge Hub stores immutable project, feature, and microservice page versions; features can link to multiple shared microservice pages
-- Generation includes the project page plus selected feature pages and their linked microservices; exact version snapshots are attached to generated cases and activity records
-- Results use status counts, result filters, select/expand controls, per-case execution, batch execution with progress, and explicit project save
-- Each test case card: compact status summary, repeatable status/body-contains/JSONPath/JSON Schema assertions, separate request/result views for single cases, and expandable per-step flow details
-- Request/response results show method and URL, headers, readable payloads, response status, latency, payload size, and pretty/raw JSON selection
-- Calls FastAPI endpoints via python requests
-- The frontend uses `requests` only; read timeouts are scoped by call type (see the timeout bullet below)
-- The test-case toolbar keeps one merged Expand/Collapse control and one Export CSV control
-- Export CSV is a `st.link_button` to `/api/v1/projects/{id}/test-cases/export` with repeated
-  `selected_case_ids` parameters, so the backend streams the file only on click
-- CSV includes `technique_tags_json` and `requirement_refs_json` per case; suite-level coverage summaries remain in generation activity.
-- The collections rail filters by HTTP method with a segmented control and shows an
-  `enabled of total` counter for the project
-- Collection rows show real selection state: `name · total` when every request is enabled and
-  `name · enabled/total (partial)` when only some are, because `st.checkbox` cannot render an
-  indeterminate mark
-- The collection and request kebabs are quiet affordances: three-dot icons at 40% opacity that
-  reach full accent opacity on row hover or keyboard focus
-- Collection export is a link to the backend route, not a prefetch: Streamlit renders popover
-  bodies on every run, so fetching inside a kebab would cost one API call per collection per rerun
-- The request editor exposes Params, Headers, Body, Auth, and Assertions tabs
-- Body is No body or Raw; Raw shows the effective Content-Type and, for JSON, whether the text parses
-- Auth stores credentials on the draft (Bearer token, Basic auth, or API key) and materialises the
-  header at send time; an explicit header on the Headers tab takes precedence
-- `_request_signature` normalises method, URL, enabled header and query rows, body content, auth, and
-  body type, so opening a saved request never reports unsaved changes. A leading asterisk marks a
-  request tab with unsaved edits, and the editor shows a caption until the draft is saved
-- Playground assertion runs render a Test Results table (Result, Assertion, Detail)
-- Each test-case card header carries the Run action for the card type (Run, or Passed/Failed for a
-  general scenario) plus a kebab holding Delete; the footer keeps Save changes and its unsaved-edits
-  hint, so the destructive action is not adjacent to the save action
-- Read timeouts are scoped: 15 s for raw project summaries, 30 s for GET and DELETE, 60 s for PUT, and
-  300 s only for POST routes that call an LLM or execute requests
-- Queues five-second success and error toasts for meaningful completed actions; success and error messages use green and red accents, queued messages survive Streamlit reruns, and batch execution reports one aggregate toast
-- Running a single test opens its Result tab; running a flow opens its Scenario result tab. Batch execution opens the first failed or errored case, or the last executed case when all pass
-- Contract import UI accepts pasted text, JSON/YAML/Markdown/text files, and public anonymous documentation URLs; previews all endpoint proposals before import
-- Contract flow UI displays schema-field evidence and lets users select candidate paths before LLM flow generation
-- Logs all API requests/responses to browser devtools console via st.iframe console.log
-- Collections and saved requests persist in PostgreSQL; request drafts and quick-send responses remain in session state
-- Flow scenario cards: consistent scenario cards containing ordered step cards with editable assertions, mappings, and per-step results
-- Sidebar starts collapsed and shows unique project labels even when names match
+- `scripts/gen_types.py`: exports FastAPI's OpenAPI document and regenerates TypeScript request types.
+- `scripts/reset_local_database.sh`: explicitly confirmed local Compose volume reset.
+- `tests/`: backend, API-contract, persistence, and design-token checks.
 
 ## 4. API Endpoints
 
@@ -214,7 +155,7 @@ Test cases are grouped by endpoint while each case keeps its own generated title
 
 Test-case selection spans single cases and flows. The Test Cases top bar places a prominent **Add manual test** action and a secondary **Reusable runs** action beside the page title. Their popovers use numbered sections and concise guidance; the reusable-runs action remains visible without a project and explains that a project is required. The toolbar shows **Deselect all** only when every case is selected and otherwise shows **Select all**. A named run can load, update, or delete a reusable case selection; changing selection after loading does not change the stored definition until **Update run** is used. Batch execution preserves case-list order. Latency values display in milliseconds through 1000 ms and seconds above that threshold. Test Cases controls and cards reflow to available width when the sidebar is expanded. Request-order drag transitions animate neighboring rows and disable motion when the browser requests reduced motion.
 
-The home header summarizes the selected project. The collapsed app sidebar groups project selection, project actions, counts, and a saved-test-case fetch action. In API Workspace, New, Import, and Discover actions appear in the navigator header; contract review and flow discovery render above the playground in the editor column. Discovery is disabled until an imported contract exists. The collection tree is collapsible and moves above the playground when the page narrows. Persistent eligibility remains separate from per-run request selection, while selection and flow ordering share one Test Cases panel. Project summaries and collection exports use a 15-second Streamlit cache, cleared after relevant writes.
+The home header summarizes the selected project. The collapsed app sidebar groups project selection, project actions, counts, and a saved-test-case fetch action. In API Workspace, New, Import, and Discover actions appear in the navigator header; contract review and flow discovery render above the playground in the editor column. Discovery is disabled until an imported contract exists. The collection tree is collapsible and moves above the playground when the page narrows. Persistent eligibility remains separate from per-run request selection, while selection and flow ordering share one Test Cases panel.
 
 Postman Collection v2.1 export includes methods, URLs, payloads, and disabled query/header rows. Import supports Postman Collection v2.1 requests; environments, scripts, and authentication configuration are not imported. Legacy endpoint routes map to Imported Endpoints. Existing endpoint rows migrate once at startup, retaining IDs, request fields, enabled state, inclusion choice, and order.
 
@@ -319,156 +260,33 @@ Before calling the chat completion API, the system calls `GET /v1/models` to lis
 ### Provider Configuration
 Set one or more provider keys in `.env`, then arrange their precedence with `LLM_PROVIDER_ORDER`. To use AMD Token Lab, set `AMD_API_KEY` and optionally `AMD_MODEL`. Changing `AMD_MODEL` affects the next AMD request without restarting provider selection logic. OpenRouter remains available as a fallback through `OPENROUTER_API_KEY` and `OPENROUTER_MODEL`.
 
-## 9. Deployment
-- Local: `make docker-db-up`, then `make run-local-backend` and `make run-local-frontend` in separate terminals
-- Docker: `make docker-up`, `make docker-logs`, and `make docker-down`
-- Destructive fresh local Docker database: `make docker-db-reset` (requires typing `RESET`)
-- FastAPI local: `uvicorn app.main:app --reload` on port 8000
-- Streamlit local: `streamlit run frontend/app.py` on port 8501
-- Single user, local only, no auth
-- Frontend POST API timeout: 1,200 seconds (20 minutes), including LLM generation
-- PostgreSQL URL: `DATABASE_URL` in `.env`; Compose volume: `api_agent_pgdata`
-- Flow scenario quantity is model-determined; provider output ceiling uses `API_AGENT_LLM_MAX_OUTPUT_TOKENS`
-- Unsaved API Workspace requests and responses stay in Streamlit session state only; saved requests persist their assertion definitions
-- Clean caches: `make clean-cache` (keeps the virtual environment)
-- Native Streamlit widget colours come from `.streamlit/config.toml`; the app palette lives in `frontend/styles/tokens.py`
-- The frontend uses one light palette; no theme selector or dark-mode session state is exposed
-- Streamlit 1.66 publishes no theme custom properties (no `--text-color`, no `--st-*`), so `frontend/styles/light.py` restates native surfaces to match the app palette
-- Data grids and charts use Streamlit's native light canvas, with surrounding borders and captions styled from the same light tokens
-- `.st-key-test-case-toolbar` is sticky; breakpoints at
-  1440, 1024, and 768 px reflow the workspace without hiding actions
-- Vertical and horizontal gaps are tightened for fine pointers only, so coarse pointers keep
-  44 px touch targets
-- Muted text uses #8a919c, which clears 4.5:1 on black and on the panel surfaces
-- Test-case generation runs inside a `st.status` block that settles to running, complete, no
-  cases, or failed, instead of leaving a spinner of unknown weight
+## 9. Deployment and local development
 
-## Frontend theme and surface system
+- Local: start PostgreSQL with `make docker-db-up`, then run `make run-local-backend` and `make run-local-web` in separate terminals.
+- Docker: `make docker-up-build` builds and starts PostgreSQL, FastAPI, and Next.js. Subsequent starts can use `make docker-up`; stop with `make docker-down`.
+- A fresh local Compose database can be created with `make docker-db-reset`; the command requires typing `RESET` and does not target arbitrary `DATABASE_URL` values.
+- The Next.js development server runs on port 3000. FastAPI runs on port 8000. Compose connects the backend to PostgreSQL on the internal `postgres` hostname.
+- LLM-backed web requests use a 20-minute client timeout. Reverse proxies must allow at least the same duration.
+- `make clean-cache` removes Python and tool caches while preserving the active environment and installed web dependencies.
 
-### Single light palette
+## 10. Authentication
 
-`frontend/styles/tokens.py` retains matching `DARK` and `LIGHT` token maps for
-stylesheet compatibility, but only `LIGHT` is used by the application.
-`DEFAULT_THEME` is `light`, and `active_theme()` always returns that value.
-There is no in-app theme switch or theme session key.
+Set `AUTH_USERNAME`, `AUTH_PASSWORD`, and `AUTH_JWT_SECRET` in `.env`. The signing secret must contain at least 32 characters; generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. FastAPI middleware protects versioned API routes, with health and login, refresh, and logout endpoints public. Access tokens expire after 15 minutes. Opaque refresh tokens are stored as hashes in `auth_refresh_tokens`, expire after 30 days, and rotate on use. Next.js stores credentials in HttpOnly, SameSite=Lax cookies and retries a failed request after refreshing. This is a single local account, not a multi-user or role system.
 
-`.streamlit/config.toml` configures Streamlit's native theme as light and is
-copied into the frontend Docker image by `Dockerfile.frontend`. The app also
-sets the document `color-scheme` to light and injects `frontend/styles/light.py` to align native surfaces such as menus,
-dialogs, tooltips, toasts, code, alerts, chat bubbles, and widget edges with the
-light tokens. Data grids and charts use Streamlit's native light canvas as well.
+## 11. Next.js workspace behavior
 
-### The box system
+The frontend has four workspace routes: API Workspace, Test Cases, Project Chat, and Activity Logs. The sidebar provides project selection, collapsible navigation, and a persistent theme toggle. Dark is the first-visit theme; light and dark palettes are generated from `design/tokens.py` into `web/src/app/tokens.css`.
 
-`frontend/styles/surfaces.py` owns one card recipe (`.aa-box` plus quiet, inset,
-raised, and selected variants) and the explicit edges of native containers.
-Every value is a token, so the recipe needs no theme branch.
+API Workspace supports temporary request tabs, cURL parsing, request/response editing, repeatable assertions, saved collections, and Postman export. Contract imports accept OpenAPI/Swagger JSON or YAML, Postman JSON, Markdown, TXT, PDF, DOCX, and public documentation URLs. The user reviews and selects endpoints and a destination collection. Relative request URLs require an API base URL before import. Imported requests start excluded from generation. Dependency discovery matches normalized response-field names against downstream path and body fields, ignores generic `id`, reports cycle edges, and ranks maximal acyclic paths. Selected paths can be turned into generated flows.
 
-Light mode separates surfaces with a pale canvas (`#f6f7fa`), white panels,
-slightly tinted inner panels, and a graduated border ladder. Interactive edges
-remain stronger than card dividers so controls are identifiable without hover.
+Test Cases supports independent Single cases, ordered dependency-based Flows, manual General scenarios, release revisions, clarification rounds, and reusable suites. Executions retain the exact case snapshot. Flaky status uses the latest ten outcomes and requires at least three outcomes containing both pass and non-pass results. CSV export preserves a flow's ordered steps in JSON.
 
-Nested boxes drop to `--aa-line-soft` and `--aa-panel-alt`, so a card inside a
-card reads as a child rather than a second frame.
+Project Chat persists multiple threads per project. Chat turns do not invoke knowledge extraction. Users can prepare an explicit Knowledge Hub update from a conversation, review and edit page drafts, inspect changes, and save immutable versions. The Hub has project, feature, and microservice scopes; each feature can link multiple reusable microservice pages. Generation always includes the project page, accepts selected feature pages and their linked services, and keeps run-specific business requirements separate. Activity records retain the exact Hub versions and generation prompt/response used.
 
-### Collection rail
+Activity Logs provide paged Generation and Knowledge activity streams. Detail views separate summary, evidence, prompt, raw model response, and JSON payloads. The API list endpoints return summaries; detail endpoints load large prompt/response records on demand.
 
-`frontend/styles/layout.py` holds the workspace grid (rail pinned, editor
-fluid, single column below 760px). `frontend/styles/rail.py` turns each
-collection into a filled card with a declared border, joins its requests with a
-vertical guide line, and marks the active request with an accent bar. Selection
-is carried by the accent edge, never by fill alone, so it survives both
-palettes. The three-dot triggers rest at reduced opacity and resolve to the
-accent on row hover, row focus, or their own focus.
+## 12. Typed frontend/backend boundary
 
-### Chat workspace
+`scripts/gen_types.py` imports the FastAPI application and writes `web/openapi.json` plus `web/src/types/api.generated.ts`. Most routes return plain dictionaries without `response_model`, so response contracts are maintained in `web/src/types/api.ts` and checked through `tests/test_api_contract.py`. The database initializes lazily when the repository is first used; importing `app.main` does not require PostgreSQL.
 
-`frontend/views/chat.py` renders a conversation rail (search, All/Active/Archived
-filter, per-thread action menu) beside a flat transcript. Each message has a
-local timestamp above it; assistant bubbles align left with a muted surface and
-user bubbles align right with an accent tint, without role labels. Long messages
-start expanded and can collapse. Bubbles use two-thirds of the transcript width
-on desktop and expand on narrow screens. The transcript uses normal page
-scrolling, and the composer has a palette-aware outline and focus ring. The
-thread rail defaults to Active and supports archive, restore, and confirmed
-permanent deletion; thread deletion cascades to its messages while preserving
-Knowledge Hub pages and generation activity. Grounded answers include one `Sources`
-disclosure instead of a code block per endpoint. Sending a message reports
-through `st.status` with terminal states. Knowledge Hub is a peer view beside
-Conversation. Its page editor shows version history and diffs, supports feature
-to microservice links, and reviews multi-page updates before an atomic save.
-
-### Release revisions
-
-The revision workflow moved out of a collapsed expander at the foot of the
-generation panel into `_render_revision_dialog`, opened from a `Create release
-revision` button in Test Cases. Because a dialog body runs only while the dialog
-is open, the saved project and the generation history are now read once per
-session instead of on every rerun of the panel.
-
-### Activity log views
-
-The Activity Logs workspace has two project-scoped subviews. Generation uses the paged `generation-activity` API and opens full activity records in a dialog. Knowledge Extraction combines retained `extracted` and `extraction_failed` events with append-only Knowledge Hub events for page creation, feature-to-microservice link changes, draft preparation/failure, reviewed page saves, and version restores. Chat turns do not create extraction events. Hub draft events retain the exact prompt messages, raw model response, provider/model metadata, source thread, and destination page; save/restore events retain the resulting version and content. The paged activity-list API returns summaries without loading large prompt/response bodies, while a project-scoped detail API loads the full record when the user opens a row. Historical extraction prompts and provider metadata remain available where those snapshots were recorded.
-
-`GET /api/v1/projects/{id}/knowledge/activity?limit=25&offset=0` returns paged summaries for extraction and Hub events. `GET /api/v1/projects/{id}/knowledge/activity/{event_id}` returns the full event payload and, for extraction events, its retained source submission. Both routes enforce project scope.
-
-### Generation activity paging
-
-`GET /api/v1/projects/{id}/generation-activity` returns
-`{"activities", "total", "limit", "offset"}`. `total` is a `COUNT(*)`
-(`Database.count_generation_activity`), not the page length, so a pager can state
-the real number of pages. The view keeps the page size and offset in session
-state, clamps the offset when records are deleted, and disables Previous
-and Next at the boundaries.
-
-## Next.js frontend and shared design tokens
-
-`web/` is a Next.js App Router and TypeScript application served on port 3000. Browser requests use same-origin Route Handlers under `web/src/app/api/`; the catch-all handler forwards `/api/v1/*` to `BACKEND_URL` (default `http://localhost:8000`) after reading the HttpOnly access-token cookie. The browser never sees bearer credentials or contacts the backend origin directly.
-
-### Local authentication
-
-Set `AUTH_USERNAME`, `AUTH_PASSWORD`, and `AUTH_JWT_SECRET` for the single local account. The signing secret must contain at least 32 characters; generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. FastAPI middleware protects versioned API routes, with health and the login, refresh, and logout endpoints public. Access JWTs expire after 15 minutes. Refresh credentials are opaque, stored as hashes in `auth_refresh_tokens`, expire after 30 days, and rotate transactionally on use. Next.js stores both values in HttpOnly, SameSite=Lax cookies and retries one API call after refresh. Streamlit holds the same token pair only in server-side session state. This local single-account mechanism is not a user/role system.
-
-### Contract file import
-
-`POST /api/v1/contracts/upload-preview` accepts multipart uploads up to 5 MB for OpenAPI/Swagger JSON or YAML, Postman JSON, Markdown, TXT, PDF, and DOCX. PDF text is extracted with `pypdf`; DOCX paragraphs are read from the document XML. The resulting text is passed through the existing contract parser, so prose extraction can use the configured LLM. The API Workspace displays the parsed endpoint list for review and imports only selected endpoints into the chosen collection. The ordinary preview route continues to accept pasted content and public URLs. File parsing limits extracted text to 5 MB and PDFs to 500 pages.
-
-### One token source
-
-The colour contract lives in `frontend/styles/tokens.py` (`DARK`, `LIGHT`, `RADII`, `MOTION`, `FONTS`). `scripts/gen_tokens.py` renders it into `web/src/app/tokens.css`:
-
-- light values in `:root`
-- dark values in `.dark`
-- both blocks declare the same names, asserted by the generator
-- `@theme inline` maps the names onto Tailwind v4 `--color-*`, `--radius-*`, `--shadow-*`, and `--font-*`
-
-Light is the first-visit default. A pre-paint script applies the saved `localStorage['aa-theme']` choice before rendering, and the sidebar Appearance control persists changes across reloads.
-
-Run `make gen-tokens` after changing a token; `make check-tokens` fails when the generated stylesheet is stale.
-
-### Typed backend boundary
-
-`scripts/gen_types.py` imports `app.main` and writes `web/openapi.json` plus `web/src/types/api.generated.ts`. The FastAPI routes return plain dictionaries and declare `no response_model`, so OpenAPI carries only request schemas; response types are hand written in `web/src/types/api.ts` and guarded by `tests/test_api_contract.py`. Adding `response_model` to those routes would silently drop undeclared fields, so it is deliberately not done.
-
-`app.main` constructs the repository lazily through `get_database()`; importing it no longer runs schema DDL or needs PostgreSQL.
-
-### Surfaces
-
-| Route | Status |
-| --- | --- |
-| `/workspace/api` | Migrated: draft tabs, collections, cURL parse, params/headers/body/auth editors, checks, response inspector, Postman export, and reviewed imports from OpenAPI/Swagger, Postman, Markdown, TXT, PDF, DOCX, or public documentation URLs |
-| `/workspace/test-cases` | Migrated: Single/General/Flow generation, examples and briefs context, clarifications, coverage, revision and collection filters, per-case assertions, history and flaky signal, batch run, CSV export |
-| `/workspace/chat` | Migrated: thread rail with search and Active/All/Archived scope, per-thread rename, archive/restore and confirmed delete, transcript with role, local time, ordinal, 900-character collapse and a cited-source disclosure per message, day dividers, and a composer that is a flex sibling of the transcript so it never scrolls |
-| `/workspace/activity` | Migrated: Generation and Knowledge extraction streams, page sizes 10/25/50/100, real total from COUNT(*), Previous and Next with boundary disabling, offset clamping when history shrinks, and a detail dialog that fetches the full knowledge event |
-
-The activity list uses a compact table with details in a drill-down dialog and a bottom pager. Revision generation labels its run-specific input **New requirement changes**. Knowledge Hub pages are listed together with scope type, version count, latest version/date, and page actions. Request-exclusion lists are height-bounded and scroll independently. Markdown rendering uses GFM, including horizontally scrollable tables. Menus close on outside clicks and Escape. The workspace rail collapses to icon navigation, includes a Home link, and persists its width. Important form fields expose concise native or labelled tooltips.
-
-### Serving the production build
-
-`web/next.config.ts` sets `output: "standalone"`, so `next start` is not the serving command and prints a warning. Build first, then run the standalone server:
-
-```bash
-make serve-web              # build, stage .next/static into standalone, serve on PORT=3000
-```
-
-The staging step is required: the standalone bundle does not copy `.next/static` or `public`, so without it the page HTML arrives but its client chunks 404 and interactive surfaces never hydrate.
+Run the common frontend checks with `make check-web` and build the standalone production image with `make build-web` or `make docker-up-build`.

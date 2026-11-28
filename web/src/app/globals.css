@@ -4,7 +4,7 @@
 
 /*
  * Base surface. The palette itself lives in tokens.css, generated from
- * frontend/styles/tokens.py, so the Python and Next.js frontends cannot drift.
+ * design/tokens.py, so the Python and Next.js values cannot drift.
  */
 html {
   color-scheme: light;

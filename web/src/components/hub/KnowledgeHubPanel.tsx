@@ -497,6 +497,7 @@ export default function KnowledgeHubPanel({
             <Button
               small
               icon="sparkles"
+              loading={busy && !draftResult}
               onClick={() => void prepareDraft()}
               disabled={busy || !draftThreadId || draftScopeIds.length === 0}
             >

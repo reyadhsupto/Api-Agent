@@ -219,10 +219,11 @@ export default function RevisionDialog({
             small
             tone="primary"
             icon="sparkles"
+            loading={busy}
             disabled={busy || reasons.length > 0}
             onClick={() => void submit()}
           >
-            {busy ? 'Generating' : 'Generate revision'}
+            {busy ? 'Generating revision…' : 'Generate revision'}
           </Button>
         </>
       )}

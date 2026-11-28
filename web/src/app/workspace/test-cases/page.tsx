@@ -287,7 +287,6 @@ export default function TestCasesPage() {
     setPhase('running');
     setNote('Generating with the configured providers.');
     setFlash(null);
-    const started = Date.now();
     try {
       // The backend authors cases for one request per call, so single mode loops
       // over the selection instead of silently generating for the first request.
@@ -312,8 +311,7 @@ export default function TestCasesPage() {
       }
       setPhase(count ? 'done' : 'error');
       setNote(count
-        ? 'Generated ' + String(count) + ' case(s) in '
-          + String(Math.max(1, Math.round((Date.now() - started) / 1000))) + 's.'
+        ? 'Generated ' + String(count) + ' case(s).'
         : 'The model returned no test cases.');
       await refreshProject();
     } catch (caught) {
@@ -702,13 +700,30 @@ export default function TestCasesPage() {
               <Button
                 tone="primary"
                 icon="sparkles"
+                loading={phase === 'running'}
                 disabled={phase === 'running' || cooldown || (mode !== 'General' && selectedEndpoints.length === 0)}
                 onClick={() => void generate()}
               >
-                {phase === 'running' ? 'Generating' : cooldown ? 'Wait a moment' : 'Generate cases'}
+                {phase === 'running' ? 'Generating…' : cooldown ? 'Wait a moment' : 'Generate cases'}
               </Button>
-              {phase === 'running' ? <Spinner label="Calling providers" /> : null}
             </div>
+
+            {phase === 'running' ? (
+              <div className="mt-3 overflow-hidden rounded-md border border-accent/25 bg-accent/5 p-3" role="status" aria-live="polite">
+                <div className="flex items-center gap-2 text-[11.5px] font-semibold text-text">
+                  <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-r-transparent" aria-hidden="true" />
+                  Generating test cases with the configured model. This may take a few minutes.
+                  <span aria-hidden="true" className="inline-flex gap-0.5 text-accent">
+                    {[0, 1, 2].map((dot) => (
+                      <span key={dot} className="animate-bounce font-bold" style={{ animationDelay: `${dot * 120}ms` }}>·</span>
+                    ))}
+                  </span>
+                </div>
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+                </div>
+              </div>
+            ) : null}
 
             {note ? (
               <p
@@ -785,11 +800,12 @@ export default function TestCasesPage() {
                 small
                 tone="primary"
                 icon="send"
+                loading={phase === 'running'}
                 className="mt-2 self-start"
                 disabled={phase === 'running'}
                 onClick={() => void submitAnswers()}
               >
-                Refine suite
+                {phase === 'running' ? 'Refining…' : 'Refine suite'}
               </Button>
             </Card>
           ) : null}

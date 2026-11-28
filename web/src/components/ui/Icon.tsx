@@ -40,7 +40,8 @@ export type IconName =
   | 'lock'
   | 'filter'
   | 'external'
-  | 'ban';
+  | 'ban'
+  | 'info';
 
 const GLYPHS: Record<IconName, React.ReactNode> = {
   home: <><path d="M3 10.5L12 3l9 7.5" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-7h5v7" /></>,
@@ -80,6 +81,7 @@ refresh: <path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v6h-6" />,
   filter: <path d="M3 5h18l-7 8v6l-4-2v-4z" />,
   external: <path d="M14 4h6v6M20 4l-9 9M9 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-4" />,
   ban: <><circle cx="12" cy="12" r="9" /><path d="M5 19L19 5" /></>,
+  info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
 };
 
 export interface IconProps extends React.SVGProps<SVGSVGElement> {

@@ -2,7 +2,7 @@
 FastAPI application entry point with PostgreSQL-backed project storage.
 
 Accepts:
-    HTTP requests from the Streamlit frontend.
+    HTTP requests from the Next.js frontend.
 
 Returns:
     JSON responses for project, endpoint, test case, and execution management.

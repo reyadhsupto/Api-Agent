@@ -1,7 +1,7 @@
-# frontend/styles/tokens.py
+# design/tokens.py
 
 """
-Design tokens for the Api-Agent frontend.
+Design tokens for the Api-Agent web interface.
 
 Two palettes ship: a pure black ``dark`` workspace and a paper-on-grey ``light``
 workspace. Both declare exactly the same token names, so every stylesheet is
@@ -142,7 +142,7 @@ DARK = {
     "aa-chip-fill": "rgba(255, 255, 255, .07)",
     "aa-chip-line": "rgba(255, 255, 255, .16)",
 
-    # Native Streamlit theme names, kept in step with the lift ladder.
+    # Named surface levels follow the same contrast ladder.
     "background-color": "#000000",
     "secondary-background-color": "#0d0f12",
     "text-color": "#f2f3f5",

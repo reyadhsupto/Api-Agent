@@ -43,6 +43,7 @@ export default function Sidebar() {
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [projectFlowOpen, setProjectFlowOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
 
   useEffect(() => {
@@ -223,6 +224,23 @@ export default function Sidebar() {
         </ul>
       </nav>
 
+      <div className={cx('border-t border-line py-2', collapsed ? 'px-2' : 'px-3')}>
+        <button
+          type="button"
+          title={collapsed ? 'Project flow' : undefined}
+          aria-label="Project flow"
+          aria-haspopup="dialog"
+          onClick={() => setProjectFlowOpen(true)}
+          className={cx(
+            'flex w-full items-center gap-2 rounded-md border border-transparent px-2 py-2 text-left text-text-dim transition-colors hover:bg-hover hover:text-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent',
+            collapsed && 'justify-center px-1',
+          )}
+        >
+          <Icon name="info" size={15} />
+          {!collapsed ? <span className="text-[12.5px] font-semibold">Project flow</span> : null}
+        </button>
+      </div>
+
       <div className={cx('border-t border-line py-3', collapsed ? 'px-2' : 'px-3')}>
         {collapsed ? (
           <Button small icon="chevronRight" onClick={toggleCollapsed} aria-label="Expand sidebar" className="mb-2 w-full" />
@@ -288,6 +306,37 @@ export default function Sidebar() {
               </p>
             ) : null}
           </div>
+        </div>
+      </Modal>
+      <Modal
+        open={projectFlowOpen}
+        title="Project flow"
+        description="A quick guide to where each part of the API testing workflow happens."
+        onClose={() => setProjectFlowOpen(false)}
+        wide
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          {[
+            { step: '1', title: 'Home', text: 'Choose a project and get an overview of its testing workspace.' },
+            { step: '2', title: 'API Workspace', text: 'Create collections, import API definitions, edit requests, inspect responses, and discover dependent flows.' },
+            { step: '3', title: 'Test Cases', text: 'Select endpoints, add run-specific requirements, generate independent cases or flows, edit them, and execute tests.' },
+            { step: '4', title: 'Project Chat', text: 'Discuss product behavior and uncertainties. Review conversation context, prepare Knowledge Hub updates, and save approved project knowledge.' },
+            { step: '5', title: 'Activity', text: 'Inspect generation and Knowledge Hub activity, including prompts, model responses, saved versions, and outcomes.' },
+          ].map((item) => (
+            <section key={item.step} className="rounded-lg border border-line-soft bg-panel-alt p-3">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[11px] font-bold text-accent">{item.step}</span>
+                <h3 className="text-[12.5px] font-bold text-text">{item.title}</h3>
+              </div>
+              <p className="mt-2 text-[11.5px] leading-relaxed text-text-dim">{item.text}</p>
+            </section>
+          ))}
+          <section className="rounded-lg border border-line-soft bg-panel-alt p-3 sm:col-span-2">
+            <h3 className="text-[12.5px] font-bold text-text">Typical sequence</h3>
+            <p className="mt-2 text-[11.5px] leading-relaxed text-text-dim">
+              Organize and import requests in API Workspace, select endpoints and generate cases in Test Cases, run and review outcomes, then use Project Chat to curate durable knowledge for future generation. Use Activity to audit what the model received and returned.
+            </p>
+          </section>
         </div>
       </Modal>
     </aside>
